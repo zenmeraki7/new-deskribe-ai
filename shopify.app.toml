@@ -2,7 +2,7 @@
 
 client_id = "a1f8f9a43fecfcab67dc4868a5ea2ee2"
 name = "desKribe-ai"
-application_url = "https://enb-prints-smtp-offered.trycloudflare.com"
+application_url = "https://researcher-brain-kick-pharmaceuticals.trycloudflare.com"
 embedded = true
 
 [build]
@@ -24,4 +24,4 @@ api_version = "2026-01"
 scopes = "write_products"
 
 [auth]
-redirect_urls = [ "https://enb-prints-smtp-offered.trycloudflare.com/api/auth" ]
+redirect_urls = [ "https://researcher-brain-kick-pharmaceuticals.trycloudflare.com/api/auth" ]
