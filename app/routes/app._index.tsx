@@ -20,7 +20,7 @@ import {
   Checkbox,
   Banner,
   Toast,
-  Frame
+  Frame,
 } from "@shopify/polaris";
 import {
   Sparkles,
@@ -32,12 +32,14 @@ import {
   List,
   Share2,
   Check,
-  Hash
+  Hash,
 } from "lucide-react";
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import { useLoaderData } from "@remix-run/react";
+import { useFetcher } from "@remix-run/react";
+import { useEffect } from "react";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin } = await authenticate.admin(request);
@@ -60,7 +62,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           }
         }
       }
-    }`
+    }`,
   );
 
   const data = await response.json();
@@ -80,6 +82,10 @@ export default function Dashboard() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [toast, setToast] = useState(false);
+  const [suggestedKeywords, setSuggestedKeywords] = useState([]);
+  const [isSuggesting, setIsSuggesting] = useState(false);
+
+   const fetcher = useFetcher();
 
   const filteredProducts = PRODUCTS.filter((p, index) => {
     const match = p.title.toLowerCase().includes(searchTerm.toLowerCase());
@@ -87,53 +93,99 @@ export default function Dashboard() {
     return match;
   });
 
+  const handleSuggestKeywords = () => {
+    if (!selectedProduct) return;
+
+    setIsSuggesting(true);
+
+    fetcher.submit(
+      {
+        actionType: "suggestKeywords",
+        productId: selectedProduct.id,
+        vibe,
+      },
+      { method: "post", action: "/generate" },
+    );
+  };
+
+ 
   const handleGenerate = () => {
     if (!selectedProduct) return;
+
     setIsGenerating(true);
     setGeneratedContent(null);
 
-    setTimeout(() => {
-      const html =
-        format === "bullets"
-          ? `<ul>
-              <li><strong>Bold:</strong> This ${selectedProduct.title} features ${keywords || "premium specs"}.</li>
-              <li><strong>Design:</strong> Built for performance.</li>
-            </ul>`
-          : `<p>The ${selectedProduct.title} is designed with ${keywords || "high-quality materials"} for unbeatable value.</p>`;
-
-      const socials = includeSocials
-        ? {
-            twitter: `Just tried ${selectedProduct.title}. Game changer. 🚀`,
-            instagram: `Upgrade time.\n.\n#${vibe} #dailycarry`
-          }
-        : null;
-
-      setGeneratedContent({ description: html, socials });
-      setIsGenerating(false);
-    }, 1500);
+    fetcher.submit(
+      {
+        actionType: "generate",
+        productId: selectedProduct.id,
+        vibe,
+        format,
+        keywords,
+        includeSocials: String(includeSocials),
+      },
+      {
+        method: "post",
+        action: "/generate",
+      },
+    );
   };
 
-  const handleSave = () => {
-    if (!generatedContent) return;
+  useEffect(() => {
+    if (!fetcher.data) return;
 
-    setIsSaving(true);
-    setTimeout(() => {
+    if (fetcher.data.status === "success") {
+      setGeneratedContent(fetcher.data.data);
+      setIsGenerating(false);
+    }
+
+    if (fetcher.data.status === "suggested") {
+      setSuggestedKeywords(fetcher.data.keywords || []);
+      setIsSuggesting(false);
+    }
+
+    if (fetcher.data.status === "saved") {
       setIsSaving(false);
       setToast(true);
       setTimeout(() => setToast(false), 2500);
-    }, 1200);
-  };
+    }
 
-  
+    if (fetcher.data.status === "error") {
+      setIsGenerating(false);
+      setIsSaving(false);
+      setIsSuggesting(false);
+      console.error(fetcher.data.message);
+    }
+  }, [fetcher.data]);
+
+  useEffect(() => {
+  setSuggestedKeywords([]);
+}, [selectedProduct]);
+
+  const handleSave = () => {
+    if (!generatedContent || !selectedProduct) return;
+
+    setIsSaving(true);
+
+    fetcher.submit(
+      {
+        actionType: "save",
+        productId: selectedProduct.id,
+        descriptionHtml: generatedContent.description,
+      },
+      {
+        method: "post",
+        action: "/generate",
+      },
+    );
+  };
 
   return (
     <Frame>
       <Page title="Deskribe-AI" subtitle="AI-powered product copy">
         <Layout>
-
           {/* LEFT COLUMN */}
           <Layout.Section>
-
             <Card title="Select a Product" sectioned>
               <TextField
                 label="Search products"
@@ -142,38 +194,41 @@ export default function Dashboard() {
                 autoComplete="off"
               />
 
-              <IndexTable
-                resourceName={{ singular: "product", plural: "products" }}
-                itemCount={filteredProducts.length}
-                
-                
-                headings={[{ title: "Product" }, { title: "Metafields" }]}
-              >
-                {filteredProducts.map((p, index) => (
-                  <IndexTable.Row
-                    id={p.id}
-                    key={p.id}
-                    selected={selectedProduct?.id === p.id}
-                    onClick={() => setSelectedProduct(p)}
-                  >
-                    <IndexTable.Cell>{p.title}</IndexTable.Cell>
-                    <IndexTable.Cell>{p.metafields.edges.length}</IndexTable.Cell>
-                  </IndexTable.Row>
-                ))}
-              </IndexTable>
+              <div style={{ maxHeight: "300px", overflowY: "auto" }}>
+                <IndexTable
+                  resourceName={{ singular: "product", plural: "products" }}
+                  itemCount={filteredProducts.length}
+                  headings={[{ title: "Product" }, { title: "Metafields" }]}
+                >
+                  {filteredProducts.map((p, index) => (
+                    <IndexTable.Row
+                      id={p.id}
+                      key={p.id}
+                      selected={selectedProduct?.id === p.id}
+                      onClick={() => setSelectedProduct(p)}
+                    >
+                      <IndexTable.Cell>{p.title}</IndexTable.Cell>
+                      <IndexTable.Cell>
+                        {p.metafields.edges.length}
+                      </IndexTable.Cell>
+                    </IndexTable.Row>
+                  ))}
+                </IndexTable>
+              </div>
 
               {selectedProduct && (
                 <div style={{ marginTop: "1rem" }}>
-                  <Text as="h4" variant="headingMd">Selected Product:</Text>
+                  <Text as="h4" variant="headingMd">
+                    Selected Product:
+                  </Text>
                   <Text>{selectedProduct.title}</Text>
                 </div>
               )}
             </Card>
 
             {/* CONFIGURATION */}
-              <Card title="Configuration"  sectioned>
+            <Card title="Configuration" sectioned>
               <BlockStack gap="400">
-
                 {/* Vibe */}
                 <div>
                   <Text as="h3" variant="headingSm">
@@ -199,26 +254,63 @@ export default function Dashboard() {
                 <InlineGrid columns={2} gap="400">
                   <div>
                     <Text as="h3" variant="headingSm">
-                      <InlineStack gap="200"><Sparkles size={14} /> Format</InlineStack>
+                      <InlineStack gap="200">
+                        <Sparkles size={14} /> Format
+                      </InlineStack>
                     </Text>
                     <Select
                       options={[
                         { label: "Paragraph", value: "paragraph" },
-                        { label: "Bullet Points", value: "bullets" }
-                      ]} value={format}
+                        { label: "Bullet Points", value: "bullets" },
+                      ]}
+                      value={format}
                       onChange={setFormat}
                     />
                   </div>
 
                   <div>
                     <Text as="h3" variant="headingSm">
-                      <InlineStack gap="200"><Sparkles size={14} /> SEO Keywords</InlineStack>
+                      <InlineStack gap="200">
+                        <Hash size={14} /> SEO Keywords
+                      </InlineStack>
                     </Text>
-                    <TextField
-                      value={keywords}
-                      onChange={setKeywords}
-                      placeholder="organic, waterproof"
-                    />
+
+                    <InlineStack gap="200" align="space-between">
+                      <TextField
+                        value={keywords}
+                        onChange={setKeywords}
+                        placeholder="organic, waterproof"
+                        autoComplete="off"
+                      />
+
+                      <Button
+                        onClick={handleSuggestKeywords}
+                        disabled={!selectedProduct || isSuggesting}
+                      >
+                        {isSuggesting ? <Spinner size="small" /> : "Suggest"}
+                      </Button>
+                    </InlineStack>
+
+                    {/* Suggested keywords */}
+                    {suggestedKeywords.length > 0 && (
+                      <InlineStack gap="200" wrap>
+                        {suggestedKeywords.map((kw) => (
+                          <Button
+                            key={kw}
+                            size="slim"
+                            onClick={() => {
+                              if (!keywords.includes(kw)) {
+                                setKeywords((prev) =>
+                                  prev ? `${prev}, ${kw}` : kw,
+                                );
+                              }
+                            }}
+                          >
+                            {kw}
+                          </Button>
+                        ))}
+                      </InlineStack>
+                    )}
                   </div>
                 </InlineGrid>
 
@@ -234,13 +326,17 @@ export default function Dashboard() {
                     onClick={handleGenerate}
                     disabled={!selectedProduct || isGenerating}
                   >
-                    {isGenerating ? <Spinner size="small"/> : <Sparkles size={14} />} &nbsp;
+                    {isGenerating ? (
+                      <Spinner size="small" />
+                    ) : (
+                      <Sparkles size={14} />
+                    )}{" "}
+                    &nbsp;
                     {isGenerating ? "Writing Copy..." : "Generate Content"}
                   </Button>
                 </InlineStack>
               </BlockStack>
             </Card>
-           
 
             {/* RESULTS */}
             {generatedContent && (
@@ -249,19 +345,29 @@ export default function Dashboard() {
                   <InlineStack align="space-between">
                     <Text variant="headingMd">AI Generated</Text>
                     <Button
-                      onClick={() => navigator.clipboard.writeText(generatedContent.description)}
+                      onClick={() =>
+                        navigator.clipboard.writeText(
+                          generatedContent.description,
+                        )
+                      }
                       icon={<Sparkles size={14} />}
-                    >Copy HTML</Button>
+                    >
+                      Copy HTML
+                    </Button>
                   </InlineStack>
 
                   <div
-                    dangerouslySetInnerHTML={{ __html: generatedContent.description }}
+                    dangerouslySetInnerHTML={{
+                      __html: generatedContent.description,
+                    }}
                   />
 
                   {generatedContent.socials && (
                     <div>
                       <Text variant="headingSm">
-                        <InlineStack gap="200"><Sparkles size={14} /> Social Sidecar</InlineStack>
+                        <InlineStack gap="200">
+                          <Sparkles size={14} /> Social Sidecar
+                        </InlineStack>
                       </Text>
 
                       <BlockStack gap="300">
@@ -279,7 +385,11 @@ export default function Dashboard() {
                   )}
 
                   <Button primary onClick={handleSave} disabled={isSaving}>
-                    {isSaving ? <Spinner size="small"/> : <Sparkles size={14} />}
+                    {isSaving ? (
+                      <Spinner size="small" />
+                    ) : (
+                      <Sparkles size={14} />
+                    )}
                     &nbsp; {isSaving ? "Publishing..." : "Save to Product"}
                   </Button>
                 </BlockStack>
@@ -290,7 +400,10 @@ export default function Dashboard() {
           {/* RIGHT SIDEBAR */}
           <Layout.Section secondary>
             <Card title="How it works" sectioned>
-              <p>This app analyzes product <strong>metafields</strong> & title to generate high-impact copy.</p>
+              <p>
+                This app analyzes product <strong>metafields</strong> & title to
+                generate high-impact copy.
+              </p>
               <ul>
                 <li>Select a product</li>
                 <li>Choose vibe</li>
@@ -298,17 +411,23 @@ export default function Dashboard() {
               </ul>
             </Card>
 
-            <Text alignment="center" variant="bodySm" tone="subdued" style={{ marginTop: "1rem" }}>
+            <Text
+              alignment="center"
+              variant="bodySm"
+              tone="subdued"
+              style={{ marginTop: "1rem" }}
+            >
               v1.3.0-simulation
             </Text>
           </Layout.Section>
-
         </Layout>
 
         {toast && (
-          <Toast content="Product updated successfully" onDismiss={() => setToast(false)} />
+          <Toast
+            content="Product updated successfully"
+            onDismiss={() => setToast(false)}
+          />
         )}
-
       </Page>
     </Frame>
   );

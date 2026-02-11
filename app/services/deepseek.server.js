@@ -168,6 +168,32 @@ export class DeepSeekService {
     }
   }
 
+async generateSEOKeywords({ product, vibe, shop }) {
+  const prompt = `
+You are an SEO expert for Shopify stores.
+
+Suggest 8 high-intent SEO keywords for this product.
+Tone style: ${vibe}
+
+Product title: ${product.title}
+Product description: ${product.description}
+
+Return ONLY a comma separated list.
+`;
+
+  const result = await this._callDeepSeekHTTP(prompt);
+
+  const text = result?.description || "";
+
+  return text
+    .split(",")
+    .map((k) => k.trim())
+    .filter(Boolean);
+}
+
+
+
+
   async generateDescription({ product, vibe = "edgy", format = "paragraph", keywords = "", includeSocials = false, shop = null } = {}) {
     const rl = await this.checkRateLimit(shop);
     if (!rl.allowed) throw new Error("Rate limit exceeded. Try again shortly.");

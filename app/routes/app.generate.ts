@@ -9,6 +9,61 @@ export async function action({ request }: ActionFunctionArgs) {
   const formData = await request.formData();
   const actionType = formData.get("actionType");
 
+ if (actionType === "suggestKeywords") {
+  try {
+    const productId = String(formData.get("productId"));
+    const vibe = String(formData.get("vibe") || "edgy");
+
+    // Fetch product title
+    const response = await admin.graphql(
+      `#graphql
+        query GetProduct($id: ID!) {
+          product(id: $id) {
+            id
+            title
+          }
+        }
+      `,
+      { variables: { id: productId } }
+    );
+
+    const data = await response.json();
+    const product = data.data?.product;
+
+    if (!product) {
+      return json(
+        { status: "error", message: "Product not found" },
+        { status: 404 }
+      );
+    }
+
+    // 🔥 Call AI keyword generator
+    const result = await deepseek.generateSEOKeywords({
+      title: product.title,
+      vibe,
+    });
+
+    return json({
+      status: "suggested",
+      keywords: result.keywords,
+    });
+
+  } catch (error) {
+    console.error("Suggest error:", error);
+    return json(
+      {
+        status: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Failed to suggest keywords",
+      },
+      { status: 500 }
+    );
+  }
+}
+
+
   if (actionType === "generate") {
     try {
       const productId = String(formData.get("productId"));

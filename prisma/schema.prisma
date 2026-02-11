@@ -9,8 +9,8 @@ generator client {
 // enough when changing adapters.
 // See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
 datasource db {
-  provider = "sqlite"
-  url      = "file:dev.sqlite"
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model Session {
@@ -29,4 +29,17 @@ model Session {
   locale        String?
   collaborator  Boolean?  @default(false)
   emailVerified Boolean?  @default(false)
+}
+
+model History {
+  id             String   @id @default(cuid())
+  productId      String
+  productTitle   String
+  description    String
+  vibe           String
+  format         String
+  keywords       String?
+  includeSocials Boolean
+  socials        Json?
+  createdAt      DateTime @default(now())
 }
