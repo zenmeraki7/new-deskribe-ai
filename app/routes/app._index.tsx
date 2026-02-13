@@ -1,53 +1,47 @@
 // Converted to Shopify Polaris version
-// Note: Structure and logic unchanged. Components swapped to Polaris equivalents.
+// Now includes server-side product search with debounce
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Card,
   Page,
   Layout,
   TextField,
   IndexTable,
-  useIndexResourceState,
   Button,
   Select,
-  Icon,
   InlineStack,
   InlineGrid,
   BlockStack,
   Text,
   Spinner,
   Checkbox,
-  Banner,
   Toast,
   Frame,
+  Badge, 
 } from "@shopify/polaris";
-import {
-  Sparkles,
-  Save,
-  Copy,
-  Terminal,
-  Sliders,
-  AlignLeft,
-  List,
-  Share2,
-  Check,
-  Hash,
-} from "lucide-react";
+
+import { Sparkles, Hash } from "lucide-react";
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
-import { useLoaderData } from "@remix-run/react";
-import { useFetcher } from "@remix-run/react";
-import { useEffect } from "react";
+import { useLoaderData, useFetcher, useNavigate } from "@remix-run/react";
 
+// ==========================
+// LOADER (SERVER SIDE SEARCH)
+// ==========================
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin } = await authenticate.admin(request);
 
+  const url = new URL(request.url);
+  const search = url.searchParams.get("search") || "";
+
+  const queryString = search ? `title:*${search}*` : "";
+
   const response = await admin.graphql(
     `#graphql
-    query GetProducts {
-      products(first: 20) {
+    query GetProducts($query: String) {
+      products(first: 20, query: $query) {
         nodes {
           id
           title
@@ -63,74 +57,65 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         }
       }
     }`,
+    {
+      variables: {
+        query: queryString,
+      },
+    },
   );
 
   const data = await response.json();
-  return json({ products: data.data?.products?.nodes ?? [] });
+
+  return json({
+    products: data.data?.products?.nodes ?? [],
+  });
 };
 
+// ==========================
+// COMPONENT
+// ==========================
 export default function Dashboard() {
-  const PRODUCTS = useLoaderData<typeof loader>().products;
+  const { products } = useLoaderData<typeof loader>();
 
-  const [selectedProduct, setSelectedProduct] = useState(null);
+  const navigate = useNavigate();
+  const fetcher = useFetcher();
+
+  const [selectedResources, setSelectedResources] = useState<string[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [vibe, setVibe] = useState("edgy");
   const [format, setFormat] = useState("paragraph");
   const [keywords, setKeywords] = useState("");
   const [includeSocials, setIncludeSocials] = useState(false);
-  const [generatedContent, setGeneratedContent] = useState(null);
+  const [generatedContent, setGeneratedContent] = useState<any>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [toast, setToast] = useState(false);
-  const [suggestedKeywords, setSuggestedKeywords] = useState([]);
+  const [suggestedKeywords, setSuggestedKeywords] = useState<string[]>([]);
   const [isSuggesting, setIsSuggesting] = useState(false);
-
-   const fetcher = useFetcher();
-
-  const filteredProducts = PRODUCTS.filter((p, index) => {
-    const match = p.title.toLowerCase().includes(searchTerm.toLowerCase());
-    if (searchTerm.trim() === "") return index < 5;
-    return match;
+  const [bulkProgress, setBulkProgress] = useState({
+    total: 0,
+    completed: 0,
   });
+  const [isBulkGenerating, setIsBulkGenerating] = useState(false);
+  const selectedProduct =
+    selectedResources.length > 0
+      ? products.find((p: any) => p.id === selectedResources[0])
+      : null;
 
-  const handleSuggestKeywords = () => {
-    if (!selectedProduct) return;
+  // ==========================
+  // DEBOUNCED SEARCH
+  // ==========================
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+      navigate(`?search=${searchTerm}`);
+    }, 400);
 
-    setIsSuggesting(true);
+    return () => clearTimeout(timeout);
+  }, [searchTerm]);
 
-    fetcher.submit(
-      {
-        actionType: "suggestKeywords",
-        productId: selectedProduct.id,
-        vibe,
-      },
-      { method: "post", action: "/generate" },
-    );
-  };
-
- 
-  const handleGenerate = () => {
-    if (!selectedProduct) return;
-
-    setIsGenerating(true);
-    setGeneratedContent(null);
-
-    fetcher.submit(
-      {
-        actionType: "generate",
-        productId: selectedProduct.id,
-        vibe,
-        format,
-        keywords,
-        includeSocials: String(includeSocials),
-      },
-      {
-        method: "post",
-        action: "/generate",
-      },
-    );
-  };
-
+  // ==========================
+  // FETCHER RESPONSE HANDLING
+  // ==========================
   useEffect(() => {
     if (!fetcher.data) return;
 
@@ -149,6 +134,16 @@ export default function Dashboard() {
       setToast(true);
       setTimeout(() => setToast(false), 2500);
     }
+    if (fetcher.data.status === "bulk_complete") {
+      setIsBulkGenerating(false);
+
+      setToast(true);
+      setTimeout(() => setToast(false), 3000);
+
+      console.log(
+        `Bulk Complete: ${fetcher.data.success} success, ${fetcher.data.failed} failed`,
+      );
+    }
 
     if (fetcher.data.status === "error") {
       setIsGenerating(false);
@@ -159,8 +154,81 @@ export default function Dashboard() {
   }, [fetcher.data]);
 
   useEffect(() => {
-  setSuggestedKeywords([]);
-}, [selectedProduct]);
+    if (!products.length || selectedResources.length === 0) return;
+
+    const stillExists = products.some(
+      (p: any) => p.id === selectedResources[0],
+    );
+
+    if (!stillExists) {
+      setSelectedResources([]);
+    }
+  }, [products]);
+
+  // ==========================
+  // ACTIONS
+  // ==========================
+  const handleSuggestKeywords = () => {
+    if (!selectedResources.length) return;
+
+    setIsSuggesting(true);
+
+    fetcher.submit(
+      {
+        actionType: "suggestKeywords",
+        productId: selectedResources[0],
+        vibe,
+      },
+      { method: "post", action: "/generate" },
+    );
+  };
+
+  const handleGenerate = () => {
+    if (!selectedProduct) return;
+
+    setIsGenerating(true);
+    setGeneratedContent(null);
+
+    fetcher.submit(
+      {
+        actionType: "generate",
+        productId: selectedProduct.id,
+        vibe,
+        format,
+        keywords,
+        includeSocials: String(includeSocials),
+      },
+      { method: "post", action: "/generate" },
+    );
+  };
+
+  const handleBulkGenerate = async () => {
+    if (!selectedResources.length) return;
+
+    setIsBulkGenerating(true);
+    setBulkProgress({ total: selectedResources.length, completed: 0 });
+
+    for (let i = 0; i < selectedResources.length; i++) {
+      await fetch("/generate", {
+        method: "POST",
+        body: new URLSearchParams({
+          actionType: "bulkGenerate",
+          productId: selectedResources[i],
+          vibe,
+          format,
+          keywords,
+          includeSocials: String(includeSocials),
+        }),
+      });
+
+      setBulkProgress((prev) => ({
+        ...prev,
+        completed: prev.completed + 1,
+      }));
+    }
+
+    setIsBulkGenerating(false);
+  };
 
   const handleSave = () => {
     if (!generatedContent || !selectedProduct) return;
@@ -173,18 +241,18 @@ export default function Dashboard() {
         productId: selectedProduct.id,
         descriptionHtml: generatedContent.description,
       },
-      {
-        method: "post",
-        action: "/generate",
-      },
+      { method: "post", action: "/generate" },
     );
   };
 
+  // ==========================
+  // UI
+  // ==========================
   return (
     <Frame>
       <Page title="Deskribe-AI" subtitle="AI-powered product copy">
         <Layout>
-          {/* LEFT COLUMN */}
+          {/* LEFT SECTION */}
           <Layout.Section>
             <Card title="Select a Product" sectioned>
               <TextField
@@ -192,21 +260,19 @@ export default function Dashboard() {
                 value={searchTerm}
                 onChange={setSearchTerm}
                 autoComplete="off"
+                placeholder="Search entire store..."
               />
 
               <div style={{ maxHeight: "300px", overflowY: "auto" }}>
                 <IndexTable
                   resourceName={{ singular: "product", plural: "products" }}
-                  itemCount={filteredProducts.length}
+                  itemCount={products.length}
+                  selectedItemsCount={selectedResources.length}
+                  onSelectionChange={setSelectedResources}
                   headings={[{ title: "Product" }, { title: "Metafields" }]}
                 >
-                  {filteredProducts.map((p, index) => (
-                    <IndexTable.Row
-                      id={p.id}
-                      key={p.id}
-                      selected={selectedProduct?.id === p.id}
-                      onClick={() => setSelectedProduct(p)}
-                    >
+                  {products.map((p: any, index: number) => (
+                    <IndexTable.Row id={p.id} key={p.id} position={index}>
                       <IndexTable.Cell>{p.title}</IndexTable.Cell>
                       <IndexTable.Cell>
                         {p.metafields.edges.length}
@@ -218,207 +284,152 @@ export default function Dashboard() {
 
               {selectedProduct && (
                 <div style={{ marginTop: "1rem" }}>
-                  <Text as="h4" variant="headingMd">
-                    Selected Product:
-                  </Text>
+                  <Text variant="headingMd">Selected Product:</Text>
                   <Text>{selectedProduct.title}</Text>
                 </div>
               )}
             </Card>
 
-            {/* CONFIGURATION */}
-            <Card title="Configuration" sectioned>
-              <BlockStack gap="400">
-                {/* Vibe */}
-                <div>
-                  <Text as="h3" variant="headingSm">
-                    <InlineStack gap="200">
-                      <Sparkles size={14} /> Vibe Check
-                    </InlineStack>
-                  </Text>
+<Card title="Configuration" sectioned>
+  <BlockStack gap="400">
+    <InlineStack gap="300">
+      <Button
+        primary
+        loading={isGenerating}
+        disabled={selectedResources.length === 0}
+        onClick={handleGenerate}
+      >
+        Generate Description
+      </Button>
 
-                  <InlineStack gap="300">
-                    {["edgy", "minimalist", "roast"].map((v) => (
-                      <Button
-                        key={v}
-                        pressed={vibe === v}
-                        onClick={() => setVibe(v)}
-                      >
-                        {v === "roast" ? "Real Talk" : v}
-                      </Button>
-                    ))}
-                  </InlineStack>
-                </div>
+      <Button
+        loading={isSuggesting}
+        disabled={selectedResources.length === 0}
+        onClick={handleSuggestKeywords}
+      >
+        Suggest SEO Keywords
+      </Button>
 
-                {/* Format / keywords */}
-                <InlineGrid columns={2} gap="400">
-                  <div>
-                    <Text as="h3" variant="headingSm">
-                      <InlineStack gap="200">
-                        <Sparkles size={14} /> Format
-                      </InlineStack>
-                    </Text>
-                    <Select
-                      options={[
-                        { label: "Paragraph", value: "paragraph" },
-                        { label: "Bullet Points", value: "bullets" },
-                      ]}
-                      value={format}
-                      onChange={setFormat}
-                    />
-                  </div>
+      <Button
+        loading={isBulkGenerating}
+        disabled={selectedResources.length === 0}
+        onClick={handleBulkGenerate}
+      >
+        Bulk Generate ({selectedResources.length})
+      </Button>
+    </InlineStack>
 
-                  <div>
-                    <Text as="h3" variant="headingSm">
-                      <InlineStack gap="200">
-                        <Hash size={14} /> SEO Keywords
-                      </InlineStack>
-                    </Text>
+    {isBulkGenerating && (
+      <Text>
+        Processing {bulkProgress.completed} / {bulkProgress.total}
+      </Text>
+    )}
+  </BlockStack>
+</Card>
 
-                    <InlineStack gap="200" align="space-between">
-                      <TextField
-                        value={keywords}
-                        onChange={setKeywords}
-                        placeholder="organic, waterproof"
-                        autoComplete="off"
-                      />
+{/* Suggested Keywords */}
+{suggestedKeywords.length > 0 && (
+  <Card title="Suggested SEO Keywords" sectioned>
+    <InlineStack gap="200">
+      {suggestedKeywords.map((keyword: string, index: number) => (
+        <Badge key={index}>{keyword}</Badge>
+      ))}
+    </InlineStack>
+  </Card>
+)}
 
-                      <Button
-                        onClick={handleSuggestKeywords}
-                        disabled={!selectedProduct || isSuggesting}
-                      >
-                        {isSuggesting ? <Spinner size="small" /> : "Suggest"}
-                      </Button>
-                    </InlineStack>
+{/* Results */}
+{generatedContent && (
+  <Card title="Results" sectioned>
+    <BlockStack gap="400">
+      <InlineStack align="space-between">
+        <Text variant="headingMd">
+          AI Generated Description
+        </Text>
 
-                    {/* Suggested keywords */}
-                    {suggestedKeywords.length > 0 && (
-                      <InlineStack gap="200" wrap>
-                        {suggestedKeywords.map((kw) => (
-                          <Button
-                            key={kw}
-                            size="slim"
-                            onClick={() => {
-                              if (!keywords.includes(kw)) {
-                                setKeywords((prev) =>
-                                  prev ? `${prev}, ${kw}` : kw,
-                                );
-                              }
-                            }}
-                          >
-                            {kw}
-                          </Button>
-                        ))}
-                      </InlineStack>
-                    )}
-                  </div>
-                </InlineGrid>
+        <Button
+          onClick={() =>
+            navigator.clipboard.writeText(
+              generatedContent.description,
+            )
+          }
+        >
+          Copy HTML
+        </Button>
+      </InlineStack>
 
-                <InlineStack align="space-between">
-                  <Checkbox
-                    label="Generate Social Media Posts"
-                    checked={includeSocials}
-                    onChange={setIncludeSocials}
-                  />
+      <div
+        style={{
+          padding: "12px",
+          border: "1px solid #e1e3e5",
+          borderRadius: "8px",
+        }}
+        dangerouslySetInnerHTML={{
+          __html: generatedContent.description,
+        }}
+      />
 
-                  <Button
-                    primary
-                    onClick={handleGenerate}
-                    disabled={!selectedProduct || isGenerating}
-                  >
-                    {isGenerating ? (
-                      <Spinner size="small" />
-                    ) : (
-                      <Sparkles size={14} />
-                    )}{" "}
-                    &nbsp;
-                    {isGenerating ? "Writing Copy..." : "Generate Content"}
-                  </Button>
-                </InlineStack>
-              </BlockStack>
-            </Card>
+      <Button
+        primary
+        onClick={handleSave}
+        loading={isSaving}
+      >
+        Save to Product
+      </Button>
+    </BlockStack>
+  </Card>
+)}
+
+            {suggestedKeywords.length > 0 && (
+  <Card title="Suggested SEO Keywords" sectioned>
+    <InlineStack gap="200">
+      {suggestedKeywords.map((keyword: string, index: number) => (
+        <Badge key={index}>{keyword}</Badge>
+      ))}
+    </InlineStack>
+  </Card>
+)}
+
 
             {/* RESULTS */}
             {generatedContent && (
               <Card title="Results" sectioned>
                 <BlockStack gap="400">
+                  {/* Header with Copy Button */}
                   <InlineStack align="space-between">
-                    <Text variant="headingMd">AI Generated</Text>
+                    <Text variant="headingMd">AI Generated Description</Text>
+
                     <Button
                       onClick={() =>
                         navigator.clipboard.writeText(
                           generatedContent.description,
                         )
                       }
-                      icon={<Sparkles size={14} />}
                     >
                       Copy HTML
                     </Button>
                   </InlineStack>
 
+
+                  {/* Rendered HTML */}
                   <div
+                    style={{
+                      padding: "12px",
+                      border: "1px solid #e1e3e5",
+                      borderRadius: "8px",
+                    }}
                     dangerouslySetInnerHTML={{
                       __html: generatedContent.description,
                     }}
                   />
 
-                  {generatedContent.socials && (
-                    <div>
-                      <Text variant="headingSm">
-                        <InlineStack gap="200">
-                          <Sparkles size={14} /> Social Sidecar
-                        </InlineStack>
-                      </Text>
-
-                      <BlockStack gap="300">
-                        <Card>
-                          <Text>X (Twitter)</Text>
-                          <Text>{generatedContent.socials.twitter}</Text>
-                        </Card>
-
-                        <Card>
-                          <Text>Instagram</Text>
-                          <Text>{generatedContent.socials.instagram}</Text>
-                        </Card>
-                      </BlockStack>
-                    </div>
-                  )}
-
+                  {/* Save Button */}
                   <Button primary onClick={handleSave} disabled={isSaving}>
-                    {isSaving ? (
-                      <Spinner size="small" />
-                    ) : (
-                      <Sparkles size={14} />
-                    )}
-                    &nbsp; {isSaving ? "Publishing..." : "Save to Product"}
+                    {isSaving ? <Spinner size="small" /> : "Save to Product"}
                   </Button>
                 </BlockStack>
               </Card>
             )}
-          </Layout.Section>
-
-          {/* RIGHT SIDEBAR */}
-          <Layout.Section secondary>
-            <Card title="How it works" sectioned>
-              <p>
-                This app analyzes product <strong>metafields</strong> & title to
-                generate high-impact copy.
-              </p>
-              <ul>
-                <li>Select a product</li>
-                <li>Choose vibe</li>
-                <li>Generate & publish</li>
-              </ul>
-            </Card>
-
-            <Text
-              alignment="center"
-              variant="bodySm"
-              tone="subdued"
-              style={{ marginTop: "1rem" }}
-            >
-              v1.3.0-simulation
-            </Text>
           </Layout.Section>
         </Layout>
 

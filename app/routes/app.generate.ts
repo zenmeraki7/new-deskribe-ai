@@ -4,109 +4,137 @@ import { authenticate } from "../shopify.server";
 import { deepseek } from "../services/deepseek.server";
 import { addHistoryEntry } from "../services/history.server";
 
+// -----------------------------
+// Utility: Safe HTML Sanitizer
+// -----------------------------
+function sanitizeHtml(html: string) {
+  return html
+    .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, "")
+    .replace(/on\w+="[^"]*"/gi, "")
+    .replace(/javascript:/gi, "");
+}
+
+// -----------------------------
+// Utility: Sleep (rate limit control)
+// -----------------------------
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// -----------------------------
+// Fetch Product Helper
+// -----------------------------
+async function fetchProduct(admin: any, productId: string) {
+  const response = await admin.graphql(
+    `#graphql
+      query GetProduct($id: ID!) {
+        product(id: $id) {
+          id
+          title
+          description
+          descriptionHtml
+          metafields(first: 50) {
+            edges {
+              node {
+                key
+                value
+                namespace
+              }
+            }
+          }
+        }
+      }
+    `,
+    { variables: { id: productId } }
+  );
+
+  const data = await response.json();
+  return data.data?.product;
+}
+
+// -----------------------------
+// Update Product Helper
+// -----------------------------
+async function updateProduct(admin: any, productId: string, descriptionHtml: string) {
+  const response = await admin.graphql(
+    `#graphql
+      mutation UpdateProduct($input: ProductInput!) {
+        productUpdate(input: $input) {
+          product { id }
+          userErrors {
+            field
+            message
+          }
+        }
+      }
+    `,
+    {
+      variables: {
+        input: {
+          id: productId,
+          descriptionHtml,
+        },
+      },
+    }
+  );
+
+  const data = await response.json();
+  const errors = data.data?.productUpdate?.userErrors ?? [];
+
+  if (errors.length > 0) {
+    throw new Error(errors[0].message);
+  }
+
+  return true;
+}
+
+// =============================
+// ACTION
+// =============================
 export async function action({ request }: ActionFunctionArgs) {
   const { admin, shop } = await authenticate.admin(request);
   const formData = await request.formData();
   const actionType = formData.get("actionType");
 
- if (actionType === "suggestKeywords") {
   try {
-    const productId = String(formData.get("productId"));
-    const vibe = String(formData.get("vibe") || "edgy");
+    // ==================================================
+    // 1️⃣ Suggest Keywords
+    // ==================================================
+    if (actionType === "suggestKeywords") {
+      const productId = String(formData.get("productId"));
+      const vibe = String(formData.get("vibe") || "edgy");
 
-    // Fetch product title
-    const response = await admin.graphql(
-      `#graphql
-        query GetProduct($id: ID!) {
-          product(id: $id) {
-            id
-            title
-          }
-        }
-      `,
-      { variables: { id: productId } }
-    );
+      const product = await fetchProduct(admin, productId);
+      if (!product) {
+        return json({ status: "error", message: "Product not found" }, { status: 404 });
+      }
 
-    const data = await response.json();
-    const product = data.data?.product;
+      const result = await deepseek.generateSEOKeywords({
+        title: product.title,
+        vibe,
+      });
 
-    if (!product) {
-      return json(
-        { status: "error", message: "Product not found" },
-        { status: 404 }
-      );
+      return json({
+        status: "suggested",
+        keywords: result.keywords,
+      });
     }
 
-    // 🔥 Call AI keyword generator
-    const result = await deepseek.generateSEOKeywords({
-      title: product.title,
-      vibe,
-    });
-
-    return json({
-      status: "suggested",
-      keywords: result.keywords,
-    });
-
-  } catch (error) {
-    console.error("Suggest error:", error);
-    return json(
-      {
-        status: "error",
-        message:
-          error instanceof Error
-            ? error.message
-            : "Failed to suggest keywords",
-      },
-      { status: 500 }
-    );
-  }
-}
-
-
-  if (actionType === "generate") {
-    try {
+    // ==================================================
+    // 2️⃣ Single Generate
+    // ==================================================
+    if (actionType === "generate") {
       const productId = String(formData.get("productId"));
       const vibe = String(formData.get("vibe") || "edgy");
       const format = String(formData.get("format") || "paragraph");
       const keywords = String(formData.get("keywords") || "");
       const includeSocials = formData.get("includeSocials") === "true";
 
-      // Fetch product details with metafields
-      const response = await admin.graphql(
-        `#graphql
-          query GetProduct($id: ID!) {
-            product(id: $id) {
-              id
-              title
-              description
-              descriptionHtml
-              metafields(first: 50) {
-                edges {
-                  node {
-                    key
-                    value
-                    namespace
-                  }
-                }
-              }
-            }
-          }
-        `,
-        { variables: { id: productId } }
-      );
-
-      const data = await response.json();
-      const product = data.data?.product;
-
+      const product = await fetchProduct(admin, productId);
       if (!product) {
-        return json(
-          { status: "error", message: "Product not found" },
-          { status: 404 }
-        );
+        return json({ status: "error", message: "Product not found" }, { status: 404 });
       }
 
-      // Generate content using DeepSeek AI
       const result = await deepseek.generateDescription({
         product,
         vibe,
@@ -116,11 +144,12 @@ export async function action({ request }: ActionFunctionArgs) {
         shop,
       });
 
-      // Save to history
+      const safeHtml = sanitizeHtml(result.description);
+
       await addHistoryEntry({
         productId: product.id,
         productTitle: product.title,
-        description: result.description,
+        description: safeHtml,
         vibe,
         format,
         keywords,
@@ -131,80 +160,101 @@ export async function action({ request }: ActionFunctionArgs) {
       return json({
         status: "success",
         data: {
-          description: result.description,
+          description: safeHtml,
           socials: result.socials,
         },
       });
-    } catch (error) {
-      console.error("Generation error:", error);
-      return json(
-        {
-          status: "error",
-          message: error instanceof Error ? error.message : "Failed to generate content",
-        },
-        { status: 500 }
-      );
     }
-  }
 
-  if (actionType === "save") {
-    try {
+    // ==================================================
+    // 3️⃣ Save Only
+    // ==================================================
+    if (actionType === "save") {
       const productId = String(formData.get("productId"));
-      const descriptionHtml = String(formData.get("descriptionHtml"));
+      const descriptionHtml = sanitizeHtml(String(formData.get("descriptionHtml")));
 
-      const response = await admin.graphql(
-        `#graphql
-          mutation UpdateProduct($input: ProductInput!) {
-            productUpdate(input: $input) {
-              product {
-                id
-                descriptionHtml
-              }
-              userErrors {
-                field
-                message
-              }
-            }
-          }
-        `,
-        {
-          variables: {
-            input: {
-              id: productId,
-              descriptionHtml: descriptionHtml,
-            },
-          },
-        }
-      );
-
-      const responseJson = await response.json();
-      const userErrors = responseJson.data?.productUpdate?.userErrors ?? [];
-
-      if (userErrors.length > 0) {
-        return json(
-          {
-            status: "error",
-            message: userErrors[0].message,
-          },
-          { status: 400 }
-        );
-      }
+      await updateProduct(admin, productId, descriptionHtml);
 
       return json({
         status: "saved",
         message: "Product updated successfully",
       });
-    } catch (error) {
-      console.error("Save error:", error);
-      return json(
-        { status: "error", message: "Failed to save product" },
-        { status: 500 }
-      );
     }
-  }
 
-  return json(
-    { status: "error", message: "Invalid action" },
-    { status: 400 }
-  );
+    // ==================================================
+    // 4️⃣ TRUE Bulk Generate (Server-Side Loop)
+    // ==================================================
+    if (actionType === "bulkGenerate") {
+      const productIds = JSON.parse(String(formData.get("productIds") || "[]"));
+
+      const vibe = String(formData.get("vibe") || "edgy");
+      const format = String(formData.get("format") || "paragraph");
+      const keywords = String(formData.get("keywords") || "");
+      const includeSocials = formData.get("includeSocials") === "true";
+
+      let success = 0;
+      let failed = 0;
+
+      for (const productId of productIds) {
+        try {
+          const product = await fetchProduct(admin, productId);
+          if (!product) {
+            failed++;
+            continue;
+          }
+
+          const result = await deepseek.generateDescription({
+            product,
+            vibe,
+            format,
+            keywords,
+            includeSocials,
+            shop,
+          });
+
+          const safeHtml = sanitizeHtml(result.description);
+
+          await updateProduct(admin, productId, safeHtml);
+
+          await addHistoryEntry({
+            productId: product.id,
+            productTitle: product.title,
+            description: safeHtml,
+            vibe,
+            format,
+            keywords,
+            includeSocials,
+          });
+
+          success++;
+
+          // Rate limit safety
+          await sleep(300);
+        } catch (err) {
+          console.error("Bulk item failed:", err);
+          failed++;
+        }
+      }
+
+      return json({
+        status: "bulk_complete",
+        success,
+        failed,
+        total: productIds.length,
+      });
+    }
+
+    return json({ status: "error", message: "Invalid action" }, { status: 400 });
+
+  } catch (error) {
+    console.error("Action error:", error);
+
+    return json(
+      {
+        status: "error",
+        message: error instanceof Error ? error.message : "Something went wrong",
+      },
+      { status: 500 }
+    );
+  }
 }
