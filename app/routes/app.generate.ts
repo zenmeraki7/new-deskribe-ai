@@ -33,6 +33,9 @@ async function fetchProduct(admin: any, productId: string) {
           title
           description
           descriptionHtml
+          productType
+          vendor
+          tags
           metafields(first: 50) {
             edges {
               node {
@@ -94,7 +97,8 @@ async function updateProduct(admin: any, productId: string, descriptionHtml: str
 export async function action({ request }: ActionFunctionArgs) {
   const { admin, shop } = await authenticate.admin(request);
   const formData = await request.formData();
-  const actionType = formData.get("actionType");
+  const actionType = String(formData.get("actionType") || "");
+
 
   try {
     // ==================================================
@@ -109,14 +113,17 @@ export async function action({ request }: ActionFunctionArgs) {
         return json({ status: "error", message: "Product not found" }, { status: 404 });
       }
 
-      const result = await deepseek.generateSEOKeywords({
-        title: product.title,
+      const keywords = await deepseek.generateSEOKeywords({
+        product: {
+          title: product.title,
+          description: product.description || "",
+        },
         vibe,
       });
 
       return json({
         status: "suggested",
-        keywords: result.keywords,
+        keywords: keywords,
       });
     }
 
@@ -125,7 +132,7 @@ export async function action({ request }: ActionFunctionArgs) {
     // ==================================================
     if (actionType === "generate") {
       const productId = String(formData.get("productId"));
-      const vibe = String(formData.get("vibe") || "edgy");
+      const vibe = String(formData.get("vibe") || "casual");
       const format = String(formData.get("format") || "paragraph");
       const keywords = String(formData.get("keywords") || "");
       const includeSocials = formData.get("includeSocials") === "true";
@@ -136,7 +143,13 @@ export async function action({ request }: ActionFunctionArgs) {
       }
 
       const result = await deepseek.generateDescription({
-        product,
+        product: {
+          title: product.title,
+          description: product.description || "",
+          productType: product.productType || "",
+          vendor: product.vendor || "",
+          tags: product.tags || [],
+        },
         vibe,
         format,
         keywords,
@@ -187,24 +200,32 @@ export async function action({ request }: ActionFunctionArgs) {
     if (actionType === "bulkGenerate") {
       const productIds = JSON.parse(String(formData.get("productIds") || "[]"));
 
-      const vibe = String(formData.get("vibe") || "edgy");
+      const vibe = String(formData.get("vibe") || "casual");
       const format = String(formData.get("format") || "paragraph");
       const keywords = String(formData.get("keywords") || "");
       const includeSocials = formData.get("includeSocials") === "true";
 
       let success = 0;
       let failed = 0;
+      const results = [];
 
       for (const productId of productIds) {
         try {
           const product = await fetchProduct(admin, productId);
           if (!product) {
             failed++;
+            results.push({ productId, status: "failed", reason: "Product not found" });
             continue;
           }
 
           const result = await deepseek.generateDescription({
-            product,
+            product: {
+              title: product.title,
+              description: product.description || "",
+              productType: product.productType || "",
+              vendor: product.vendor || "",
+              tags: product.tags || [],
+            },
             vibe,
             format,
             keywords,
@@ -227,12 +248,18 @@ export async function action({ request }: ActionFunctionArgs) {
           });
 
           success++;
+          results.push({ productId, status: "success", title: product.title });
 
           // Rate limit safety
-          await sleep(300);
+          await sleep(500);
         } catch (err) {
           console.error("Bulk item failed:", err);
           failed++;
+          results.push({ 
+            productId, 
+            status: "failed", 
+            reason: err instanceof Error ? err.message : "Unknown error" 
+          });
         }
       }
 
@@ -241,6 +268,7 @@ export async function action({ request }: ActionFunctionArgs) {
         success,
         failed,
         total: productIds.length,
+        results,
       });
     }
 

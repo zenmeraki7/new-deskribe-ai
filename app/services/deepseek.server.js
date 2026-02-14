@@ -1,337 +1,453 @@
-// app/services/deepseek.server.js
 import crypto from "crypto";
 import Redis from "ioredis";
-import { sanitizeHTML } from "../utils/sanitize.server"; 
+import { z } from "zod";
+import { sanitizeHTML } from "../utils/sanitize.server";
 
-/**
- * DeepSeekService
- * - Uses DeepSeek HTTP endpoint (OpenAI-compatible).
- * - Optional Redis caching (lazy connect).
- * - Per-shop rate limits and monthly usage tracking.
- */
+/* ===========================
+   CONFIG
+=========================== */
 
 const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
-const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
-const DEEPSEEK_BASE = process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com";
-const RATE_LIMIT_PER_MIN = parseInt(process.env.MAX_REQUESTS_PER_MINUTE ?? "30", 10);
-const MONTHLY_LIMIT = parseInt(process.env.FREE_TIER_LIMIT ?? "150", 10);
+const API_KEY = process.env.DEEPSEEK_API_KEY;
+const BASE_URL = process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com";
+const MODEL = process.env.DEEPSEEK_MODEL ?? "deepseek-chat";
+
+const RATE_LIMIT_PER_MIN = Number(process.env.MAX_REQUESTS_PER_MINUTE ?? 30);
+const MONTHLY_LIMIT = Number(process.env.FREE_TIER_LIMIT ?? 150);
+
+if (!API_KEY) {
+  console.warn("⚠️ DeepSeek API key missing.");
+}
+
+/* ===========================
+   REDIS (Lazy + Safe)
+=========================== */
 
 const redis = new Redis(REDIS_URL, {
-  maxRetriesPerRequest: 1,
-  enableReadyCheck: true,
   lazyConnect: true,
+  maxRetriesPerRequest: 1,
   retryStrategy: (times) => (times > 5 ? null : Math.min(times * 200, 2000)),
 });
 
-// Do NOT call redis.connect() during module load — keep optional.
-// We'll attempt to connect lazily when we first need Redis.
+/* ===========================
+   UTILITIES
+=========================== */
 
-const sha1 = (s) => crypto.createHash("sha1").update(String(s)).digest("hex").slice(0, 12);
-const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+const sha1 = (s) =>
+  crypto.createHash("sha1").update(String(s)).digest("hex").slice(0, 16);
 
-function normalizeMetafields(product) {
-  try {
-    if (!product) return [];
-    if (Array.isArray(product.metafields)) return product.metafields;
-    const edges = product.metafields?.edges;
-    if (Array.isArray(edges)) {
-      return edges.map((e) => {
-        const node = e.node ?? e;
-        if (typeof node.value === "string") return `${node.key}: ${node.value}`;
-        return `${node.key}: ${JSON.stringify(node.value)}`;
-      });
-    }
-  } catch (e) {
-    // ignore
-  }
-  return [];
-}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function buildCacheKey({ productId, vibe, format, keywords, includeSocials }) {
-  const small = sha1(`${productId}|${vibe}|${format}|${keywords ?? ""}|${includeSocials}`);
-  return `deepseek:cache:${small}`;
+function cacheKey(payload) {
+  return `deepseek:v1:${sha1(JSON.stringify(payload))}`;
 }
 
 function usageKey(shop) {
   return `deepseek:usage:${shop}:${new Date().toISOString().slice(0, 7)}`;
 }
 
-function rateLimitKey(shop) {
+function rateKey(shop) {
   return `deepseek:ratelimit:${shop}`;
 }
 
-// Extract JSON safely from AI text: prefer strict JSON block, fallback to naive parse
-function extractJsonFromText(text) {
-  if (!text || typeof text !== "string") throw new Error("Empty response");
-  const cleaned = text.replace(/```(json)?/g, "").trim();
+/* ===========================
+   SCHEMAS
+=========================== */
 
-  // Direct JSON first
-  try {
-    return JSON.parse(cleaned);
-  } catch {}
+const DescriptionSchema = z.object({
+  description: z.string().min(20),
+  socials: z
+    .object({
+      twitter: z.string(),
+      instagram: z.string(),
+    })
+    .nullable(),
+});
 
-  // Greedy find balanced {...} block (stop after first reasonable block to avoid O(n^2))
-  const start = cleaned.indexOf("{");
-  if (start === -1) throw new Error("No JSON object found in AI response");
-
-  let depth = 0;
-  for (let i = start; i < cleaned.length; i++) {
-    const ch = cleaned[i];
-    if (ch === "{") depth++;
-    else if (ch === "}") {
-      depth--;
-      if (depth === 0) {
-        const candidate = cleaned.slice(start, i + 1);
-        try {
-          return JSON.parse(candidate);
-        } catch (e) {
-          // try to continue searching if parse fails
-        }
-      }
-    }
-  }
-
-  // final fallback: regex match
-  const match = cleaned.match(/\{[\s\S]*\}/);
-  if (match) {
-    try {
-      return JSON.parse(match[0]);
-    } catch {}
-  }
-
-  throw new Error("Could not extract valid JSON from AI response");
-}
+/* ===========================
+   SERVICE
+=========================== */
 
 export class DeepSeekService {
-  constructor(opts = {}) {
-    this.baseUrl = opts.baseUrl ?? DEEPSEEK_BASE;
-    this.apiKey = opts.apiKey ?? DEEPSEEK_API_KEY;
-    this.model = opts.model ?? "deepseek-chat";
-    this.maxRetries = opts.maxRetries ?? 3;
-    this.timeout = opts.timeout ?? 25_000;
+  constructor() {
+    this.maxRetries = 3;
+    this.timeout = 20000;
   }
 
-  async _ensureRedis() {
+  /* ===========================
+     REDIS SAFE CONNECT
+  =========================== */
+
+  async ensureRedis() {
     if (redis.status === "ready") return true;
     try {
       await redis.connect();
       return true;
-    } catch (err) {
-      console.warn("Redis unavailable:", err?.message ?? err);
+    } catch {
       return false;
     }
   }
 
-  async checkRateLimit(shop) {
-    if (!shop) return { allowed: true, remaining: RATE_LIMIT_PER_MIN };
-    if (!(await this._ensureRedis())) return { allowed: true, remaining: RATE_LIMIT_PER_MIN };
+  /* ===========================
+     RATE LIMIT
+  =========================== */
 
-    try {
-      const key = rateLimitKey(shop);
-      const count = await redis.incr(key);
-      if (count === 1) await redis.expire(key, 60);
-      if (count > RATE_LIMIT_PER_MIN) return { allowed: false, remaining: 0 };
-      return { allowed: true, remaining: RATE_LIMIT_PER_MIN - count };
-    } catch (err) {
-      console.warn("Rate limit check failed:", err?.message ?? err);
-      return { allowed: true, remaining: RATE_LIMIT_PER_MIN };
+  async checkRateLimit(shop) {
+    if (!shop) return;
+
+    if (!(await this.ensureRedis())) return;
+
+    const key = rateKey(shop);
+    const count = await redis.incr(key);
+    if (count === 1) await redis.expire(key, 60);
+
+    if (count > RATE_LIMIT_PER_MIN) {
+      throw new Error("Rate limit exceeded. Please wait.");
     }
   }
 
   async checkMonthlyLimit(shop) {
-    if (!shop) return { allowed: true, used: 0, limit: MONTHLY_LIMIT };
-    if (!(await this._ensureRedis())) return { allowed: true, used: 0, limit: MONTHLY_LIMIT };
-
-    try {
-      const key = usageKey(shop);
-      const used = parseInt((await redis.get(key)) ?? "0", 10);
-      if (used >= MONTHLY_LIMIT) return { allowed: false, used, limit: MONTHLY_LIMIT };
-      return { allowed: true, used, limit: MONTHLY_LIMIT };
-    } catch (err) {
-      console.warn("Monthly usage check failed:", err?.message ?? err);
-      return { allowed: true, used: 0, limit: MONTHLY_LIMIT };
-    }
-  }
-
-  async incrementUsage(shop, increment = 1) {
     if (!shop) return;
-    if (!(await this._ensureRedis())) return;
-    try {
-      const key = usageKey(shop);
-      await redis.incrby(key, increment);
-      const now = new Date();
-      const next = new Date(now.getFullYear(), now.getMonth() + 2, 1);
-      const ttl = Math.floor((next.getTime() - now.getTime()) / 1000);
-      await redis.expire(key, ttl);
-    } catch (err) {
-      console.warn("incrementUsage failed:", err?.message ?? err);
+
+    if (!(await this.ensureRedis())) return;
+
+    const key = usageKey(shop);
+    const used = Number((await redis.get(key)) ?? 0);
+
+    if (used >= MONTHLY_LIMIT) {
+      throw new Error(`Monthly limit reached (${used}/${MONTHLY_LIMIT})`);
     }
   }
 
-async generateSEOKeywords({ product, vibe, shop }) {
-  const prompt = `
-You are an SEO expert for Shopify stores.
+  async incrementUsage(shop) {
+    if (!shop) return;
+    if (!(await this.ensureRedis())) return;
 
-Suggest 8 high-intent SEO keywords for this product.
-Tone style: ${vibe}
+    const key = usageKey(shop);
+    await redis.incr(key);
 
-Product title: ${product.title}
-Product description: ${product.description}
+    const now = new Date();
+    const nextMonth = new Date(now.getFullYear(), now.getMonth() + 2, 1);
+    const ttl = Math.floor((nextMonth - now) / 1000);
 
-Return ONLY a comma separated list.
+    await redis.expire(key, ttl);
+  }
+
+  /* ===========================
+     PUBLIC METHODS
+  =========================== */
+
+  async generateDescription({
+    product,
+    vibe = "casual",
+    format = "paragraph",
+    keywords = "",
+    includeSocials = false,
+    shop,
+  }) {
+    // Validate input
+    if (!product || !product.title) {
+      throw new Error("Product data is required with at least a title");
+    }
+
+    await this.checkRateLimit(shop);
+    await this.checkMonthlyLimit(shop);
+
+    // Enhance product object with additional fields if available
+    const enhancedProduct = {
+      ...product,
+      productType: product.productType || "",
+      vendor: product.vendor || "",
+      tags: product.tags || [],
+    };
+
+    const prompt = this.buildPrompt({
+      product: enhancedProduct,
+      vibe,
+      format,
+      keywords,
+      includeSocials,
+    });
+
+    const key = cacheKey({ prompt });
+
+    if (await this.ensureRedis()) {
+      const cached = await redis.get(key);
+      if (cached) return JSON.parse(cached);
+    }
+
+    const raw = await this.callJSONModel(prompt);
+
+    const parsed = DescriptionSchema.parse(raw);
+
+    parsed.description = sanitizeHTML(parsed.description);
+
+    if (await this.ensureRedis()) {
+      await redis.setex(key, 86400, JSON.stringify(parsed));
+    }
+
+    await this.incrementUsage(shop);
+
+    return parsed;
+  }
+
+  async generateSEOKeywords({ product, vibe }) {
+    // Validate input
+    if (!product) {
+      throw new Error("Product data is required");
+    }
+
+    const productTitle = product?.title || "Unknown Product";
+    const productDesc = product?.description || "";
+    
+    const prompt = `
+You are an SEO expert.
+
+Suggest 8 high-intent Shopify SEO keywords.
+
+Tone: ${vibe}
+Title: ${productTitle}
+Description: ${productDesc}
+
+Return ONLY comma-separated keywords.
 `;
 
-  const result = await this._callDeepSeekHTTP(prompt);
+    const text = await this.callTextModel(prompt);
 
-  const text = result?.description || "";
-
-  return text
-    .split(",")
-    .map((k) => k.trim())
-    .filter(Boolean);
-}
-
-
-
-
-  async generateDescription({ product, vibe = "edgy", format = "paragraph", keywords = "", includeSocials = false, shop = null } = {}) {
-    const rl = await this.checkRateLimit(shop);
-    if (!rl.allowed) throw new Error("Rate limit exceeded. Try again shortly.");
-
-    const ml = await this.checkMonthlyLimit(shop);
-    if (!ml.allowed) throw new Error(`Monthly limit reached: ${ml.used}/${ml.limit}`);
-
-    const cacheKey = buildCacheKey({ productId: product?.id ?? "unknown", vibe, format, keywords, includeSocials });
-    const haveRedis = await this._ensureRedis();
-    if (haveRedis) {
-      try {
-        const cached = await redis.get(cacheKey);
-        if (cached) {
-          try {
-            return JSON.parse(cached);
-          } catch {}
-        }
-      } catch (e) {
-        // ignore cache errors
-      }
-    }
-
-    const prompt = this.buildPrompt({ product, vibe, format, keywords, includeSocials });
-
-    let lastErr = null;
-    for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
-      try {
-        const result = await this._callDeepSeekHTTP(prompt);
-
-        if (result?.description) result.description = sanitizeHTML(String(result.description));
-        if (haveRedis) {
-          try {
-            await redis.setex(cacheKey, 60 * 60 * 24, JSON.stringify(result));
-          } catch (e) {}
-        }
-        if (shop) await this.incrementUsage(shop);
-        return result;
-      } catch (err) {
-        lastErr = err;
-        if (attempt < this.maxRetries) await sleep(500 * attempt);
-      }
-    }
-
-    throw new Error(`Generation failed: ${lastErr?.message ?? "unknown error"}`);
+    return text
+      .split(",")
+      .map((k) => k.trim())
+      .filter(Boolean)
+      .slice(0, 8);
   }
 
-  async _callDeepSeekHTTP(prompt) {
-    if (!this.apiKey) throw new Error("DeepSeek API key is not configured");
+  /* ===========================
+     MODEL CALLS
+  =========================== */
+
+  async callJSONModel(prompt) {
+    try {
+      const response = await this._fetch(prompt);
+
+      const content =
+        response?.choices?.[0]?.message?.content ??
+        response?.choices?.[0]?.text ??
+        "";
+
+      try {
+        return JSON.parse(content);
+      } catch (parseError) {
+        console.error("Failed to parse JSON response:", content);
+        // Fallback to a simple description if JSON parsing fails
+        return {
+          description: content.replace(/[{}"]/g, '').trim(),
+          socials: null
+        };
+      }
+    } catch (error) {
+      console.error("API call failed:", error);
+      throw new Error("Failed to generate description. Please try again.");
+    }
+  }
+
+  async callTextModel(prompt) {
+    try {
+      const response = await this._fetch(prompt);
+
+      return (
+        response?.choices?.[0]?.message?.content ??
+        response?.choices?.[0]?.text ??
+        ""
+      );
+    } catch (error) {
+      console.error("API call failed:", error);
+      throw new Error("Failed to generate keywords. Please try again.");
+    }
+  }
+
+  async _fetch(prompt, temperature = 0.7) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+    const timeout = setTimeout(() => controller.abort(), this.timeout);
 
     try {
-      const res = await fetch(`${this.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+      const res = await fetch(`${BASE_URL}/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${this.apiKey}`,
+          Authorization: `Bearer ${API_KEY}`,
         },
         body: JSON.stringify({
-          model: this.model,
+          model: MODEL,
+          temperature: temperature,
+          max_tokens: 1000,
           messages: [
-            { role: "system", content: "You are an expert e-commerce copywriter. Return valid JSON only." },
+            {
+              role: "system",
+              content:
+                "You are an expert e-commerce copywriter. Create compelling product descriptions that convert browsers into buyers.",
+            },
             { role: "user", content: prompt },
           ],
-          temperature: 0.7,
-          max_tokens: 1500,
         }),
         signal: controller.signal,
       });
 
-      clearTimeout(timeoutId);
-
       if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        throw new Error(`DeepSeek HTTP ${res.status}: ${txt}`);
+        const errorText = await res.text();
+        throw new Error(`DeepSeek HTTP ${res.status}: ${errorText}`);
       }
 
-      const payload = await res.json().catch(async () => {
-        const txt = await res.text();
-        return { rawText: txt };
-      });
-
-      let aiText = null;
-      if (payload?.choices?.[0]?.message?.content) aiText = payload.choices[0].message.content;
-      else if (payload?.choices?.[0]?.text) aiText = payload.choices[0].text;
-      else if (payload?.rawText) aiText = payload.rawText;
-      else aiText = JSON.stringify(payload);
-
-      const parsed = extractJsonFromText(String(aiText));
-
-      if (!parsed || typeof parsed !== "object") throw new Error("AI returned invalid JSON object");
-      if (!("description" in parsed)) parsed.description = "";
-      if (!("socials" in parsed)) parsed.socials = null;
-
-      return parsed;
-    } catch (err) {
-      if (err?.name === "AbortError") throw new Error("DeepSeek request timed out");
-      throw err;
+      return await res.json();
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        throw new Error('Request timeout - AI service took too long to respond');
+      }
+      throw error;
     } finally {
-      clearTimeout(timeoutId);
+      clearTimeout(timeout);
     }
   }
 
-  buildPrompt({ product, vibe, format, keywords, includeSocials } = {}) {
-    const title = product?.title ?? "Untitled";
-    const oldDescription = (product?.description ?? "").replace(/\n/g, " ");
-    const metafieldsArray = normalizeMetafields(product);
-    const metafields = metafieldsArray.length ? metafieldsArray.join(", ") : "None";
+  /* ===========================
+     PROMPT ENGINE
+  =========================== */
 
+  buildPrompt({ product, vibe, format, keywords, includeSocials }) {
+    // Enhanced vibe mapping with detailed instructions
     const vibeMap = {
-      edgy: "Bold. Punchy. Minimal fluff.",
-      minimalist: "Ultra concise. Functional. No adjectives.",
-      roast: "Real Talk. Brutally honest. Persuasive, not rude.",
+      edgy: `Tone: Bold, punchy, rebellious, high-conversion
+Style: Use powerful action words, create urgency, appeal to trendsetters
+Example words: "rebel", "stand out", "edgy", "bold", "unapologetic"`,
+      
+      minimalist: `Tone: Clean, direct, functional, sophisticated
+Style: Focus on quality, simplicity, timeless appeal, use short sentences
+Example words: "essential", "timeless", "pure", "effortless", "curated"`,
+      
+      casual: `Tone: Friendly, approachable, warm, conversational
+Style: Write like a friend recommending the product, use "you" and "your"
+Example words: "comfy", "everyday", "easy", "perfect for", "love"`,
+      
+      luxury: `Tone: Sophisticated, premium, exclusive, aspirational
+Style: Emphasize quality, craftsmanship, exclusivity, use elegant language
+Example words: "exquisite", "premium", "artisan", "luxurious", "exceptional"`,
+      
+      professional: `Tone: Authoritative, trustworthy, informative, polished
+Style: Focus on benefits, specifications, professional value
+Example words: "professional", "high-performance", "durable", "reliable"`,
+      
+      roast: `Tone: Playfully blunt, humorous, persuasive, relatable
+Style: Use wit and humor, poke gentle fun at common problems
+Example words: "let's be real", "truth is", "admit it", "game changer"`
     };
 
+    // Enhanced format mapping with specific HTML structure
     const formatMap = {
-      paragraph: "Return HTML paragraphs using <p> tags (2-3 short paragraphs).",
-      bullets: "Return an unordered list using <ul><li> ... </li></ul> with 4-6 concise bullets.",
+      paragraph: `Format: Write 2-3 engaging paragraphs using <p> tags
+Structure:
+- First paragraph: Hook + main benefit
+- Second paragraph: Features/details
+- Third paragraph: Call to action or closing thought`,
+      
+      bullets: `Format: Use bullet points with <ul> and <li> tags
+Structure:
+- Opening sentence in <p> tag
+- 4-6 key benefits as bullet points
+- Closing sentence in <p> tag with call to action`,
+      
+      short: `Format: Concise, punchy description
+Structure:
+- One powerful <p> tag with 2-3 sentences
+- Focus on unique selling proposition
+- Strong call to action`
     };
 
-    const instructions = [
-      `Title: ${title}`,
-      `Meta: ${metafields}`,
-      `Old Description: ${oldDescription || "None"}`,
-      `Tone: ${vibeMap[vibe] ?? vibeMap.edgy}`,
-      `Format: ${formatMap[format] ?? formatMap.paragraph}`,
-      keywords ? `SEO Keywords: ${keywords}` : "",
-      includeSocials ? "Also generate a 'socials' object with keys 'twitter' and 'instagram'." : "",
-      "",
-      "RETURN: Only valid JSON object with exactly these keys:",
-      `{
-  "description": "<p>HTML product description here...</p>",
-  "socials": { "twitter": "...", "instagram": "..." }  // or null
-}`,
-      "Do NOT include Markdown fenced code blocks. Do NOT include any explanation text. Just return JSON.",
-    ].filter(Boolean).join("\n");
+    // Extract product details safely
+    const productTitle = product.title || "Unknown Product";
+    const productDesc = product.description || "";
+    const productType = product.productType || "";
+    const vendor = product.vendor || "";
+    const tags = Array.isArray(product.tags) ? product.tags.join(", ") : "";
 
-    return instructions;
+    return `
+You are an expert e-commerce copywriter specializing in Shopify product descriptions.
+
+**PRODUCT DETAILS:**
+Title: ${productTitle}
+Type: ${productType}
+Vendor/Brand: ${vendor}
+Tags: ${tags}
+Current Description: ${productDesc || "No existing description"}
+
+**WRITING GUIDELINES:**
+${vibeMap[vibe] || vibeMap.casual}
+
+${formatMap[format] || formatMap.paragraph}
+
+${keywords ? `**SEO KEYWORDS TO INCLUDE:** ${keywords}` : ''}
+
+**REQUIREMENTS:**
+- Write compelling, conversion-focused copy
+- Highlight benefits, not just features
+- Use natural language that resonates with the target audience
+- Include relevant emojis sparingly (max 2-3) if appropriate for the vibe
+- Make it scannable and easy to read
+- Focus on what makes this product special
+
+${includeSocials ? `**SOCIAL MEDIA POSTS:**
+- Instagram caption: Engaging, visual-focused, with relevant hashtags
+- Twitter/X post: Concise, punchy, click-worthy` : ''}
+
+Return ONLY valid JSON in this exact format:
+{
+  "description": "<p>Your engaging opening paragraph here...</p><p>More details and benefits here...</p>",
+  ${includeSocials ? 
+    '"socials": { "instagram": "Your Instagram caption with emojis and hashtags", "twitter": "Your Twitter/X post (max 280 chars)" }' : 
+    '"socials": null'
+  }
+}
+
+No explanations, no markdown, no backticks. Return ONLY the JSON object.
+`;
+  }
+
+  /* ===========================
+     UTILITY METHODS
+  =========================== */
+
+  detectProductCategory(title, type, tags) {
+    const categories = {
+      clothing: ['shirt', 'pant', 'dress', 'jacket', 'jeans', 'hoodie', 'sweater', 'skirt', 'blouse', 't-shirt'],
+      jewelry: ['necklace', 'ring', 'bracelet', 'earring', 'pendant', 'chain', 'bangle'],
+      home: ['furniture', 'decor', 'pillow', 'blanket', 'lamp', 'rug', 'curtain', 'vase'],
+      beauty: ['makeup', 'skincare', 'cream', 'lotion', 'serum', 'lipstick', 'foundation', 'mask'],
+      electronics: ['phone', 'laptop', 'tablet', 'charger', 'headphone', 'speaker', 'cable'],
+      accessories: ['bag', 'wallet', 'belt', 'hat', 'scarf', 'glove', 'sunglass']
+    };
+    
+    const text = `${title} ${type} ${tags}`.toLowerCase();
+    
+    for (const [category, keywords] of Object.entries(categories)) {
+      if (keywords.some(keyword => text.includes(keyword))) {
+        return category;
+      }
+    }
+    return 'general';
+  }
+
+  validateDescription(description, product) {
+    // Check if description mentions the product title or key attributes
+    const titleWords = product.title.toLowerCase().split(' ');
+    const descLower = description.toLowerCase();
+    
+    const mentionsProduct = titleWords.some(word => 
+      word.length > 3 && descLower.includes(word)
+    );
+    
+    if (!mentionsProduct) {
+      console.warn("⚠️ Generated description doesn't mention product title");
+    }
+    
+    return mentionsProduct;
   }
 }
 
