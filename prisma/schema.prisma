@@ -43,3 +43,35 @@ model History {
   socials        Json?
   createdAt      DateTime @default(now())
 }
+
+model GenerationJob {
+  id             String   @id @default(uuid())
+  shopDomain     String
+  productId      String
+  productTitle   String
+  status         String
+  inputHash      String
+
+  vibe           String
+  format         String
+  keywords       String
+  includeSocials Boolean
+
+  progress       Int      @default(0)
+  costTokens     Int      @default(0)
+
+  bullJobId      String?
+  bulkId         String?
+  traceId        String?
+
+  result         Json?
+  errorMessage   String?
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([shopDomain])
+  @@index([productId])
+  @@index([status])
+}
+

@@ -120,7 +120,7 @@ export default function Dashboard() {
       navigate(`?search=${searchTerm}`);
     }, 400);
     return () => clearTimeout(timeout);
-  }, [searchTerm]);
+  }, [searchTerm, navigate]);
 
   // ==========================
   // FETCHER RESPONSE HANDLING
@@ -149,11 +149,11 @@ export default function Dashboard() {
       setIsBulkGenerating(false);
       const { success, failed, total } = fetcher.data;
       setToastMessage(
-        `Bulk generation complete! ✅ ${success} successful, ${failed > 0 ? `❌ ${failed} failed` : "no failures"}`
+        `Bulk generation complete! ✅ ${success} successful, ${failed > 0 ? `❌ ${failed} failed` : "no failures"}`,
       );
       setShowToast(true);
       setTimeout(() => setShowToast(false), 4000);
-      
+
       // Reset progress
       setBulkProgress({ total: 0, completed: 0 });
     }
@@ -272,7 +272,7 @@ export default function Dashboard() {
         keywords,
         includeSocials: String(includeSocials),
       },
-      { method: "post", action: "/generate" }
+      { method: "post", action: "/generate" },
     );
   };
 
@@ -347,7 +347,11 @@ export default function Dashboard() {
                         position={index}
                       >
                         <IndexTable.Cell>
-                          <Text variant="bodyMd" fontWeight="semibold" as="span">
+                          <Text
+                            variant="bodyMd"
+                            fontWeight="semibold"
+                            as="span"
+                          >
                             {p.title}
                           </Text>
                         </IndexTable.Cell>
@@ -391,8 +395,8 @@ export default function Dashboard() {
                       {selectedResources.length > 1 &&
                         selectedResources.length <= 10 && (
                           <Text as="p" variant="bodySm" tone="subdued">
-                            {selectedResources.length} products selected for bulk
-                            generation
+                            {selectedResources.length} products selected for
+                            bulk generation
                           </Text>
                         )}
                       {selectedResources.length > 10 && (
@@ -497,7 +501,9 @@ export default function Dashboard() {
                         icon={<Sparkles size={16} />}
                         size="large"
                       >
-                        {isGenerating ? "Generating..." : "Generate Description"}
+                        {isGenerating
+                          ? "Generating..."
+                          : "Generate Description"}
                       </Button>
 
                       <Button
@@ -553,7 +559,8 @@ export default function Dashboard() {
                           <div
                             style={{
                               height: "100%",
-                              background: "linear-gradient(90deg, #008060 0%, #00B894 50%, #008060 100%)",
+                              background:
+                                "linear-gradient(90deg, #008060 0%, #00B894 50%, #008060 100%)",
                               width: "40%",
                               borderRadius: "4px",
                               animation: "slide 1.5s ease-in-out infinite",
@@ -570,7 +577,8 @@ export default function Dashboard() {
                           </style>
                         </div>
                         <Text as="p" variant="bodySm" tone="subdued">
-                          Generating AI descriptions for all selected products. This may take a minute...
+                          Generating AI descriptions for all selected products.
+                          This may take a minute...
                         </Text>
                       </BlockStack>
                     </Box>
@@ -592,36 +600,43 @@ export default function Dashboard() {
                     </InlineStack>
                     <Divider />
                     <InlineStack gap="200" wrap>
-                      {suggestedKeywords.map((keyword: string, index: number) => (
-                        <div
-                          key={index}
-                          style={{
-                            padding: "8px 12px",
-                            background: "#F3F4F6",
-                            borderRadius: "6px",
-                            cursor: "pointer",
-                            transition: "all 0.2s ease",
-                          }}
-                          onClick={() => {
-                            const currentKeywords = keywords
-                              ? `${keywords}, ${keyword}`
-                              : keyword;
-                            setKeywords(currentKeywords);
-                          }}
-                          onMouseEnter={(e) => {
-                            e.currentTarget.style.background = "#E5E7EB";
-                            e.currentTarget.style.transform = "translateY(-1px)";
-                          }}
-                          onMouseLeave={(e) => {
-                            e.currentTarget.style.background = "#F3F4F6";
-                            e.currentTarget.style.transform = "translateY(0)";
-                          }}
-                        >
-                          <Text as="span" variant="bodySm" fontWeight="medium">
-                            {keyword}
-                          </Text>
-                        </div>
-                      ))}
+                      {suggestedKeywords.map(
+                        (keyword: string, index: number) => (
+                          <div
+                            key={index}
+                            style={{
+                              padding: "8px 12px",
+                              background: "#F3F4F6",
+                              borderRadius: "6px",
+                              cursor: "pointer",
+                              transition: "all 0.2s ease",
+                            }}
+                            onClick={() => {
+                              const currentKeywords = keywords
+                                ? `${keywords}, ${keyword}`
+                                : keyword;
+                              setKeywords(currentKeywords);
+                            }}
+                            onMouseEnter={(e) => {
+                              e.currentTarget.style.background = "#E5E7EB";
+                              e.currentTarget.style.transform =
+                                "translateY(-1px)";
+                            }}
+                            onMouseLeave={(e) => {
+                              e.currentTarget.style.background = "#F3F4F6";
+                              e.currentTarget.style.transform = "translateY(0)";
+                            }}
+                          >
+                            <Text
+                              as="span"
+                              variant="bodySm"
+                              fontWeight="medium"
+                            >
+                              {keyword}
+                            </Text>
+                          </div>
+                        ),
+                      )}
                     </InlineStack>
                     <Text as="p" variant="bodySm" tone="subdued">
                       Click any keyword to add it to your SEO keywords field
@@ -686,6 +701,36 @@ export default function Dashboard() {
                   </BlockStack>
                 </Card>
               )}
+              {generatedContent?.socials && (
+                <Card>
+                  <BlockStack gap="300">
+                    <Text variant="headingSm" fontWeight="semibold" as="h3">
+                      Social Media Captions
+                    </Text>
+                    <Divider />
+                    {generatedContent.socials.instagram && (
+                      <Box
+                        padding="300"
+                        background="bg-surface-secondary"
+                        borderRadius="200"
+                      >
+                        <Text fontWeight="semibold">Instagram</Text>
+                        <Text>{generatedContent.socials.instagram}</Text>
+                      </Box>
+                    )}
+                    {generatedContent.socials.facebook && (
+                      <Box
+                        padding="300"
+                        background="bg-surface-secondary"
+                        borderRadius="200"
+                      >
+                        <Text fontWeight="semibold">Facebook</Text>
+                        <Text>{generatedContent.socials.facebook}</Text>
+                      </Box>
+                    )}
+                  </BlockStack>
+                </Card>
+              )}
 
               {/* Empty State when nothing selected */}
               {!generatedContent &&
@@ -742,3 +787,4 @@ export default function Dashboard() {
     </Frame>
   );
 }
+
