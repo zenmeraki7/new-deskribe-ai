@@ -368,5 +368,49 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
     return json({ ok: true, retried: jobId });
   }
 
+  if (intent === "create") {
+  const productId = String(form.get("productId"));
+  const productTitle = String(form.get("productTitle"));
+  const vibe = String(form.get("vibe"));
+  const format = String(form.get("format"));
+  const keywords = String(form.get("keywords"));
+
+  const job = await db.generationJob.create({
+    data: {
+      shopDomain,
+      productId,
+      productTitle,
+      vibe,
+      format,
+      keywords,
+      status: "PENDING",
+      progress: 0,
+      traceId: crypto.randomUUID(),
+    },
+  });
+
+  const bullJobId = `${shopDomain}:${job.id}`;
+
+  await db.generationJob.update({
+    where: { id: job.id },
+    data: { bullJobId },
+  });
+
+  await generationQueue.add(
+    `generate:${productId}`,
+    {
+      jobId: job.id,
+      shopDomain,
+      productTitle,
+      vibe,
+      format,
+      keywords,
+    },
+    { jobId: bullJobId }
+  );
+
+  return json({ ok: true, jobId: job.id });
+}
+
   return json({ ok: false, error: "Invalid intent" }, { status: 400 });
 }

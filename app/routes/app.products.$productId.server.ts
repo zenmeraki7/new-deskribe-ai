@@ -247,13 +247,13 @@ export async function loader({ request, params }: LoaderFunctionArgs): Promise<R
   const rawId = params.productId ?? "";
   const productGid = normalizeProductGid(rawId);
   if (!productGid) {
-    return json({ ok: false, kind: "error", error: "Invalid product ID" }, { status: 400 });
-  }
+  throw new Response("Invalid product ID", { status: 400 });
+}
 
   const product = await fetchProductMeta(admin.graphql, productGid);
-  if (!product) {
-    return json({ ok: false, kind: "error", error: "Product not found" }, { status: 404 });
-  }
+if (!product) {
+  throw new Response("Product not found", { status: 404 });
+}
 
   const tenMinutesAgo = new Date(Date.now() - ACTIVE_JOB_LOOKBACK_MS);
 
@@ -351,8 +351,8 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
   const rawId = params.productId ?? "";
   const productGid = normalizeProductGid(rawId);
   if (!productGid) {
-    return json({ ok: false, kind: "error", error: "Invalid product ID" }, { status: 400 });
-  }
+  throw new Response("Invalid product ID", { status: 400 });
+}
 
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
@@ -471,9 +471,8 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     try {
       const product = await fetchProductMeta(admin.graphql, productGid);
       if (!product) {
-        return json({ ok: false, kind: "error", error: "Product not found", code: "NOT_FOUND" }, { status: 404 });
-      }
-
+  throw new Response("Product not found", { status: 404 });
+}
       // DeepSeek call should be strict JSON validated in ../lib/deepseek.server (contract requirement).
       const keywords = await suggestKeywords(
         String(product.title ?? ""),
