@@ -35,53 +35,81 @@ import {
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin } = await authenticate.admin(request);
 
-  const response = await admin.graphql(
-    `#graphql
-    query getProductsAndCollections {
-      products(first: 100) {
-        edges {
-          node {
-            id
-            title
-            status
-            totalInventory
-            productType
-          }
-        }
+  const url = new URL(request.url);
+  const search = url.searchParams.get("search") || "";
+
+  const cursor = url.searchParams.get("cursor");
+
+  const shopifyQuery = search ? `title:${search}` : "";
+
+const response = await admin.graphql(`
+  query getProducts($cursor: String, $query: String) {
+    products(first: 20, after: $cursor, query: $query) {
+      pageInfo {
+        hasNextPage
+        endCursor
       }
-      collections(first: 50) {
-        edges {
-          node {
-            id
-            title
+      edges {
+        node {
+          id
+          title
+          status
+          totalInventory
+          productType
+          collections(first: 10) {
+            edges {
+              node {
+                title
+              }
+            }
           }
         }
       }
     }
-  `
-  );
+    collections(first: 50) {
+      edges {
+        node {
+          id
+          title
+        }
+      }
+    }
+  }
+`, {
+  variables: {
+    cursor,
+    query: shopifyQuery,
+  },
+});
 
   const data = await response.json();
-  const products = data.data.products.edges.map((edge: any) => edge.node);
+
+  const productData = data.data.products;
+
+  const products = productData.edges.map((edge: any) => edge.node);
+
+  const collections = data.data.collections.edges.map(
+    (edge: any) => edge.node.title,
+  );
 
   const productTypes = [
     ...new Set(
       products
         .map((p: any) => p.productType)
-        .filter((type: string) => type && type.trim() !== "")
+        .filter((type: string) => type && type.trim() !== ""),
     ),
   ];
 
-  const collections = data.data.collections.edges.map(
-    (edge: any) => edge.node.title
-  );
-
   const totalProducts = products.length;
-  const activeProducts = products.filter((p: any) => p.status === "ACTIVE").length;
-  const draftProducts = products.filter((p: any) => p.status === "DRAFT").length;
+  const activeProducts = products.filter(
+    (p: any) => p.status === "ACTIVE",
+  ).length;
+  const draftProducts = products.filter(
+    (p: any) => p.status === "DRAFT",
+  ).length;
   const totalInventory = products.reduce(
     (acc: number, p: any) => acc + (p.totalInventory || 0),
-    0
+    0,
   );
 
   const generatedDescriptions = 24;
@@ -90,7 +118,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     products,
     productTypes,
     collections,
-    totalProducts,
+    pageInfo: productData.pageInfo,
+    totalProducts: products.length,
     activeProducts,
     draftProducts,
     totalInventory,
@@ -136,7 +165,8 @@ function StatCard({ label, value, icon, accent, iconColor }: StatCardProps) {
       onMouseEnter={(e) => {
         (e.currentTarget as HTMLDivElement).style.boxShadow =
           "0 4px 16px rgba(0,0,0,0.09)";
-        (e.currentTarget as HTMLDivElement).style.transform = "translateY(-1px)";
+        (e.currentTarget as HTMLDivElement).style.transform =
+          "translateY(-1px)";
       }}
       onMouseLeave={(e) => {
         (e.currentTarget as HTMLDivElement).style.boxShadow =
@@ -219,31 +249,36 @@ export default function ProductsDashboard() {
 
   // ── Filtering ──────────────────────────────────────────────────────────────
   const filteredProducts = products.filter((p: any) => {
-    if (
-      searchQuery &&
-      !p.title.toLowerCase().includes(searchQuery.toLowerCase())
-    )
-      return false;
+  if (
+    appliedFilters.statuses.length > 0 &&
+    !appliedFilters.statuses.includes(p.status)
+  )
+    return false;
 
-    if (
-      appliedFilters.statuses.length > 0 &&
-      !appliedFilters.statuses.includes(p.status)
-    )
-      return false;
+  if (appliedFilters.stock.length > 0) {
+    const cat = getStockCategory(p.totalInventory ?? 0);
+    if (!appliedFilters.stock.includes(cat)) return false;
+  }
 
-    if (appliedFilters.stock.length > 0) {
-      const cat = getStockCategory(p.totalInventory ?? 0);
-      if (!appliedFilters.stock.includes(cat)) return false;
-    }
+  if (
+    appliedFilters.productTypes?.length > 0 &&
+    !appliedFilters.productTypes.includes(p.productType)
+  )
+    return false;
 
-    if (
-      appliedFilters.productTypes?.length > 0 &&
-      !appliedFilters.productTypes.includes(p.productType)
-    )
-      return false;
+  if (appliedFilters.collections?.length > 0) {
+    const productCollectionTitles =
+      p.collections?.edges.map((e: any) => e.node.title) || [];
 
-    return true;
-  });
+    const matches = appliedFilters.collections.some((selected: string) =>
+      productCollectionTitles.includes(selected)
+    );
+
+    if (!matches) return false;
+  }
+
+  return true;
+});
 
   // True when any search or filter is active
   const isFiltered =
@@ -301,6 +336,7 @@ export default function ProductsDashboard() {
     setSearchQuery("");
     setAppliedFilters(EMPTY_FILTERS);
     setPendingFilters(EMPTY_FILTERS);
+    navigate("/app/products");
   };
 
   // ── Row markup ─────────────────────────────────────────────────────────────
@@ -325,8 +361,8 @@ export default function ProductsDashboard() {
             product.status === "ACTIVE"
               ? "success"
               : product.status === "DRAFT"
-              ? "info"
-              : "warning"
+                ? "info"
+                : "warning"
           }
         >
           {product.status.charAt(0) + product.status.slice(1).toLowerCase()}
@@ -351,7 +387,6 @@ export default function ProductsDashboard() {
       }}
     >
       <BlockStack gap="600">
-
         {/* ── Stat Cards ────────────────────────────────────────────────── */}
         <div style={{ display: "flex", gap: "14px", flexWrap: "wrap" }}>
           <StatCard
@@ -393,7 +428,6 @@ export default function ProductsDashboard() {
 
         {/* ── Products Table ─────────────────────────────────────────────── */}
         <Card padding="0">
-
           {/* Table header */}
           <Box paddingInline="400" paddingBlock="300">
             <InlineStack align="space-between" blockAlign="center">
@@ -430,7 +464,15 @@ export default function ProductsDashboard() {
           <Box paddingInline="400" paddingBlock="300">
             <ProductSearchBar
               searchQuery={searchQuery}
-              onSearchChange={setSearchQuery}
+              onSearchChange={(value) => {
+                setSearchQuery(value);
+
+                if (value.trim() === "") {
+                  navigate("/app/products");
+                } else {
+                  navigate(`/app/products?search=${encodeURIComponent(value)}`);
+                }
+              }}
               onFilterOpen={() => {
                 setPendingFilters({ ...appliedFilters });
                 setFilterModalOpen(true);
