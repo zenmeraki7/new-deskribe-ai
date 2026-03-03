@@ -24,9 +24,10 @@ export default function App() {
         <Link to="/app" rel="home">
           Dashboard
         </Link>
-        <Link to="/app/jobs">Jobs</Link>
         <Link to="/app/products">Products</Link>
-        <Link to="/app/products/123456">Specific Product</Link>
+        <Link to="/app/jobs">Jobs</Link>
+        
+        {/* <Link to="/app/products/123456">Specific Product</Link> */}
       </NavMenu>
       <Outlet />
     </AppProvider>

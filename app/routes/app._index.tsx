@@ -1,6 +1,6 @@
 // FILE: app/routes/app.index.tsx
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import {
   Page,
   Layout,
@@ -18,6 +18,7 @@ import {
   Checkbox,
   Banner,
   Tag,
+  List,
 } from "@shopify/polaris";
 
 import { useLoaderData, useFetcher, useNavigate } from "@remix-run/react";
@@ -216,8 +217,8 @@ export async function action({ request }: ActionFunctionArgs) {
       );
     }
 
-const response = await admin.graphql(
-  `#graphql
+    const response = await admin.graphql(
+      `#graphql
   mutation UpdateProduct($id: ID!, $descriptionHtml: String!) {
     productUpdate(input: {
       id: $id,
@@ -227,37 +228,34 @@ const response = await admin.graphql(
       userErrors { field message }
     }
   }`,
-  {
-    variables: {
-      id: productId,
-      descriptionHtml: bodyHtml,
-    },
+      {
+        variables: {
+          id: productId,
+          descriptionHtml: bodyHtml,
+        },
+      },
+    );
+
+    // convert response to JSON
+    const result = await response.json();
+
+    // extract userErrors
+    const userErrors = result?.data?.productUpdate?.userErrors;
+
+    // if Shopify rejected update
+    if (userErrors && userErrors.length > 0) {
+      return json({ ok: false, error: userErrors[0].message }, { status: 400 });
+    }
+
+    // only if no errors:
+    return json({ ok: true, applied: true });
   }
-);
 
-// convert response to JSON
-const result = await response.json();
-
-// extract userErrors
-const userErrors = result?.data?.productUpdate?.userErrors;
-
-// if Shopify rejected update
-if (userErrors && userErrors.length > 0) {
+  // If no valid intent matched
   return json(
-    { ok: false, error: userErrors[0].message },
-    { status: 400 }
+    { ok: false, kind: "error", error: "Invalid intent" },
+    { status: 400 },
   );
-}
-
-// only if no errors:
-return json({ ok: true, applied: true });
-}
-
-// If no valid intent matched
-return json(
-  { ok: false, kind: "error", error: "Invalid intent" },
-  { status: 400 },
-);
 }
 // ─────────────────────────────────────────────────────────────────────────────
 // Component
@@ -274,6 +272,8 @@ export default function IndexPage() {
   const [format, setFormat] = useState("paragraph");
   const [keywords, setKeywords] = useState("");
   const [includeSocials, setIncludeSocials] = useState(false);
+
+  const [showSuccessBanner, setShowSuccessBanner] = useState(false);
 
   const isGenerating =
     fetcher.state !== "idle" && fetcher.formData?.get("intent") === "generate";
@@ -331,6 +331,18 @@ export default function IndexPage() {
     );
   }, []);
 
+  useEffect(() => {
+    if (applyFetcher.data?.ok && applyFetcher.data?.applied) {
+      setShowSuccessBanner(true);
+
+      const timer = setTimeout(() => {
+        setShowSuccessBanner(false);
+      }, 4000);
+
+      return () => clearTimeout(timer);
+    }
+  }, [applyFetcher.data]);
+
   // Inject suggested keywords when they arrive
   const suggestedKeywords: string[] =
     fetcher.data?.kind === "suggest_keywords" && fetcher.data?.ok
@@ -362,6 +374,13 @@ export default function IndexPage() {
   if (error) {
     return (
       <Page title="DescribeAI" subtitle="AI Product Description Generator">
+            <Banner
+              tone="success"
+              title="Applied to Shopify"
+              onDismiss={() => setShowSuccessBanner(false)}
+            >
+              <Text as="p">Product description updated successfully.</Text>
+            </Banner>  
         <Layout>
           <Layout.Section>
             <Banner tone="critical" title="Error loading product">
@@ -390,16 +409,7 @@ export default function IndexPage() {
   }
 
   return (
-    <Page
-      title="DescribeAI"
-      subtitle="AI Product Description Generator"
-      primaryAction={{
-        content: "Generate Description",
-        onAction: handleGenerate,
-        loading: isGenerating,
-        disabled: isGenerating || isSuggestingKeywords,
-      }}
-    >
+    <Page title="DescribeAI" subtitle="AI Product Description Generator">
       <Layout>
         <Layout.Section>
           {actionError && (
@@ -585,10 +595,21 @@ export default function IndexPage() {
                     onChange={setIncludeSocials}
                     disabled={isGenerating}
                   />
+
+                  <Button
+                    variant="primary"
+                    tone="success"
+                    onClick={handleGenerate}
+                    loading={isGenerating}
+                    disabled={isGenerating || isSuggestingKeywords}
+                  >
+                    Generate Description
+                  </Button>
                 </BlockStack>
               </Card>
 
               {/* Generated Output */}
+
               <Card>
                 <BlockStack gap="300">
                   <Text variant="headingSm">Generated Output</Text>
@@ -676,6 +697,21 @@ export default function IndexPage() {
                             Apply to Shopify
                           </Button>
                         </BlockStack>
+                        <BlockStack gap="050">
+                          <Button
+                            variant="tertiary"
+                            tone="critical"
+                            onClick={() => {
+                              setVibe("casual");
+                              setFormat("paragraph");
+                              setKeywords("");
+                              setIncludeSocials(false);
+                              fetcher.load(window.location.pathname); // clears fetcher.data
+                            }}
+                          >
+                            Clear
+                          </Button>
+                        </BlockStack>
                       </InlineStack>
 
                       {generationResult.primary_keyword && (
@@ -693,6 +729,47 @@ export default function IndexPage() {
                       to create an AI-powered product description.
                     </Text>
                   )}
+                </BlockStack>
+              </Card>
+
+              <Card>
+                <BlockStack gap="400">
+                  <Text as="h2" variant="headingMd">
+                    🚀 How It Works
+                  </Text>
+
+                  <List type="number">
+                    <List.Item>
+                      <Text as="span" fontWeight="semibold">
+                        Select a Product:
+                      </Text>{" "}
+                      Choose a product from the table to get started.
+                    </List.Item>
+
+                    <List.Item>
+                      <Text as="span" fontWeight="semibold">
+                        Customize Your Settings:
+                      </Text>{" "}
+                      Adjust tone, length, and other generation options to match
+                      your needs.
+                    </List.Item>
+
+                    <List.Item>
+                      <Text as="span" fontWeight="semibold">
+                        Generate Draft:
+                      </Text>{" "}
+                      Click the generate button to create your AI-powered
+                      product description.
+                    </List.Item>
+
+                    <List.Item>
+                      <Text as="span" fontWeight="semibold">
+                        Save to Shopify:
+                      </Text>{" "}
+                      Review the draft and save it directly to your Shopify
+                      store with one click.
+                    </List.Item>
+                  </List>
                 </BlockStack>
               </Card>
             </BlockStack>

@@ -437,18 +437,18 @@ export default function ProductEditorModalRoute() {
           </Card>
 
           {/* AI generation progress */}
-          {isGenerating && (
-            <Card>
-              <InlineStack gap="300" blockAlign="center">
-                <Spinner size="small" />
-                <Text as="p">
-                  {pollStatus === "PROCESSING"
-                    ? "DeepSeek is writing your description…"
-                    : "Job queued, starting shortly…"}
-                </Text>
-              </InlineStack>
-            </Card>
-          )}
+         {isGenerating && (
+  <Card>
+    <InlineStack gap="300" blockAlign="center">
+      <Spinner size="small" />
+      <Text as="p">
+        {pollStatus === "PROCESSING"
+          ? "Deskribe AI is generating your product description…"
+          : "Preparing to generate your product description…"}
+      </Text>
+    </InlineStack>
+  </Card>
+)}
 
           {/* SEO meta preview (plain text only) */}
           {draftResult && (

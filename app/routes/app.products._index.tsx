@@ -40,7 +40,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const cursor = url.searchParams.get("cursor");
 
-  const shopifyQuery = search ? `title:${search}` : "";
+  const filters: string[] = [];
+
+if (search) {
+  filters.push(`title:*${search}*`);
+}
+
+if (url.searchParams.getAll("status").length > 0) {
+  const statuses = url.searchParams.getAll("status");
+  filters.push(statuses.map(s => `status:${s}`).join(" OR "));
+}
+
+const shopifyQuery = filters.join(" AND ");
 
 const response = await admin.graphql(`
   query getProducts($cursor: String, $query: String) {
@@ -382,7 +393,7 @@ export default function ProductsDashboard() {
       title="Products"
       subtitle="Manage and generate AI descriptions for your products"
       primaryAction={{
-        content: "Generate Descriptions",
+        content: "Generated Descriptions",
         onAction: () => navigate("/app/jobs"),
       }}
     >
