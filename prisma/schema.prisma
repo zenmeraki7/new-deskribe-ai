@@ -1,15 +1,10 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
+// schema.prisma — full updated file
 
 generator client {
   provider   = "prisma-client-js"
   engineType = "library"
 }
 
-
-// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
-// enough when changing adapters.
-// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
@@ -47,33 +42,31 @@ model History {
 }
 
 model GenerationJob {
-  id             String   @id @default(uuid())
-  shopDomain     String
-  productId      String
-  productTitle   String
-  status         String
-  inputHash      String
+  id                  String   @id @default(uuid())
+  shopDomain          String
+  productId           String
+  status              String
+  inputHash           String
+  vibe                String
+  format              String
+  keywords            String
+  includeSocials      Boolean
+  result              Json?
+  errorMessage        String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  bulkId              String?
+  bullJobId           String?
+  costTokens          Int      @default(0)
+  productTitle        String
+  progress            Int      @default(0)
+  traceId             String?
 
-  vibe           String
-  format         String
-  keywords       String
-  includeSocials Boolean
-
-  progress       Int      @default(0)
-  costTokens     Int      @default(0)
-
-  bullJobId      String?
-  bulkId         String?
-  traceId        String?
-
-  result         Json?
-  errorMessage   String?
-
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  // Description snapshot fields — added for undo support
+  generatedDescription String?  // The AI-generated description written to Shopify
+  previousDescription  String?  // Snapshot of the product description BEFORE generation
 
   @@index([shopDomain])
   @@index([productId])
   @@index([status])
 }
-

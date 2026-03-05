@@ -15,21 +15,28 @@ export const JOB_STATUSES = [
   "COMPLETED",
   "FAILED",
   "CANCELLED",
+  "UNDONE",
 ] as const;
 
 export type JobStatus = (typeof JOB_STATUSES)[number];
 
 export interface JobRow {
-  id: string; // UUID v4 (validated server-side)
+  id: string;              // UUID v4 (validated server-side)
   bullJobId: string | null;
-  productId: string; // Shopify GID (server-owned)
+  productId: string;       // Shopify GID (server-owned)
   productTitle: string | null;
   status: JobStatus;
-  progress: number; // 0–100 (server-enforced clamp)
-  costTokens: number; // >= 0 (server-enforced)
+  progress: number;        // 0–100 (server-enforced clamp)
+  costTokens: number;      // >= 0 (server-enforced)
   errorMessage: string | null;
-  createdAt: string; // ISO string
-  updatedAt: string; // ISO string
+  // Generation settings — populated at job creation, used in detail modal
+  tone: string | null;     // maps from `vibe` column in DB
+  format: string | null;
+  // Description snapshot — populated by worker on COMPLETED
+  generatedDescription: string | null;
+  hasPreviousDescription: boolean; // true when DB `previousDescription` is non-null
+  createdAt: string;       // ISO string
+  updatedAt: string;       // ISO string
 }
 
 export interface LoaderData {
@@ -38,7 +45,7 @@ export interface LoaderData {
   hasNextPage: boolean;
   nextCursor: string | null;
   prevCursor: string | null;
-  totalPending: number; // server-computed, shop-scoped
+  totalPending: number;    // server-computed, shop-scoped
 }
 
 /**
@@ -57,9 +64,7 @@ export type BadgeTone =
  * Map status to UI badge metadata.
  * Fail-closed: unknown status → subdued.
  */
-export function statusBadge(
-  status: string,
-): { label: string; tone: BadgeTone } {
+export function statusBadge(status: string): { label: string; tone: BadgeTone } {
   switch (status) {
     case "COMPLETED":
       return { label: "Completed", tone: "success" };
@@ -71,11 +76,10 @@ export function statusBadge(
       return { label: "Pending", tone: "attention" };
     case "CANCELLED":
       return { label: "Cancelled", tone: "subdued" };
+    case "UNDONE":
+      return { label: "Undone", tone: "warning" };
     default:
-      return {
-        label: "Unknown",
-        tone: "subdued",
-      };
+      return { label: "Unknown", tone: "subdued" };
   }
 }
 

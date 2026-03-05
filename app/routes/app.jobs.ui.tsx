@@ -1,5 +1,11 @@
 // FILE: app/routes/app.jobs.ui.tsx
-import React, { useCallback, useEffect, useMemo, useRef } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Page,
   Card,
@@ -14,6 +20,11 @@ import {
   EmptyState,
   Spinner,
   Box,
+  Modal,
+  Divider,
+  Tag,
+  Toast,
+  Frame
 } from "@shopify/polaris";
 import {
   useFetcher,
@@ -50,16 +61,229 @@ function isUuidV4(x: string | null) {
 }
 
 // ---------------------------------------------------------------------------
+// Job Detail Modal
+// ---------------------------------------------------------------------------
+
+interface JobDetailModalProps {
+  job: JobRow | null;
+  open: boolean;
+  onClose: () => void;
+}
+
+function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
+  const undoFetcher = useFetcher<{
+    ok: boolean;
+    error?: string;
+    restored?: boolean;
+  }>();
+  const isUndoing = undoFetcher.state !== "idle";
+  const undoResult = undoFetcher.data;
+
+  const [showUndoToast, setShowUndoToast] = useState(false);
+
+  const toggleUndoToast = useCallback(
+    () => setShowUndoToast((active) => !active),
+    [],
+  );
+
+    useEffect(() => {
+    if (undoFetcher.data?.ok) {
+      setShowUndoToast(true);
+    }
+  }, [undoFetcher.data]);
+
+  if (!job) return null;
+
+  const handleUndo = () => {
+    const fd = new FormData();
+    fd.set("intent", "undo");
+    fd.set("jobId", job.id);
+    undoFetcher.submit(fd, { method: "post" });
+  };
+
+
+  const { label, tone } = statusBadge(job.status);
+  // Show Undo for any completed job not yet undone.
+  // If no snapshot exists, the server clears the description to "".
+  const canUndo = job.status === "COMPLETED" && !undoResult?.restored;
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={`Job Details — ${job.productTitle ?? job.productId}`}
+      primaryAction={
+        canUndo
+          ? {
+              content: "↩ Undo Generation",
+              onAction: handleUndo,
+              loading: isUndoing,
+              disabled: isUndoing,
+              destructive: true,
+            }
+          : undefined
+      }
+      secondaryActions={[{ content: "Close", onAction: onClose }]}
+    >
+      <Modal.Section>
+        <BlockStack gap="400">
+          {undoResult?.ok && undoResult.restored && (
+            <Banner tone="success" title="Description restored">
+              The previous description has been restored to the product.
+            </Banner>
+          )}
+          {undoResult && !undoResult.ok && (
+            <Banner tone="critical" title="Undo failed">
+              {undoResult.error ??
+                "Could not restore the previous description."}
+            </Banner>
+          )}
+
+          <InlineStack gap="300" blockAlign="center">
+            <Text as="span" variant="bodyMd" fontWeight="semibold">
+              Status:
+            </Text>
+            <Badge tone={tone}>{label}</Badge>
+          </InlineStack>
+
+          <Divider />
+
+          <BlockStack gap="200">
+            <InlineStack gap="200" wrap>
+              <Text
+                as="span"
+                variant="bodySm"
+                tone="subdued"
+                fontWeight="semibold"
+              >
+                Created:
+              </Text>
+              <Text as="span" variant="bodySm" tone="subdued">
+                {safeDateLabel(job.createdAt)}
+              </Text>
+            </InlineStack>
+            <InlineStack gap="200" wrap>
+              <Text
+                as="span"
+                variant="bodySm"
+                tone="subdued"
+                fontWeight="semibold"
+              >
+                Last updated:
+              </Text>
+              <Text as="span" variant="bodySm" tone="subdued">
+                {safeDateLabel(job.updatedAt)}
+              </Text>
+            </InlineStack>
+          </BlockStack>
+          {showUndoToast && (
+            <Toast
+              content="Undo completed. Description restored successfully."
+              onDismiss={toggleUndoToast}
+            />
+          )}
+
+          <Divider />
+
+          {(job.format || job.tone || job.costTokens > 0) && (
+            <>
+              <BlockStack gap="200">
+                <Text as="p" variant="bodyMd" fontWeight="semibold">
+                  Generation settings
+                </Text>
+                <InlineStack gap="200" wrap>
+                  {job.format && <Tag>Format: {job.format}</Tag>}
+                  {job.tone && <Tag>Tone: {job.tone}</Tag>}
+                  {job.costTokens > 0 && (
+                    <Tag>{job.costTokens.toLocaleString()} tokens</Tag>
+                  )}
+                </InlineStack>
+              </BlockStack>
+              <Divider />
+            </>
+          )}
+
+          {job.status === "FAILED" && job.errorMessage && (
+            <>
+              <BlockStack gap="100">
+                <Text
+                  as="p"
+                  variant="bodyMd"
+                  fontWeight="semibold"
+                  tone="critical"
+                >
+                  Error
+                </Text>
+                <Box
+                  padding="300"
+                  background="bg-surface-critical-subdued"
+                  borderRadius="200"
+                >
+                  <Text as="p" variant="bodySm" tone="critical">
+                    {job.errorMessage}
+                  </Text>
+                </Box>
+              </BlockStack>
+              <Divider />
+            </>
+          )}
+
+          {job.generatedDescription ? (
+            <BlockStack gap="200">
+              <Text as="p" variant="bodyMd" fontWeight="semibold">
+                Generated description
+              </Text>
+              <Box
+                padding="300"
+                background="bg-surface-secondary"
+                borderRadius="200"
+                borderWidth="025"
+                borderColor="border"
+              >
+                <Text as="p" variant="bodySm">
+                  {job.generatedDescription}
+                </Text>
+              </Box>
+              {!undoResult?.restored && (
+                <Text as="p" variant="bodySm" tone="subdued">
+                  {job.hasPreviousDescription
+                    ? "A previous description is saved — Undo will restore it."
+                    : "No snapshot saved — Undo will clear this description on the product."}
+                </Text>
+              )}
+              {undoResult?.restored && (
+                <Text as="p" variant="bodySm" tone="subdued">
+                  Previous description restored. Refresh the product to confirm.
+                </Text>
+              )}
+            </BlockStack>
+          ) : (
+            <Text as="p" variant="bodySm" tone="subdued">
+              No generated description available yet.
+            </Text>
+          )}
+        </BlockStack>
+      </Modal.Section>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // JobRow sub-component — isolated fetcher per row prevents cross-row spinners
 // ---------------------------------------------------------------------------
 
 interface JobRowProps {
   job: JobRow;
   index: number;
+  onViewDetails: (job: JobRow) => void;
 }
 
-function JobTableRow({ job, index }: JobRowProps) {
-  const fetcher = useFetcher<{ ok: boolean; error?: string; alreadyQueued?: boolean }>();
+function JobTableRow({ job, index, onViewDetails }: JobRowProps) {
+  const fetcher = useFetcher<{
+    ok: boolean;
+    error?: string;
+    alreadyQueued?: boolean;
+  }>();
   const isSubmitting = fetcher.state !== "idle";
   const { label, tone } = statusBadge(job.status);
 
@@ -82,7 +306,9 @@ function JobTableRow({ job, index }: JobRowProps) {
   const progress = clampProgress(job.progress);
 
   const rowError =
-    fetcher.data && fetcher.data.ok === false ? fetcher.data.error ?? "Action failed" : null;
+    fetcher.data && fetcher.data.ok === false
+      ? (fetcher.data.error ?? "Action failed")
+      : null;
 
   return (
     <IndexTable.Row id={job.id} key={job.id} position={index}>
@@ -101,7 +327,11 @@ function JobTableRow({ job, index }: JobRowProps) {
 
       <IndexTable.Cell>
         <InlineStack gap="200" blockAlign="center">
-          {isSubmitting ? <Spinner size="small" /> : <Badge tone={tone}>{label}</Badge>}
+          {isSubmitting ? (
+            <Spinner size="small" />
+          ) : (
+            <Badge tone={tone}>{label}</Badge>
+          )}
           {job.status === "PROCESSING" && progress > 0 && (
             <Text as="span" variant="bodySm" tone="subdued">
               {progress}%
@@ -140,7 +370,7 @@ function JobTableRow({ job, index }: JobRowProps) {
       </IndexTable.Cell>
 
       <IndexTable.Cell>
-        <InlineStack gap="200" wrap>
+        <InlineStack gap="200" wrap blockAlign="center">
           {job.status === "FAILED" && (
             <Button
               size="slim"
@@ -164,6 +394,32 @@ function JobTableRow({ job, index }: JobRowProps) {
               Cancel
             </Button>
           )}
+
+          {/* Details chevron — always visible */}
+          <Tooltip content="View details">
+            <Button
+              size="slim"
+              variant="plain"
+              onClick={() => onViewDetails(job)}
+              accessibilityLabel={`View details for ${displayName}`}
+            >
+              {/* Chevron right icon */}
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+                aria-hidden="true"
+                style={{ display: "block" }}
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z"
+                  clipRule="evenodd"
+                />
+              </svg>
+            </Button>
+          </Tooltip>
         </InlineStack>
       </IndexTable.Cell>
     </IndexTable.Row>
@@ -179,9 +435,26 @@ export default function JobsRoute() {
     useLoaderData<typeof loader>();
 
   const revalidator = useRevalidator();
-  const cancelAllFetcher = useFetcher<{ ok: boolean; cancelled?: number; error?: string }>();
+  const cancelAllFetcher = useFetcher<{
+    ok: boolean;
+    cancelled?: number;
+    error?: string;
+  }>();
   const [params] = useSearchParams();
   const navigate = useNavigate();
+
+  // Modal state
+  const [selectedJob, setSelectedJob] = useState<JobRow | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
+
+  const handleViewDetails = useCallback((job: JobRow) => {
+    setSelectedJob(job);
+    setModalOpen(true);
+  }, []);
+
+  const handleModalClose = useCallback(() => {
+    setModalOpen(false);
+  }, []);
 
   const isCancellingAll = cancelAllFetcher.state !== "idle";
   const cancelAllResult = cancelAllFetcher.data;
@@ -191,13 +464,11 @@ export default function JobsRoute() {
 
   // -------------------------------------------------------------------------
   // Live auto-refresh with jitter + tab visibility + abort-safe scheduling.
-  // Prevents timer leaks and synchronized spikes across merchants.
   // -------------------------------------------------------------------------
 
   const timerRef = useRef<number | null>(null);
 
   useEffect(() => {
-    // Always clear any existing timer when deps change/unmount.
     if (timerRef.current) {
       window.clearTimeout(timerRef.current);
       timerRef.current = null;
@@ -209,31 +480,24 @@ export default function JobsRoute() {
 
     const scheduleNext = () => {
       if (stopped) return;
-
-      const jitter = 0.2; // ±20%
+      const jitter = 0.2;
       const delta = POLL_INTERVAL_MS * jitter;
       const ms = Math.max(
         750,
         Math.floor(POLL_INTERVAL_MS + (Math.random() * 2 - 1) * delta),
       );
-
       timerRef.current = window.setTimeout(tick, ms);
     };
 
     const tick = () => {
       if (stopped) return;
-
-      // Pause polling when tab is hidden (reduces load).
       if (typeof document !== "undefined" && document.hidden) {
         scheduleNext();
         return;
       }
-
-      // Avoid stacking revalidations.
       if (revalidator.state === "idle") {
         revalidator.revalidate();
       }
-
       scheduleNext();
     };
 
@@ -259,7 +523,7 @@ export default function JobsRoute() {
   }, [cancelAllFetcher]);
 
   // -------------------------------------------------------------------------
-  // Pagination (cursor-based; only accept valid UUID cursors)
+  // Pagination
   // -------------------------------------------------------------------------
 
   const handleNext = useCallback(() => {
@@ -281,6 +545,7 @@ export default function JobsRoute() {
   }, [hasActiveJobs]);
 
   return (
+    <Frame>
     <Page title="Generation Queue" fullWidth>
       <BlockStack gap="400">
         <Card>
@@ -315,13 +580,14 @@ export default function JobsRoute() {
           </InlineStack>
         </Card>
 
-        {cancelAllResult?.ok && typeof cancelAllResult.cancelled === "number" && (
-          <Banner tone="success" title="Bulk cancellation complete">
-            {cancelAllResult.cancelled > 0
-              ? `${cancelAllResult.cancelled} pending job(s) cancelled.`
-              : "No pending jobs were found."}
-          </Banner>
-        )}
+        {cancelAllResult?.ok &&
+          typeof cancelAllResult.cancelled === "number" && (
+            <Banner tone="success" title="Bulk cancellation complete">
+              {cancelAllResult.cancelled > 0
+                ? `${cancelAllResult.cancelled} pending job(s) cancelled.`
+                : "No pending jobs were found."}
+            </Banner>
+          )}
 
         {cancelAllResult && !cancelAllResult.ok && (
           <Banner tone="critical" title="Cancellation failed">
@@ -336,16 +602,16 @@ export default function JobsRoute() {
               image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
             >
               <p>
-                Generate descriptions from the <Link to="/app/products">Products</Link> page to see jobs here.
+                Generate descriptions from the{" "}
+                <Link to="/app/products">Products</Link> page to see jobs here.
               </p>
             </EmptyState>
           ) : (
             <>
-              {/* Optional: small sticky hint row (cheap UI guardrails) */}
               <Box padding="300" borderBlockEndWidth="1px" borderColor="border">
                 <Text as="p" variant="bodySm" tone="subdued">
-                  Jobs are shop-scoped and actions are idempotent. If you double-click Retry/Cancel, it will
-                  only apply once.
+                  Jobs are shop-scoped and actions are idempotent. If you
+                  double-click Retry/Cancel, it will only apply once.
                 </Text>
               </Box>
 
@@ -362,7 +628,12 @@ export default function JobsRoute() {
                 selectable={false}
               >
                 {jobs.map((job, idx) => (
-                  <JobTableRow key={job.id} job={job} index={idx} />
+                  <JobTableRow
+                    key={job.id}
+                    job={job}
+                    index={idx}
+                    onViewDetails={handleViewDetails}
+                  />
                 ))}
               </IndexTable>
             </>
@@ -380,6 +651,14 @@ export default function JobsRoute() {
           </InlineStack>
         )}
       </BlockStack>
+
+      {/* Modal lives outside the table to avoid DOM nesting issues */}
+      <JobDetailModal
+        job={selectedJob}
+        open={modalOpen}
+        onClose={handleModalClose}
+      />
     </Page>
+    </Frame>
   );
 }
