@@ -24,8 +24,12 @@ import {
 import { useLoaderData, useFetcher, useNavigate } from "@remix-run/react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
+import {
+  suggestKeywords,
+  generateProductDescription,
+} from "../lib/ai.serever";
 import { authenticate } from "../shopify.server";
-import { suggestKeywords } from "../lib/deepseek.server";
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -126,86 +130,66 @@ export async function action({ request }: ActionFunctionArgs) {
       .filter(Boolean);
 
     try {
-      const keywords = await suggestKeywords(title, vendor, productType, tags);
-      return json({ ok: true, kind: "suggest_keywords", keywords });
-    } catch (err) {
-      return json(
-        { ok: false, kind: "error", error: "Failed to suggest keywords" },
-        { status: 500 },
-      );
-    }
+  const keywords = await suggestKeywords(title, vendor, productType, tags);
+  return json({ ok: true, kind: "suggest_keywords", keywords });
+} catch (err) {
+  console.error("Keyword generation error:", err);
+
+  return json(
+    {
+      ok: false,
+      kind: "error",
+      error: err instanceof Error ? err.message : "Keyword generation failed",
+    },
+    { status: 500 },
+  );
+}
   }
 
   if (intent === "generate") {
-    const productId = String(form.get("productId") ?? "");
-    const vibe = String(form.get("vibe") ?? "casual").slice(0, 40);
-    const format = String(form.get("format") ?? "paragraph").slice(0, 40);
-    const keywords = String(form.get("keywords") ?? "").slice(0, 500);
-    const includeSocials = form.get("includeSocials") === "true";
 
-    // Fetch product title server-side (never trust client)
-    try {
-      const resp = await admin.graphql(
-        `#graphql
-        query ProductTitle($id: ID!) {
-          product(id: $id) { title vendor productType tags }
-        }`,
-        { variables: { id: productId } },
-      );
-      const data = await resp.json();
-      const p = data?.data?.product;
-      if (!p) {
-        return json(
-          { ok: false, kind: "error", error: "Product not found" },
-          { status: 404 },
-        );
-      }
+  const productId = String(form.get("productId") ?? "");
+  const vibe = String(form.get("vibe") ?? "casual");
+  const format = String(form.get("format") ?? "paragraph");
+  const keywords = String(form.get("keywords") ?? "");
+  const includeSocials = form.get("includeSocials") === "true";
 
-      // TODO: wire to your real enqueue / AI generation pipeline
-      // For now returning a structured mock matching DraftResult shape
-      const mockDescription = `
-        <p>Discover the <strong>${p.title}</strong> — crafted for those who value ${vibe} quality.
-        ${keywords ? `Featuring: ${keywords}.` : ""}
-        Perfect for everyday use, this product brings together premium materials and thoughtful design.</p>
-        ${
-          format === "bullets" || format === "hybrid"
-            ? `<ul><li>Premium quality materials</li><li>Thoughtfully designed</li><li>Built to last</li></ul>`
-            : ""
-        }
-        ${includeSocials ? `<p><em>Instagram: You need this in your life ✨ #${p.title.replace(/\s+/g, "")} #${vibe}</em></p>` : ""}
-      `.trim();
-
-      const wordCount = mockDescription
-        .replace(/<[^>]+>/g, " ")
-        .trim()
-        .split(/\s+/).length;
-      const charCount = mockDescription.replace(/<[^>]+>/g, "").length;
-
-      return json({
-        ok: true,
-        kind: "generate",
-        result: {
-          body_html: mockDescription,
-          headline: `${p.title} — ${vibe.charAt(0).toUpperCase() + vibe.slice(1)} Edition`,
-          social_caption: includeSocials
-            ? `You need this in your life ✨ #${p.title.replace(/\s+/g, "")}`
-            : undefined,
-          keywords: keywords
-            .split(",")
-            .map((k) => k.trim())
-            .filter(Boolean),
-          primary_keyword: keywords.split(",")[0]?.trim() ?? "",
-          wordCount,
-          charCount,
-        },
-      });
-    } catch (err) {
-      return json(
-        { ok: false, kind: "error", error: "Generation failed" },
-        { status: 500 },
-      );
+  const resp = await admin.graphql(`
+    query ProductTitle($id: ID!) {
+      product(id: $id) { title vendor productType tags }
     }
-  }
+  `,{ variables: { id: productId }});
+
+  const data = await resp.json();
+  const p = data?.data?.product;
+
+  const result = await generateProductDescription({
+    title: p.title,
+    vendor: p.vendor,
+    productType: p.productType,
+    tags: p.tags,
+    vibe,
+    format,
+    keywords: keywords.split(",").map(k => k.trim()).filter(Boolean),
+    includeSocials,
+  });
+
+  const wordCount = result.body_html.replace(/<[^>]+>/g," ").trim().split(/\s+/).length;
+  const charCount = result.body_html.replace(/<[^>]+>/g,"").length;
+
+  return json({
+    ok: true,
+    kind: "generate",
+    result: {
+      ...result,
+      headline: `${p.title} — ${vibe}`,
+      wordCount,
+      charCount,
+      primary_keyword: result.keywords?.[0] ?? "",
+    },
+  });
+
+}
   if (intent === "apply") {
     const productId = String(form.get("productId") ?? "");
     const bodyHtml = String(form.get("bodyHtml") ?? "");

@@ -1,11 +1,5 @@
 // FILE: app/routes/app.jobs.ui.tsx
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Page,
   Card,
@@ -23,8 +17,6 @@ import {
   Modal,
   Divider,
   Tag,
-  Toast,
-  Frame
 } from "@shopify/polaris";
 import {
   useFetcher,
@@ -71,26 +63,9 @@ interface JobDetailModalProps {
 }
 
 function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
-  const undoFetcher = useFetcher<{
-    ok: boolean;
-    error?: string;
-    restored?: boolean;
-  }>();
+  const undoFetcher = useFetcher<{ ok: boolean; error?: string; restored?: boolean }>();
   const isUndoing = undoFetcher.state !== "idle";
   const undoResult = undoFetcher.data;
-
-  const [showUndoToast, setShowUndoToast] = useState(false);
-
-  const toggleUndoToast = useCallback(
-    () => setShowUndoToast((active) => !active),
-    [],
-  );
-
-    useEffect(() => {
-    if (undoFetcher.data?.ok) {
-      setShowUndoToast(true);
-    }
-  }, [undoFetcher.data]);
 
   if (!job) return null;
 
@@ -100,7 +75,6 @@ function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
     fd.set("jobId", job.id);
     undoFetcher.submit(fd, { method: "post" });
   };
-
 
   const { label, tone } = statusBadge(job.status);
   // Show Undo for any completed job not yet undone.
@@ -134,8 +108,7 @@ function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
           )}
           {undoResult && !undoResult.ok && (
             <Banner tone="critical" title="Undo failed">
-              {undoResult.error ??
-                "Could not restore the previous description."}
+              {undoResult.error ?? "Could not restore the previous description."}
             </Banner>
           )}
 
@@ -150,12 +123,7 @@ function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
 
           <BlockStack gap="200">
             <InlineStack gap="200" wrap>
-              <Text
-                as="span"
-                variant="bodySm"
-                tone="subdued"
-                fontWeight="semibold"
-              >
+              <Text as="span" variant="bodySm" tone="subdued" fontWeight="semibold">
                 Created:
               </Text>
               <Text as="span" variant="bodySm" tone="subdued">
@@ -163,12 +131,7 @@ function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
               </Text>
             </InlineStack>
             <InlineStack gap="200" wrap>
-              <Text
-                as="span"
-                variant="bodySm"
-                tone="subdued"
-                fontWeight="semibold"
-              >
+              <Text as="span" variant="bodySm" tone="subdued" fontWeight="semibold">
                 Last updated:
               </Text>
               <Text as="span" variant="bodySm" tone="subdued">
@@ -176,12 +139,6 @@ function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
               </Text>
             </InlineStack>
           </BlockStack>
-          {showUndoToast && (
-            <Toast
-              content="Undo completed. Description restored successfully."
-              onDismiss={toggleUndoToast}
-            />
-          )}
 
           <Divider />
 
@@ -206,19 +163,10 @@ function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
           {job.status === "FAILED" && job.errorMessage && (
             <>
               <BlockStack gap="100">
-                <Text
-                  as="p"
-                  variant="bodyMd"
-                  fontWeight="semibold"
-                  tone="critical"
-                >
+                <Text as="p" variant="bodyMd" fontWeight="semibold" tone="critical">
                   Error
                 </Text>
-                <Box
-                  padding="300"
-                  background="bg-surface-critical-subdued"
-                  borderRadius="200"
-                >
+                <Box padding="300" background="bg-surface-critical-subdued" borderRadius="200">
                   <Text as="p" variant="bodySm" tone="critical">
                     {job.errorMessage}
                   </Text>
@@ -279,36 +227,49 @@ interface JobRowProps {
 }
 
 function JobTableRow({ job, index, onViewDetails }: JobRowProps) {
-  const fetcher = useFetcher<{
-    ok: boolean;
-    error?: string;
-    alreadyQueued?: boolean;
-  }>();
-  const isSubmitting = fetcher.state !== "idle";
+  const actionFetcher = useFetcher<{ ok: boolean; error?: string; alreadyQueued?: boolean }>();
+  const undoFetcher = useFetcher<{ ok: boolean; error?: string; restored?: boolean }>();
+
+  const isSubmitting = actionFetcher.state !== "idle";
+  const isUndoing = undoFetcher.state !== "idle";
+  const hasUndone = undoFetcher.data?.ok === true;
+
   const { label, tone } = statusBadge(job.status);
 
   const handleCancel = () => {
     const fd = new FormData();
     fd.set("intent", "cancel");
     fd.set("jobId", job.id);
-    fetcher.submit(fd, { method: "post" });
+    actionFetcher.submit(fd, { method: "post" });
   };
 
   const handleRetry = () => {
     const fd = new FormData();
     fd.set("intent", "retry");
     fd.set("jobId", job.id);
-    fetcher.submit(fd, { method: "post" });
+    actionFetcher.submit(fd, { method: "post" });
+  };
+
+  const handleUndo = () => {
+    const fd = new FormData();
+    fd.set("intent", "undo");
+    fd.set("jobId", job.id);
+    undoFetcher.submit(fd, { method: "post" });
   };
 
   const displayName = job.productTitle ?? job.productId;
   const updatedDate = safeDateLabel(job.updatedAt);
   const progress = clampProgress(job.progress);
 
+  // Undo is active (red) only for COMPLETED jobs that haven't been undone yet
+  const canUndo = job.status === "COMPLETED" && !hasUndone && job.status !== "UNDONE";
+
   const rowError =
-    fetcher.data && fetcher.data.ok === false
-      ? (fetcher.data.error ?? "Action failed")
-      : null;
+    actionFetcher.data && actionFetcher.data.ok === false
+      ? (actionFetcher.data.error ?? "Action failed")
+      : undoFetcher.data && undoFetcher.data.ok === false
+        ? (undoFetcher.data.error ?? "Undo failed")
+        : null;
 
   return (
     <IndexTable.Row id={job.id} key={job.id} position={index}>
@@ -327,17 +288,13 @@ function JobTableRow({ job, index, onViewDetails }: JobRowProps) {
 
       <IndexTable.Cell>
         <InlineStack gap="200" blockAlign="center">
-          {isSubmitting ? (
-            <Spinner size="small" />
-          ) : (
-            <Badge tone={tone}>{label}</Badge>
-          )}
+          {isSubmitting ? <Spinner size="small" /> : <Badge tone={tone}>{label}</Badge>}
           {job.status === "PROCESSING" && progress > 0 && (
             <Text as="span" variant="bodySm" tone="subdued">
               {progress}%
             </Text>
           )}
-          {job.status === "PENDING" && fetcher.data?.alreadyQueued && (
+          {job.status === "PENDING" && actionFetcher.data?.alreadyQueued && (
             <Text as="span" variant="bodySm" tone="subdued">
               queued…
             </Text>
@@ -371,6 +328,8 @@ function JobTableRow({ job, index, onViewDetails }: JobRowProps) {
 
       <IndexTable.Cell>
         <InlineStack gap="200" wrap blockAlign="center">
+
+          {/* Retry — FAILED only */}
           {job.status === "FAILED" && (
             <Button
               size="slim"
@@ -382,6 +341,8 @@ function JobTableRow({ job, index, onViewDetails }: JobRowProps) {
               Retry
             </Button>
           )}
+
+          {/* Cancel — PENDING only */}
           {job.status === "PENDING" && (
             <Button
               size="slim"
@@ -395,31 +356,31 @@ function JobTableRow({ job, index, onViewDetails }: JobRowProps) {
             </Button>
           )}
 
-          {/* Details chevron — always visible */}
-          <Tooltip content="View details">
-            <Button
-              size="slim"
-              variant="plain"
-              onClick={() => onViewDetails(job)}
-              accessibilityLabel={`View details for ${displayName}`}
-            >
-              {/* Chevron right icon */}
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-                aria-hidden="true"
-                style={{ display: "block" }}
-              >
-                <path
-                  fillRule="evenodd"
-                  d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z"
-                  clipRule="evenodd"
-                />
-              </svg>
-            </Button>
-          </Tooltip>
+          {/* View — always visible, opens detail modal */}
+          <Button
+            size="slim"
+            onClick={() => onViewDetails(job)}
+            accessibilityLabel={`View details for ${displayName}`}
+          >
+            View
+          </Button>
+
+          {/* Undo Edit — always shown; active (red) only for COMPLETED */}
+          <Button
+            size="slim"
+            tone={canUndo ? "critical" : undefined}
+            onClick={canUndo ? handleUndo : undefined}
+            loading={isUndoing}
+            disabled={!canUndo || isUndoing}
+            accessibilityLabel={
+              canUndo
+                ? `Undo generated description for ${displayName}`
+                : "Undo not available"
+            }
+          >
+            Undo Edit
+          </Button>
+
         </InlineStack>
       </IndexTable.Cell>
     </IndexTable.Row>
@@ -435,11 +396,7 @@ export default function JobsRoute() {
     useLoaderData<typeof loader>();
 
   const revalidator = useRevalidator();
-  const cancelAllFetcher = useFetcher<{
-    ok: boolean;
-    cancelled?: number;
-    error?: string;
-  }>();
+  const cancelAllFetcher = useFetcher<{ ok: boolean; cancelled?: number; error?: string }>();
   const [params] = useSearchParams();
   const navigate = useNavigate();
 
@@ -482,10 +439,7 @@ export default function JobsRoute() {
       if (stopped) return;
       const jitter = 0.2;
       const delta = POLL_INTERVAL_MS * jitter;
-      const ms = Math.max(
-        750,
-        Math.floor(POLL_INTERVAL_MS + (Math.random() * 2 - 1) * delta),
-      );
+      const ms = Math.max(750, Math.floor(POLL_INTERVAL_MS + (Math.random() * 2 - 1) * delta));
       timerRef.current = window.setTimeout(tick, ms);
     };
 
@@ -545,7 +499,6 @@ export default function JobsRoute() {
   }, [hasActiveJobs]);
 
   return (
-    <Frame>
     <Page title="Generation Queue" fullWidth>
       <BlockStack gap="400">
         <Card>
@@ -580,14 +533,13 @@ export default function JobsRoute() {
           </InlineStack>
         </Card>
 
-        {cancelAllResult?.ok &&
-          typeof cancelAllResult.cancelled === "number" && (
-            <Banner tone="success" title="Bulk cancellation complete">
-              {cancelAllResult.cancelled > 0
-                ? `${cancelAllResult.cancelled} pending job(s) cancelled.`
-                : "No pending jobs were found."}
-            </Banner>
-          )}
+        {cancelAllResult?.ok && typeof cancelAllResult.cancelled === "number" && (
+          <Banner tone="success" title="Bulk cancellation complete">
+            {cancelAllResult.cancelled > 0
+              ? `${cancelAllResult.cancelled} pending job(s) cancelled.`
+              : "No pending jobs were found."}
+          </Banner>
+        )}
 
         {cancelAllResult && !cancelAllResult.ok && (
           <Banner tone="critical" title="Cancellation failed">
@@ -602,16 +554,15 @@ export default function JobsRoute() {
               image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
             >
               <p>
-                Generate descriptions from the{" "}
-                <Link to="/app/products">Products</Link> page to see jobs here.
+                Generate descriptions from the <Link to="/app/products">Products</Link> page to see jobs here.
               </p>
             </EmptyState>
           ) : (
             <>
               <Box padding="300" borderBlockEndWidth="1px" borderColor="border">
                 <Text as="p" variant="bodySm" tone="subdued">
-                  Jobs are shop-scoped and actions are idempotent. If you
-                  double-click Retry/Cancel, it will only apply once.
+                  Jobs are shop-scoped and actions are idempotent. If you double-click Retry/Cancel, it will
+                  only apply once.
                 </Text>
               </Box>
 
@@ -659,6 +610,5 @@ export default function JobsRoute() {
         onClose={handleModalClose}
       />
     </Page>
-    </Frame>
   );
 }

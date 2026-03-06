@@ -6,7 +6,7 @@ import { z } from "zod";
 import { authenticate } from "../shopify.server";
 import { db } from "../lib/db.server";
 import { enqueueGenerationJobs } from "../lib/enqueue.server";
-import { suggestKeywords } from "../lib/deepseek.server";
+import { suggestKeywords } from "../lib/ai.serever";
 import { sanitiseHtml, stripHtml } from "../lib/html.server";
 
 import {
