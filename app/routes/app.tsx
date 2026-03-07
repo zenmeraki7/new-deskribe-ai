@@ -25,7 +25,7 @@ export default function App() {
           Dashboard
         </Link>
         <Link to="/app/products">Products</Link>
-        <Link to="/app/jobs">Jobs</Link>
+        <Link to="/app/jobs">History</Link>
         
         {/* <Link to="/app/products/123456">Specific Product</Link> */}
       </NavMenu>

@@ -246,12 +246,19 @@ export default function ProductEditorModalRoute() {
     keywordFetcher.submit(fd, { method: "post" });
   }, [keywordFetcher]);
 
-  useEffect(() => {
-    const data = keywordFetcher.data;
-    if (data?.ok && Array.isArray(data.keywords) && data.keywords.length) {
-      setKeywords(data.keywords.join(", "));
-    }
-  }, [keywordFetcher.data]);
+  const suggestedKeywords: string[] =
+  keywordFetcher.data?.ok && Array.isArray(keywordFetcher.data?.keywords)
+    ? keywordFetcher.data.keywords
+    : [];
+
+    const handleAddSuggestedKeyword = useCallback((kw: string) => {
+  setKeywords((prev) => {
+    const existing = prev.split(",").map((k) => k.trim()).filter(Boolean);
+    if (existing.some((k) => k.toLowerCase() === kw.toLowerCase())) return prev;
+    return [...existing, kw].join(", ");
+  });
+}, []);
+
 
   const isGenerating =
     isPolling ||
@@ -277,6 +284,14 @@ export default function ProductEditorModalRoute() {
 
   const handleClose = () => navigate("/app/products");
 
+  // Temporarily add this right before the DiffViewer in your ui.tsx:
+useEffect(() => {
+  if (draftResult) {
+    console.log("=== DRAFT RESULT ===", JSON.stringify(draftResult, null, 2));
+    console.log("=== DRAFT HTML ===", draftHtml);
+  }
+}, [draftResult, draftHtml]);
+
   // Apply must use server-owned job id:
   // - Prefer the last completed polled job
   // - Else fallback to latestDraft.id (server-owned completed job id from loader)
@@ -294,6 +309,7 @@ export default function ProductEditorModalRoute() {
   );
 
   const primaryGenerateDisabled = isGenerating; // server also enforces idempotency
+
 
   return (
     <Modal
@@ -404,27 +420,102 @@ export default function ProductEditorModalRoute() {
               </InlineGrid>
 
               <InlineStack gap="200" blockAlign="end">
-                <div style={{ flex: 1 }}>
-                  <TextField
-                    label="Keywords"
-                    value={keywords}
-                    onChange={(v) => setKeywords(clampTextInput(v, 2000))}
-                    placeholder="e.g. organic cotton, eco-friendly t-shirt"
-                    autoComplete="off"
-                    disabled={isGenerating}
-                    helpText="Comma-separated seed keywords for SEO targeting (preview highlight only; server enforces caps)."
-                  />
-                </div>
-                <div style={{ paddingTop: 22 }}>
-                  <Button
-                    onClick={handleSuggestKeywords}
-                    loading={keywordFetcher.state !== "idle"}
-                    disabled={isGenerating}
-                    size="slim"
-                  >
-                    ✨ Suggest
-                  </Button>
-                </div>
+                {/* Keywords field — replace the existing InlineStack gap="200" block with this: */}
+<BlockStack gap="200">
+  <InlineStack gap="200" blockAlign="end">
+    <div style={{ flex: 1 }}>
+      <TextField
+        label="Keywords"
+        value={keywords}
+        onChange={(v) => setKeywords(clampTextInput(v, 2000))}
+        placeholder="e.g. organic cotton, eco-friendly t-shirt"
+        autoComplete="off"
+        disabled={isGenerating}
+        helpText="Comma-separated seed keywords for SEO targeting."
+      />
+    </div>
+    <div style={{ paddingTop: 22 }}>
+      <Button
+        onClick={handleSuggestKeywords}
+        loading={keywordFetcher.state !== "idle"}
+        disabled={isGenerating}
+        size="slim"
+      >
+        ✨ Suggest
+      </Button>
+    </div>
+  </InlineStack>
+
+  {/* Current keyword tags */}
+  {parseKeywords(keywords).length > 0 && (
+    <InlineStack gap="100" wrap>
+      {parseKeywords(keywords).map((kw) => (
+        <div
+          key={kw}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
+            background: "#f1f2f3",
+            border: "1px solid #c9cccf",
+            borderRadius: 4,
+            padding: "2px 8px",
+            fontSize: 13,
+          }}
+        >
+          {kw}
+          <button
+            onClick={() =>
+              setKeywords(
+                parseKeywords(keywords)
+                  .filter((k) => k !== kw)
+                  .join(", ")
+              )
+            }
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              padding: "0 2px",
+              fontSize: 12,
+              color: "#6d7175",
+            }}
+          >
+            ×
+          </button>
+        </div>
+      ))}
+    </InlineStack>
+  )}
+
+  {/* Suggested keyword chips */}
+  {suggestedKeywords.length > 0 && (
+    <BlockStack gap="100">
+      <Text variant="bodySm" tone="subdued">
+        Suggested — click to add:
+      </Text>
+      <InlineStack gap="100" wrap>
+        {suggestedKeywords.map((kw) => (
+          <button
+            key={kw}
+            onClick={() => handleAddSuggestedKeyword(kw)}
+            style={{
+              background: "none",
+              border: "1px solid #c9cccf",
+              borderRadius: 4,
+              padding: "2px 8px",
+              cursor: "pointer",
+              fontSize: 13,
+              color: "#202223",
+            }}
+          >
+            + {kw}
+          </button>
+        ))}
+      </InlineStack>
+    </BlockStack>
+  )}
+</BlockStack>
               </InlineStack>
 
               <Checkbox

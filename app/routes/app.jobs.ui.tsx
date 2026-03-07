@@ -499,13 +499,13 @@ export default function JobsRoute() {
   }, [hasActiveJobs]);
 
   return (
-    <Page title="Generation Queue" fullWidth>
+    <Page title="History" fullWidth>
       <BlockStack gap="400">
         <Card>
           <InlineStack align="space-between" blockAlign="center">
             <BlockStack gap="100">
               <Text as="h2" variant="headingMd">
-                Job Monitor
+                History Details
               </Text>
               <InlineStack gap="200" blockAlign="center">
                 {isRevalidating && <Spinner size="small" />}

@@ -65,6 +65,9 @@ model GenerationJob {
   // Description snapshot fields — added for undo support
   generatedDescription String?  // The AI-generated description written to Shopify
   previousDescription  String?  // Snapshot of the product description BEFORE generation
+  productVendor   String?
+  productType     String?
+  productTags     String?
 
   @@index([shopDomain])
   @@index([productId])

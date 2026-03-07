@@ -1,4 +1,4 @@
-// FILE: app/routes/app.api.job.$jobId.tsx
+// FILE: app/routes/app.api.job.$jobId.ts
 // Lightweight polling endpoint (JSON only).
 // Security & scale hardening:
 // - Authenticated (authenticate.admin) + shop-scoped DB read

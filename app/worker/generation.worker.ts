@@ -1,15 +1,11 @@
 // FILE: app/workers/generation.worker.ts
-// Worker for processing "generation" jobs.
-// IMPORTANT: This file MUST be executed by a Node process (separate worker process
-// or explicitly imported by a worker entry). If it’s never imported/run, jobs will
-// remain PENDING and UI shows "Job queued, starting shortly…".
-
 import { Worker, type Job } from "bullmq";
 import { z } from "zod";
 
 import { db } from "../lib/db.server";
 import { redisConnection } from "../lib/queue.server";
 import { sanitiseHtml } from "../lib/html.server";
+import { generateProductDescription } from "../lib/ai.server";
 
 const DraftSchema = z
   .object({
@@ -33,7 +29,7 @@ type GenerationJobData = {
   productId: string;
   vibe?: string;
   format?: string;
-  keywords?: string; // CSV
+  keywords?: string;
   includeSocials?: boolean;
 };
 
@@ -45,86 +41,6 @@ const LIMITS = {
 function clampError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err ?? "Unknown error");
   return msg.length <= LIMITS.MAX_ERROR_CHARS ? msg : msg.slice(0, LIMITS.MAX_ERROR_CHARS);
-}
-
-function escapeHtml(s: string) {
-  return String(s ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-function clampLen(s: string, max: number) {
-  const v = String(s ?? "");
-  return v.length <= max ? v : v.slice(0, max);
-}
-
-/**
- * Deterministic safe draft generator (until real DeepSeek "generate" exists in your repo).
- * This is server-owned HTML and still goes through allowlist sanitizer.
- */
-function buildDeterministicDraft(input: {
-  productId: string;
-  productTitle?: string | null;
-  vendor?: string | null;
-  productType?: string | null;
-  format?: string | null;
-  keywordsCsv?: string | null;
-  includeSocials?: boolean | null;
-}): DraftResult {
-  const title = (input.productTitle || input.productId || "Product").toString();
-  const vendor = (input.vendor || "").toString();
-  const productType = (input.productType || "").toString();
-
-  const keywords =
-    (input.keywordsCsv || "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .slice(0, 40) || [];
-
-  const primary = keywords[0] || undefined;
-
-  const rawHtml =
-    input.format === "bullets"
-      ? `<p><strong>${escapeHtml(title)}</strong></p><ul>${[
-          vendor ? `<li>Brand: ${escapeHtml(vendor)}</li>` : "",
-          productType ? `<li>Type: ${escapeHtml(productType)}</li>` : "",
-          primary ? `<li>Primary keyword: ${escapeHtml(primary)}</li>` : "",
-        ]
-          .filter(Boolean)
-          .join("")}</ul>`
-      : `<p><strong>${escapeHtml(title)}</strong></p><p>${
-          vendor ? `Brand: ${escapeHtml(vendor)}. ` : ""
-        }${productType ? `Type: ${escapeHtml(productType)}. ` : ""}${
-          primary ? `Targeting: ${escapeHtml(primary)}.` : ""
-        }</p>`;
-
-  const body_html = sanitiseHtml(rawHtml);
-
-  const meta_title = clampLen(`${title}${primary ? ` | ${primary}` : ""}`, 500);
-  const meta_description = clampLen(
-    `${title}${vendor ? ` by ${vendor}` : ""}${productType ? ` (${productType})` : ""}${
-      primary ? ` — ${primary}.` : "."
-    }`,
-    2000,
-  );
-
-  const social_caption = input.includeSocials
-    ? clampLen(`Check out ${title}${primary ? ` — ${primary}` : ""}!`, 2000)
-    : undefined;
-
-  return DraftSchema.parse({
-    body_html,
-    meta_title,
-    meta_description,
-    keywords: keywords.length ? keywords : undefined,
-    primary_keyword: primary,
-    headline: clampLen(title, 500),
-    social_caption,
-  });
 }
 
 async function setProgressSafe(jobId: string, shopDomain: string, progress: number) {
@@ -157,7 +73,6 @@ export const generationWorker = new Worker<GenerationJobData>(
       throw new Error("Invalid job payload (missing jobId/shopDomain/productId)");
     }
 
-    // Shop-scoped: DB is source of truth
     const dbJob = await db.generationJob.findFirst({
       where: { id: jobId, shopDomain },
       select: {
@@ -165,7 +80,11 @@ export const generationWorker = new Worker<GenerationJobData>(
         status: true,
         productId: true,
         productTitle: true,
-        keywords: true,
+  productVendor: true,   // new
+  productType: true,     // new
+  productTags: true,     // new
+  keywords: true,
+        vibe: true,
         format: true,
         includeSocials: true,
       },
@@ -173,15 +92,12 @@ export const generationWorker = new Worker<GenerationJobData>(
 
     if (!dbJob) return { ok: false, code: "JOB_NOT_FOUND" as const };
 
-    // Terminal idempotency exits
     if (dbJob.status === "COMPLETED") return { ok: true, already: "COMPLETED" as const };
     if (dbJob.status === "CANCELLED") return { ok: true, already: "CANCELLED" as const };
     if (dbJob.status === "FAILED") return { ok: true, already: "FAILED" as const };
-
-    // Only process PENDING; otherwise another worker or state change is in progress.
     if (dbJob.status !== "PENDING") return { ok: true, already: dbJob.status as const };
 
-    // Claim atomically: PENDING -> PROCESSING
+    // Claim: PENDING → PROCESSING
     const claimed = await db.generationJob.updateMany({
       where: { id: jobId, shopDomain, status: "PENDING" },
       data: { status: "PROCESSING", progress: 1, errorMessage: null },
@@ -194,17 +110,50 @@ export const generationWorker = new Worker<GenerationJobData>(
     try {
       await setProgressSafe(jobId, shopDomain, 10);
 
-      // Until a real DeepSeek generation function exists, create a deterministic safe draft
-      const draft = buildDeterministicDraft({
-        productId: dbJob.productId,
-        productTitle: dbJob.productTitle,
-        format: dbJob.format,
-        keywordsCsv: dbJob.keywords,
-        includeSocials: dbJob.includeSocials,
-      });
+      // ── Parse keywords CSV ──────────────────────────────────────────────
+      const keywordsList = (dbJob.keywords ?? "")
+        .split(",")
+        .map((k) => k.trim())
+        .filter(Boolean);
+
+      await setProgressSafe(jobId, shopDomain, 20);
+
+      // ── Fetch full product meta from DB job (title stored at enqueue time) ──
+      // We need vendor/productType/tags for the AI prompt.
+      // These aren't stored in the job, so we fetch from Shopify via a lightweight
+      // approach: use what we have (title) and fallback gracefully.
+      // NOTE: For richer output, store vendor/productType/tags at enqueue time.
+      const title = dbJob.productTitle ?? dbJob.productId;
+
+      // ── Call real AI ────────────────────────────────────────────────────
+      const aiResult = await generateProductDescription({
+  title: dbJob.productTitle ?? dbJob.productId,
+  vendor: dbJob.productVendor ?? "",
+  productType: dbJob.productType ?? "",
+  tags: dbJob.productTags ? dbJob.productTags.split(",").map(t => t.trim()).filter(Boolean) : [],
+  vibe: dbJob.vibe ?? "casual",
+  format: dbJob.format ?? "paragraph",
+  keywords: keywordsList,
+  includeSocials: dbJob.includeSocials ?? false,
+});
 
       await setProgressSafe(jobId, shopDomain, 80);
-      await markCompleted(jobId, shopDomain, draft, 0);
+
+      // ── Shape result ────────────────────────────────────────────────────
+      const wordCount = aiResult.body_html.replace(/<[^>]+>/g, " ").trim().split(/\s+/).length;
+      const sanitizedHtml = sanitiseHtml(aiResult.body_html);
+
+      const draft: DraftResult = DraftSchema.parse({
+        body_html: sanitizedHtml,
+        meta_title: aiResult.meta_title,
+        meta_description: aiResult.meta_description,
+        keywords: aiResult.keywords,
+        primary_keyword: aiResult.keywords?.[0] ?? undefined,
+        headline: `${title} — ${dbJob.vibe ?? "casual"}`,
+        social_caption: aiResult.social_caption || undefined,
+      });
+
+      await markCompleted(jobId, shopDomain, draft, wordCount);
 
       return { ok: true };
     } catch (err) {
@@ -220,7 +169,7 @@ export const generationWorker = new Worker<GenerationJobData>(
 );
 
 generationWorker.on("ready", () => {
-  console.log("[generation.worker] ready");
+  console.log("[generation.worker] ready — using real AI generation");
 });
 
 generationWorker.on("failed", (job, err) => {

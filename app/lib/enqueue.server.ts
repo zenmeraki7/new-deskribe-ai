@@ -18,11 +18,10 @@ function hashInput(input: string) {
   return crypto.createHash("sha256").update(input).digest("hex");
 }
 
-// Add helper function to fetch product title
-async function fetchProductTitle(
+async function fetchProductMeta(
   adminGraphql: (query: string, opts?: any) => Promise<Response>,
   productId: string
-): Promise<string | null> {
+) {
   try {
     const response = await adminGraphql(
       `#graphql
@@ -30,15 +29,24 @@ async function fetchProductTitle(
         product(id: $id) {
           id
           title
+          vendor
+          productType
+          tags
         }
       }`,
       { variables: { id: productId } }
     );
-
     const data = await response.json();
-    return data?.data?.product?.title || null;
-  } catch (error) {
-    console.error(`Failed to fetch product title for ${productId}:`, error);
+    const p = data?.data?.product;
+    if (!p) return null;
+    return {
+      title: p.title as string,
+      vendor: p.vendor as string,
+      productType: p.productType as string,
+      tags: p.tags as string[],
+    };
+  } catch (err) {
+    console.error(`Failed to fetch product meta for ${productId}:`, err);
     return null;
   }
 }
@@ -50,7 +58,7 @@ export async function enqueueGenerationJobs({
   format,
   keywords,
   includeSocials,
-  adminGraphql, // Now we'll use this!
+  adminGraphql,
 }: EnqueueParams): Promise<{ jobIds: string[]; skipped: string[] }> {
   const jobIds: string[] = [];
   const skipped: string[] = [];
@@ -74,11 +82,10 @@ export async function enqueueGenerationJobs({
       continue;
     }
 
-    // Fetch product title before creating the job
-    const productTitle = await fetchProductTitle(adminGraphql, productId);
-    
-    if (!productTitle) {
-      console.warn(`Skipping product ${productId}: title not found`);
+    const meta = await fetchProductMeta(adminGraphql, productId);
+
+    if (!meta) {
+      console.warn(`Skipping product ${productId}: meta not found`);
       skipped.push(productId);
       continue;
     }
@@ -87,7 +94,10 @@ export async function enqueueGenerationJobs({
       data: {
         shopDomain,
         productId,
-        productTitle, // ← Add the required field
+        productTitle: meta.title,
+        productVendor: meta.vendor,
+        productType: meta.productType,
+        productTags: meta.tags.join(","),
         status: "PENDING",
         inputHash,
         vibe,

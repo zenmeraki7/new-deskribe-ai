@@ -27,7 +27,7 @@ import { json } from "@remix-run/node";
 import {
   suggestKeywords,
   generateProductDescription,
-} from "../lib/ai.serever";
+} from "../lib/ai.server";
 import { authenticate } from "../shopify.server";
 
 
