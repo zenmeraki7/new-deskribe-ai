@@ -15,7 +15,23 @@ const shopify = shopifyApp({
   appUrl: process.env.SHOPIFY_APP_URL || "",
   authPathPrefix: "/auth",
   sessionStorage: new PrismaSessionStorage(db),
-  distribution: AppDistribution.AppStore,
+  distribution: AppDistribution.SingleMerchant,
+  billing: {
+  "Basic Plan": {
+    amount: 9,
+    currencyCode: "USD",
+    interval: "EVERY_30_DAYS",
+    trialDays: 7,
+    isTest: true,
+  },
+  "Pro Plan": {
+    amount: 29,
+    currencyCode: "USD",
+    interval: "EVERY_30_DAYS",
+    trialDays: 7,
+    isTest: true,
+  },
+},
   future: {
     unstable_newEmbeddedAuthStrategy: true,
     removeRest: true,
@@ -33,3 +49,5 @@ export const unauthenticated = shopify.unauthenticated;
 export const login = shopify.login;
 export const registerWebhooks = shopify.registerWebhooks;
 export const sessionStorage = shopify.sessionStorage;
+
+export const billing = shopify.billing;
