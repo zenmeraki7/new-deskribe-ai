@@ -126,5 +126,7 @@ export async function enqueueGenerationJobs({
     jobIds.push(job.id);
   }
 
+  console.log("[enqueue] Job added to Redis queue:", job.id);
+
   return { jobIds, skipped };
 }
