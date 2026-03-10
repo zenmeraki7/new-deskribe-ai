@@ -1,32 +1,35 @@
-import type { HeadersFunction, LoaderFunctionArgs } from "@remix-run/node";
-import { redirect } from "@remix-run/node";
-import { Link, Outlet, useLoaderData, useRouteError } from "@remix-run/react";
+// FILE: app/routes/app.tsx
+
+import type {
+  HeadersFunction,
+  LoaderFunctionArgs,
+  LinksFunction,
+} from "@remix-run/node";
+import { Outlet, Link, useLoaderData, useRouteError } from "@remix-run/react";
 import { boundary } from "@shopify/shopify-app-remix/server";
 import { AppProvider } from "@shopify/shopify-app-remix/react";
 import { NavMenu } from "@shopify/app-bridge-react";
 import polarisStyles from "@shopify/polaris/build/esm/styles.css?url";
 
-import { authenticate } from "../shopify.server";
+import { requireManagedSubscription } from "../lib/billing.server";
 
-export const links = () => [{ rel: "stylesheet", href: polarisStyles }];
+export const links: LinksFunction = () => [
+  { rel: "stylesheet", href: polarisStyles },
+];
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { billing } = await authenticate.admin(request);
+  const billingRedirect = await requireManagedSubscription(request);
 
-  await billing.require({
-    plans: ["Basic Plan", "Pro Plan"],
-    isTest: true,
-    onFailure: async () => {
-      await billing.request({
-        plan: "Basic Plan",
-        isTest: true,
-      });
-    },
-  });
-  return { apiKey: process.env.SHOPIFY_API_KEY || "" };
+  if (billingRedirect) {
+    return billingRedirect;
+  }
+
+  return {
+    apiKey: process.env.SHOPIFY_API_KEY || "",
+  };
 };
 
-export default function App() {
+export default function AppLayout() {
   const { apiKey } = useLoaderData<typeof loader>();
 
   return (

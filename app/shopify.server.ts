@@ -1,3 +1,5 @@
+// FILE: app/shopify.server.ts
+
 import "@shopify/shopify-app-remix/adapters/node";
 import {
   ApiVersion,
@@ -8,40 +10,31 @@ import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prism
 import { db } from "./lib/db.server";
 
 const shopify = shopifyApp({
-  apiKey: process.env.SHOPIFY_API_KEY,
+  apiKey: process.env.SHOPIFY_API_KEY!,
   apiSecretKey: process.env.SHOPIFY_API_SECRET || "",
   apiVersion: ApiVersion.January25,
-  scopes: process.env.SCOPES?.split(","),
+  scopes: process.env.SCOPES?.split(",") ?? [],
   appUrl: process.env.SHOPIFY_APP_URL || "",
   authPathPrefix: "/auth",
   sessionStorage: new PrismaSessionStorage(db),
-  distribution: AppDistribution.SingleMerchant,
-  billing: {
-  "Basic Plan": {
-    amount: 9,
-    currencyCode: "USD",
-    interval: "EVERY_30_DAYS",
-    trialDays: 7,
-    isTest: true,
-  },
-  "Pro Plan": {
-    amount: 29,
-    currencyCode: "USD",
-    interval: "EVERY_30_DAYS",
-    trialDays: 7,
-    isTest: true,
-  },
-},
+
+  // Managed pricing => public app / App Store distribution
+  distribution: AppDistribution.AppStore,
+  isEmbeddedApp: true,
+
   future: {
     unstable_newEmbeddedAuthStrategy: true,
     removeRest: true,
+    unstable_managedPricingSupport: true,
   },
+
   ...(process.env.SHOP_CUSTOM_DOMAIN
     ? { customShopDomains: [process.env.SHOP_CUSTOM_DOMAIN] }
     : {}),
 });
 
 export default shopify;
+
 export const apiVersion = ApiVersion.January25;
 export const addDocumentResponseHeaders = shopify.addDocumentResponseHeaders;
 export const authenticate = shopify.authenticate;
@@ -49,5 +42,3 @@ export const unauthenticated = shopify.unauthenticated;
 export const login = shopify.login;
 export const registerWebhooks = shopify.registerWebhooks;
 export const sessionStorage = shopify.sessionStorage;
-
-export const billing = shopify.billing;

@@ -20,21 +20,15 @@ import {
   Tag,
   List,
 } from "@shopify/polaris";
-
 import { useLoaderData, useFetcher, useNavigate } from "@remix-run/react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json } from "@remix-run/node";
+
 import {
   suggestKeywords,
   generateProductDescription,
 } from "../lib/ai.server";
 import { authenticate } from "../shopify.server";
-
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Constants
-// ─────────────────────────────────────────────────────────────────────────────
 
 const DUMMY_IMAGE =
   "https://cdn.shopify.com/s/files/1/0533/2089/files/placeholder-images-image_large.png";
@@ -53,10 +47,6 @@ const FORMAT_OPTIONS = [
   { label: "Hybrid", value: "hybrid" },
 ];
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Types
-// ─────────────────────────────────────────────────────────────────────────────
-
 interface ShopifyProduct {
   id: string;
   title: string;
@@ -72,9 +62,34 @@ interface LoaderData {
   error?: string;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Loader — fetch first product from Shopify
-// ─────────────────────────────────────────────────────────────────────────────
+type ActionData =
+  | {
+      ok: true;
+      kind: "suggest_keywords";
+      keywords: string[];
+    }
+  | {
+      ok: true;
+      kind: "generate";
+      result: {
+        body_html: string;
+        social_caption?: string;
+        keywords?: string[];
+        headline: string;
+        wordCount: number;
+        charCount: number;
+        primary_keyword: string;
+      };
+    }
+  | {
+      ok: true;
+      applied: true;
+    }
+  | {
+      ok: false;
+      kind?: "error";
+      error: string;
+    };
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const { admin } = await authenticate.admin(request);
@@ -104,7 +119,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       data?.data?.products?.nodes?.[0] ?? null;
 
     return json<LoaderData>({ product });
-  } catch (err) {
+  } catch {
     return json<LoaderData>({
       product: null,
       error: "Failed to load product.",
@@ -112,12 +127,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Action — suggest_keywords | generate
-// ─────────────────────────────────────────────────────────────────────────────
-
 export async function action({ request }: ActionFunctionArgs) {
-  const { admin, session } = await authenticate.admin(request);
+  const { admin } = await authenticate.admin(request);
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
 
@@ -131,160 +142,196 @@ export async function action({ request }: ActionFunctionArgs) {
       .filter(Boolean);
 
     try {
-  const keywords = await suggestKeywords(title, vendor, productType, tags);
-  return json({ ok: true, kind: "suggest_keywords", keywords });
-} catch (err) {
-  console.error("Keyword generation error:", err);
+      const keywords = await suggestKeywords(title, vendor, productType, tags);
+      return json<ActionData>({ ok: true, kind: "suggest_keywords", keywords });
+    } catch (err) {
+      console.error("Keyword generation error:", err);
 
-  return json(
-    {
-      ok: false,
-      kind: "error",
-      error: err instanceof Error ? err.message : "Keyword generation failed",
-    },
-    { status: 500 },
-  );
-}
+      return json<ActionData>(
+        {
+          ok: false,
+          kind: "error",
+          error:
+            err instanceof Error ? err.message : "Keyword generation failed",
+        },
+        { status: 500 },
+      );
+    }
   }
 
   if (intent === "generate") {
+    try {
+      const productId = String(form.get("productId") ?? "");
+      const vibe = String(form.get("vibe") ?? "casual");
+      const format = String(form.get("format") ?? "paragraph");
+      const keywords = String(form.get("keywords") ?? "");
+      const includeSocials = form.get("includeSocials") === "true";
 
-  const productId = String(form.get("productId") ?? "");
-  const vibe = String(form.get("vibe") ?? "casual");
-  const format = String(form.get("format") ?? "paragraph");
-  const keywords = String(form.get("keywords") ?? "");
-  const includeSocials = form.get("includeSocials") === "true";
+      const resp = await admin.graphql(
+        `
+          #graphql
+          query ProductTitle($id: ID!) {
+            product(id: $id) {
+              title
+              vendor
+              productType
+              tags
+            }
+          }
+        `,
+        { variables: { id: productId } },
+      );
 
-  const resp = await admin.graphql(`
-    query ProductTitle($id: ID!) {
-      product(id: $id) { title vendor productType tags }
+      const data = await resp.json();
+      const p = data?.data?.product;
+
+      if (!p) {
+        return json<ActionData>(
+          { ok: false, error: "Product not found" },
+          { status: 404 },
+        );
+      }
+
+      const result = await generateProductDescription({
+        title: p.title,
+        vendor: p.vendor,
+        productType: p.productType,
+        tags: p.tags,
+        vibe,
+        format,
+        keywords: keywords
+          .split(",")
+          .map((k) => k.trim())
+          .filter(Boolean),
+        includeSocials,
+      });
+
+      const plainText = result.body_html.replace(/<[^>]+>/g, " ").trim();
+      const wordCount = plainText ? plainText.split(/\s+/).length : 0;
+      const charCount = result.body_html.replace(/<[^>]+>/g, "").length;
+
+      return json<ActionData>({
+        ok: true,
+        kind: "generate",
+        result: {
+          ...result,
+          headline: `${p.title} — ${vibe}`,
+          wordCount,
+          charCount,
+          primary_keyword: result.keywords?.[0] ?? "",
+        },
+      });
+    } catch (err) {
+      console.error("Description generation error:", err);
+
+      return json<ActionData>(
+        {
+          ok: false,
+          error:
+            err instanceof Error ? err.message : "Description generation failed",
+        },
+        { status: 500 },
+      );
     }
-  `,{ variables: { id: productId }});
+  }
 
-  const data = await resp.json();
-  const p = data?.data?.product;
-
-  const result = await generateProductDescription({
-    title: p.title,
-    vendor: p.vendor,
-    productType: p.productType,
-    tags: p.tags,
-    vibe,
-    format,
-    keywords: keywords.split(",").map(k => k.trim()).filter(Boolean),
-    includeSocials,
-  });
-
-  const wordCount = result.body_html.replace(/<[^>]+>/g," ").trim().split(/\s+/).length;
-  const charCount = result.body_html.replace(/<[^>]+>/g,"").length;
-
-  return json({
-    ok: true,
-    kind: "generate",
-    result: {
-      ...result,
-      headline: `${p.title} — ${vibe}`,
-      wordCount,
-      charCount,
-      primary_keyword: result.keywords?.[0] ?? "",
-    },
-  });
-
-}
   if (intent === "apply") {
     const productId = String(form.get("productId") ?? "");
     const bodyHtml = String(form.get("bodyHtml") ?? "");
 
     if (!productId || !bodyHtml) {
-      return json(
+      return json<ActionData>(
         { ok: false, error: "Missing product or description" },
         { status: 400 },
       );
     }
 
-    const response = await admin.graphql(
-      `#graphql
-  mutation UpdateProduct($id: ID!, $descriptionHtml: String!) {
-    productUpdate(input: {
-      id: $id,
-      descriptionHtml: $descriptionHtml
-    }) {
-      product { id }
-      userErrors { field message }
-    }
-  }`,
-      {
-        variables: {
-          id: productId,
-          descriptionHtml: bodyHtml,
+    try {
+      const response = await admin.graphql(
+        `#graphql
+        mutation UpdateProduct($id: ID!, $descriptionHtml: String!) {
+          productUpdate(input: {
+            id: $id,
+            descriptionHtml: $descriptionHtml
+          }) {
+            product { id }
+            userErrors { field message }
+          }
+        }`,
+        {
+          variables: {
+            id: productId,
+            descriptionHtml: bodyHtml,
+          },
         },
-      },
-    );
+      );
 
-    // convert response to JSON
-    const result = await response.json();
+      const result = await response.json();
+      const userErrors = result?.data?.productUpdate?.userErrors;
 
-    // extract userErrors
-    const userErrors = result?.data?.productUpdate?.userErrors;
+      if (userErrors?.length) {
+        return json<ActionData>(
+          { ok: false, error: userErrors[0].message },
+          { status: 400 },
+        );
+      }
 
-    // if Shopify rejected update
-    if (userErrors && userErrors.length > 0) {
-      return json({ ok: false, error: userErrors[0].message }, { status: 400 });
+      return json<ActionData>({ ok: true, applied: true });
+    } catch (err) {
+      console.error("Apply product description error:", err);
+
+      return json<ActionData>(
+        {
+          ok: false,
+          error: err instanceof Error ? err.message : "Failed to apply changes",
+        },
+        { status: 500 },
+      );
     }
-
-    // only if no errors:
-    return json({ ok: true, applied: true });
   }
 
-  // If no valid intent matched
-  return json(
+  return json<ActionData>(
     { ok: false, kind: "error", error: "Invalid intent" },
     { status: 400 },
   );
 }
-// ─────────────────────────────────────────────────────────────────────────────
-// Component
-// ─────────────────────────────────────────────────────────────────────────────
 
 export default function IndexPage() {
   const { product, error } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
-  const fetcher = useFetcher<any>();
-  const applyFetcher = useFetcher<any>();
+  const fetcher = useFetcher<ActionData>();
+  const applyFetcher = useFetcher<ActionData>();
 
-  // Settings state
   const [vibe, setVibe] = useState("casual");
   const [format, setFormat] = useState("paragraph");
   const [keywords, setKeywords] = useState("");
   const [includeSocials, setIncludeSocials] = useState(false);
-
   const [showSuccessBanner, setShowSuccessBanner] = useState(false);
 
   const isGenerating =
     fetcher.state !== "idle" && fetcher.formData?.get("intent") === "generate";
+
   const isSuggestingKeywords =
     fetcher.state !== "idle" &&
     fetcher.formData?.get("intent") === "suggest_keywords";
 
   const generationResult =
-    fetcher.data?.kind === "generate" && fetcher.data?.ok
+    fetcher.data?.ok && fetcher.data.kind === "generate"
       ? fetcher.data.result
       : null;
 
   const actionError = fetcher.data?.ok === false ? fetcher.data.error : null;
+  const applyError =
+    applyFetcher.data?.ok === false ? applyFetcher.data.error : null;
 
   const isApplying = applyFetcher.state !== "idle";
 
   const canApply =
-    generationResult &&
-    generationResult.body_html &&
-    !isGenerating &&
-    !isApplying;
-
-  // ── Handlers ──────────────────────────────────────────────────────────────
+    !!generationResult?.body_html && !isGenerating && !isApplying;
 
   const handleGenerate = useCallback(() => {
     if (!product) return;
+
     const fd = new FormData();
     fd.append("intent", "generate");
     fd.append("productId", product.id);
@@ -292,17 +339,20 @@ export default function IndexPage() {
     fd.append("format", format);
     fd.append("keywords", keywords);
     fd.append("includeSocials", String(includeSocials));
+
     fetcher.submit(fd, { method: "POST" });
   }, [product, vibe, format, keywords, includeSocials, fetcher]);
 
   const handleSuggestKeywords = useCallback(() => {
     if (!product) return;
+
     const fd = new FormData();
     fd.append("intent", "suggest_keywords");
     fd.append("title", product.title);
     fd.append("vendor", product.vendor);
     fd.append("productType", product.productType);
     fd.append("tags", product.tags.join(","));
+
     fetcher.submit(fd, { method: "POST" });
   }, [product, fetcher]);
 
@@ -317,7 +367,7 @@ export default function IndexPage() {
   }, []);
 
   useEffect(() => {
-    if (applyFetcher.data?.ok && applyFetcher.data?.applied) {
+    if (applyFetcher.data?.ok && "applied" in applyFetcher.data && applyFetcher.data.applied) {
       setShowSuccessBanner(true);
 
       const timer = setTimeout(() => {
@@ -328,9 +378,8 @@ export default function IndexPage() {
     }
   }, [applyFetcher.data]);
 
-  // Inject suggested keywords when they arrive
   const suggestedKeywords: string[] =
-    fetcher.data?.kind === "suggest_keywords" && fetcher.data?.ok
+    fetcher.data?.ok && fetcher.data.kind === "suggest_keywords"
       ? fetcher.data.keywords
       : [];
 
@@ -340,12 +389,11 @@ export default function IndexPage() {
         .split(",")
         .map((k) => k.trim())
         .filter(Boolean);
+
       if (existing.includes(kw)) return prev;
       return [...existing, kw].join(", ");
     });
   }, []);
-
-  // ── Derived ───────────────────────────────────────────────────────────────
 
   const imageUrl = product?.featuredImage?.url ?? DUMMY_IMAGE;
 
@@ -354,18 +402,9 @@ export default function IndexPage() {
     .map((k) => k.trim())
     .filter(Boolean);
 
-  // ── Render ────────────────────────────────────────────────────────────────
-
   if (error) {
     return (
       <Page title="DescribeAI" subtitle="AI Product Description Generator">
-            <Banner
-              tone="success"
-              title="Applied to Shopify"
-              onDismiss={() => setShowSuccessBanner(false)}
-            >
-              <Text as="p">Product description updated successfully.</Text>
-            </Banner>  
         <Layout>
           <Layout.Section>
             <Banner tone="critical" title="Error loading product">
@@ -403,11 +442,20 @@ export default function IndexPage() {
             </Banner>
           )}
 
-          {applyFetcher.data?.ok && applyFetcher.data?.applied && (
-            <Banner tone="success" title="Applied to Shopify">
+          {applyError && (
+            <Banner tone="critical" title="Failed to update Shopify">
+              <Text as="p">{applyError}</Text>
+            </Banner>
+          )}
+
+          {showSuccessBanner && (
+            <Banner
+              tone="success"
+              title="Applied to Shopify"
+              onDismiss={() => setShowSuccessBanner(false)}
+            >
               <Text as="p">
-                The product description has been successfully updated in
-                Shopify.
+                The product description has been successfully updated in Shopify.
               </Text>
             </Banner>
           )}
@@ -420,7 +468,6 @@ export default function IndexPage() {
               alignItems: "start",
             }}
           >
-            {/* ── LEFT: Product Card ─────────────────────────────────────── */}
             <Card>
               <BlockStack gap="300">
                 <Text as="h2" variant="headingSm">
@@ -475,9 +522,7 @@ export default function IndexPage() {
               </BlockStack>
             </Card>
 
-            {/* ── RIGHT: Settings + Output ───────────────────────────────── */}
             <BlockStack gap="400">
-              {/* Generation Settings */}
               <Card>
                 <BlockStack gap="400">
                   <Text as="h3" variant="headingSm">
@@ -505,7 +550,6 @@ export default function IndexPage() {
                     </div>
                   </InlineStack>
 
-                  {/* Keywords field */}
                   <BlockStack gap="200">
                     <InlineStack
                       gap="200"
@@ -531,7 +575,6 @@ export default function IndexPage() {
                       />
                     </InlineStack>
 
-                    {/* Keyword tags (current) */}
                     {keywordTags.length > 0 && (
                       <InlineStack gap="100" wrap>
                         {keywordTags.map((kw) => (
@@ -545,7 +588,6 @@ export default function IndexPage() {
                       </InlineStack>
                     )}
 
-                    {/* Suggested keywords */}
                     {suggestedKeywords.length > 0 && (
                       <BlockStack gap="100">
                         <Text variant="bodySm" tone="subdued">
@@ -555,6 +597,7 @@ export default function IndexPage() {
                           {suggestedKeywords.map((kw) => (
                             <button
                               key={kw}
+                              type="button"
                               onClick={() => handleAddSuggestedKeyword(kw)}
                               style={{
                                 background: "none",
@@ -593,11 +636,11 @@ export default function IndexPage() {
                 </BlockStack>
               </Card>
 
-              {/* Generated Output */}
-
               <Card>
                 <BlockStack gap="300">
-                  <Text variant="headingSm">Generated Output</Text>
+                  <Text variant="headingSm" as="h2">
+                    Generated Output
+                  </Text>
                   <Divider />
 
                   {isGenerating ? (
@@ -623,7 +666,9 @@ export default function IndexPage() {
                         <>
                           <Divider />
                           <BlockStack gap="100">
-                            <Text variant="headingSm">Instagram Caption</Text>
+                            <Text variant="headingSm" as="h3">
+                              Instagram Caption
+                            </Text>
                             <Text as="p" tone="subdued">
                               {generationResult.social_caption}
                             </Text>
@@ -635,33 +680,41 @@ export default function IndexPage() {
 
                       <InlineStack gap="600">
                         <BlockStack gap="050">
-                          <Text variant="headingMd">
+                          <Text variant="headingMd" as="p">
                             {generationResult.wordCount}
                           </Text>
-                          <Text variant="bodySm" tone="subdued">
+                          <Text variant="bodySm" tone="subdued" as="p">
                             Words
                           </Text>
                         </BlockStack>
+
                         <BlockStack gap="050">
-                          <Text variant="headingMd">
+                          <Text variant="headingMd" as="p">
                             {generationResult.charCount}
                           </Text>
-                          <Text variant="bodySm" tone="subdued">
+                          <Text variant="bodySm" tone="subdued" as="p">
                             Characters
                           </Text>
                         </BlockStack>
+
                         <BlockStack gap="050">
-                          <Text variant="headingMd">{vibe}</Text>
-                          <Text variant="bodySm" tone="subdued">
+                          <Text variant="headingMd" as="p">
+                            {vibe}
+                          </Text>
+                          <Text variant="bodySm" tone="subdued" as="p">
                             Style
                           </Text>
                         </BlockStack>
+
                         <BlockStack gap="050">
-                          <Text variant="headingMd">{format}</Text>
-                          <Text variant="bodySm" tone="subdued">
+                          <Text variant="headingMd" as="p">
+                            {format}
+                          </Text>
+                          <Text variant="bodySm" tone="subdued" as="p">
                             Format
                           </Text>
                         </BlockStack>
+
                         <BlockStack gap="050">
                           <Button
                             variant="primary"
@@ -682,6 +735,7 @@ export default function IndexPage() {
                             Apply to Shopify
                           </Button>
                         </BlockStack>
+
                         <BlockStack gap="050">
                           <Button
                             variant="tertiary"
@@ -691,7 +745,7 @@ export default function IndexPage() {
                               setFormat("paragraph");
                               setKeywords("");
                               setIncludeSocials(false);
-                              fetcher.load(window.location.pathname); // clears fetcher.data
+                              fetcher.load(window.location.pathname);
                             }}
                           >
                             Clear
@@ -701,7 +755,7 @@ export default function IndexPage() {
 
                       {generationResult.primary_keyword && (
                         <InlineStack gap="200" blockAlign="center">
-                          <Text variant="bodySm" tone="subdued">
+                          <Text variant="bodySm" tone="subdued" as="span">
                             Primary keyword:
                           </Text>
                           <Badge>{generationResult.primary_keyword}</Badge>
@@ -709,7 +763,7 @@ export default function IndexPage() {
                       )}
                     </BlockStack>
                   ) : (
-                    <Text tone="subdued">
+                    <Text tone="subdued" as="p">
                       Configure settings above and click "Generate Description"
                       to create an AI-powered product description.
                     </Text>
@@ -730,29 +784,23 @@ export default function IndexPage() {
                       </Text>{" "}
                       Choose a product from the table to get started.
                     </List.Item>
-
                     <List.Item>
                       <Text as="span" fontWeight="semibold">
                         Customize Your Settings:
                       </Text>{" "}
-                      Adjust tone, length, and other generation options to match
-                      your needs.
+                      Adjust tone, keywords, and formatting.
                     </List.Item>
-
                     <List.Item>
                       <Text as="span" fontWeight="semibold">
                         Generate Draft:
                       </Text>{" "}
-                      Click the generate button to create your AI-powered
-                      product description.
+                      Create an AI-powered product description.
                     </List.Item>
-
                     <List.Item>
                       <Text as="span" fontWeight="semibold">
                         Save to Shopify:
                       </Text>{" "}
-                      Review the draft and save it directly to your Shopify
-                      store with one click.
+                      Review the output and apply it directly to the product.
                     </List.Item>
                   </List>
                 </BlockStack>
