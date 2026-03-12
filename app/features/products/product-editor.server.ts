@@ -1,13 +1,13 @@
-// FILE: app/routes/app.products.$productId.server.ts
+// FILE: app/features/products/product-editor.server.ts
 import crypto from "node:crypto";
 import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-run/node";
 import { z } from "zod";
 
-import { authenticate } from "../shopify.server";
-import { db } from "../lib/db.server";
-import { enqueueGenerationJobs } from "../lib/enqueue.server";
-import { suggestKeywords } from "../lib/ai.server";
-import { sanitiseHtml, stripHtml } from "../lib/html.server";
+import { authenticate } from "../../shopify.server";
+import { db } from "../../lib/db.server";
+import { enqueueGenerationJobs } from "../../lib/enqueue.server";
+import { suggestKeywords } from "../../lib/ai.server";
+import { sanitiseHtml, stripHtml } from "../../lib/html.server";
 
 import {
   ACTIVE_JOB_LOOKBACK_MS,
@@ -17,8 +17,8 @@ import {
   SHOPIFY_GQL_RETRY,
   SHOPIFY_NUMERIC_ID_RE,
   UUID_V4_RE,
-} from "./app.products.$productId.constants";
-import type { LoaderData, ProductMeta, DraftResult } from "./app.products.$productId.types";
+} from "../../routes/app.products.$productId.constants";
+import type { LoaderData, ProductMeta, DraftResult } from "../../routes/app.products.$productId.types";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Product ID handling (defensive)

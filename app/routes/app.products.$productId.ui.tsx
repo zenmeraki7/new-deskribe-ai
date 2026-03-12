@@ -17,8 +17,7 @@ import {
 } from "@shopify/polaris";
 import { useFetcher, useLoaderData, useNavigate } from "@remix-run/react";
 
-import type { loader } from "./app.products.$productId.server";
-import type { DraftResult } from "./app.products.$productId.types";
+import type { LoaderData, DraftResult } from "./app.products.$productId.types";
 import {
   JOB_POLL_INTERVAL_MS,
   JOB_POLL_JITTER_RATIO,
@@ -189,7 +188,8 @@ function useJobPoll() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function ProductEditorModalRoute() {
-  const { product, activeJob, latestDraft, policyWarnings } = useLoaderData<typeof loader>();
+  const { product, activeJob, latestDraft, policyWarnings } = useLoaderData<LoaderData>();
+
   const navigate = useNavigate();
 
   // Form state (bounded / UI-only)
