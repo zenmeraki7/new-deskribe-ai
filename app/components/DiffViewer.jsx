@@ -2,11 +2,11 @@
 import React, { useMemo, useState } from "react";
 import { Card, InlineStack, Text, Button, Divider, Box, Banner } from "@shopify/polaris";
 
-import { normalizeKeywords } from "./diffViewer/keywords";
-import { KeywordDensityBar } from "./diffViewer/KeywordDensityBar";
-import { SafeHtmlFrame } from "./diffViewer/SafeHtmlFrame";
-import { TextDiffPane } from "./diffViewer/TextDiffPane";
-import { HtmlSourcePane } from "./diffViewer/HtmlSourcePane";
+import { normalizeKeywords } from "./DiffComponents/keywords";
+import { KeywordDensityBar } from "./DiffComponents/KeywordDensityBar";
+import { SafeHtmlFrame } from "./DiffComponents/SafeHtmlFrame";
+import { TextDiffPane } from "./DiffComponents/TextDiffPane";
+import { HtmlSourcePane } from "./DiffComponents/HtmlSourcePane";
 
 /**
  * DiffViewer (Client/UI)

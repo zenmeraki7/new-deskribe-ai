@@ -10,8 +10,8 @@ import React, { useMemo, useState } from "react";
 import DiffViewer from "./DiffViewer.jsx";
 import { BEFORE_HTML, AFTER_HTML, DEFAULT_KEYWORDS } from "./diffViewerPreview/sampleData.js";
 import { PreviewControls } from "./diffViewerPreview/PreviewControls.jsx";
-import { normalizeKeywords } from "./DiffViewer/keywords.js";
-import { clampSourceHtml } from "./DiffViewer/limits.js";
+import { normalizeKeywords } from "./DiffComponents/keywords.js";
+import { clampSourceHtml } from "./DiffComponents/limits.js";
 
 export default function DiffViewerPreview() {
   const [kwInput, setKwInput] = useState(DEFAULT_KEYWORDS.join(", "));
