@@ -9,14 +9,18 @@ function requireEnv(name: string): string {
 }
 
 const redisUrl = requireEnv("REDIS_URL");
-
 const isTls = redisUrl.startsWith("rediss://");
 
 export const redisConnection = new IORedis(redisUrl, {
   maxRetriesPerRequest: null,
   enableReadyCheck: false,
-  lazyConnect: false,
-  ...(isTls ? { tls: {} } : {}),
+  ...(isTls
+    ? {
+        tls: {
+          rejectUnauthorized: false,
+        },
+      }
+    : {}),
 });
 
 redisConnection.on("connect", () => {
@@ -28,7 +32,7 @@ redisConnection.on("ready", () => {
 });
 
 redisConnection.on("error", (err) => {
-  console.error("[redis] connection error:", err?.message ?? err);
+  console.error("[redis] connection error:", err);
 });
 
 export const generationQueue = new Queue("generation", {
