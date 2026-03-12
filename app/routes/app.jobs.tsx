@@ -1,16 +1,18 @@
 // FILE: app/routes/app.jobs.tsx
-/**
- * Route: /app/jobs
- *
- * Thin route module:
- * - Re-exports server loader/action from app.jobs.server
- * - Re-exports UI from app.jobs.ui
- *
- * SECURITY CONTRACT:
- * - All authentication, shop scoping, idempotency, and queue interaction
- *   MUST live inside app.jobs.server.
- * - This file must contain ZERO business logic.
- */
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 
-export { loader, action } from "./app.jobs.server";
-export { default } from "./app.jobs.ui";
+import JobsRoute from "./app.jobs.ui";
+import {
+  loader as serverLoader,
+  action as serverAction,
+} from "../features/jobs/app.jobs.server";
+
+export async function loader(args: LoaderFunctionArgs) {
+  return serverLoader(args);
+}
+
+export async function action(args: ActionFunctionArgs) {
+  return serverAction(args);
+}
+
+export default JobsRoute;

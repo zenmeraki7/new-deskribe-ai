@@ -27,8 +27,7 @@ import {
   Link,
 } from "@remix-run/react";
 
-import type { loader } from "./app.jobs.server";
-import type { JobRow } from "./app.jobs.types";
+import type { JobRow, LoaderData } from "./app.jobs.types";
 import { clampProgress, statusBadge } from "./app.jobs.types";
 import { POLL_INTERVAL_MS, UUID_RE } from "./app.jobs.constants";
 
@@ -393,7 +392,7 @@ function JobTableRow({ job, index, onViewDetails }: JobRowProps) {
 
 export default function JobsRoute() {
   const { jobs, hasActiveJobs, hasNextPage, nextCursor, totalPending } =
-    useLoaderData<typeof loader>();
+  useLoaderData<LoaderData>();
 
   const revalidator = useRevalidator();
   const cancelAllFetcher = useFetcher<{ ok: boolean; cancelled?: number; error?: string }>();

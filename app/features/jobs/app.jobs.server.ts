@@ -2,9 +2,9 @@
 import crypto from "node:crypto";
 import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-run/node";
 
-import { authenticate } from "../shopify.server";
-import { db } from "../lib/db.server";
-import { generationQueue } from "../lib/queue.server";
+import { authenticate } from "../../shopify.server";
+import { db } from "../../lib/db.server";
+import { generationQueue } from "../../lib/queue.server";
 
 import {
   ACTIVE_STATUSES,
@@ -14,8 +14,8 @@ import {
   PAGE_SIZE,
   MAX_PAGE_SIZE,
   UUID_RE,
-} from "./app.jobs.constants";
-import { isJobStatus, type LoaderData, type JobStatus } from "./app.jobs.types";
+} from "../../routes/app.jobs.constants";
+import { isJobStatus, type LoaderData, type JobStatus } from "../../routes/app.jobs.types";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers (server-only)
