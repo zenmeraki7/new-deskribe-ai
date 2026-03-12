@@ -1,2 +1,3 @@
 release: npm run setup
 web: npm run start
+worker: npm run worker:generation
