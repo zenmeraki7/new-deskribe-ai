@@ -215,12 +215,13 @@ export default function ProductEditorModalRoute() {
 
   // Start polling when generate returns jobId
   useEffect(() => {
-    const data = generateFetcher.data;
-    const jobId = data?.jobId;
-    if (data?.ok && typeof jobId === "string" && isUuidV4(jobId)) {
-      startPolling(jobId);
-    }
-  }, [generateFetcher.data, startPolling]);
+  const data = generateFetcher.data;
+  const jobId = data?.jobId;
+
+  if (data?.ok && typeof jobId === "string" && isUuidV4(jobId)) {
+    startPolling(jobId);
+  }
+}, [generateFetcher.data?.jobId, startPolling]);
 
   // Auto-resume polling if an active job exists (on mount)
   useEffect(() => {
@@ -277,7 +278,11 @@ export default function ProductEditorModalRoute() {
   const highlightKeywords = useMemo(() => parseKeywords(keywords), [keywords]);
 
   const generateError =
-    generateFetcher.data && generateFetcher.data.ok === false ? String(generateFetcher.data.error ?? "") : "";
+  generateFetcher.data?.intent === "generate" &&
+  generateFetcher.data?.ok === false
+    ? String(generateFetcher.data.error ?? "")
+    : "";
+
   const applyError =
     applyFetcher.data && applyFetcher.data.ok === false ? String(applyFetcher.data.error ?? "") : "";
   const applySuccess = applyFetcher.data?.ok === true && applyFetcher.data?.applied === true;

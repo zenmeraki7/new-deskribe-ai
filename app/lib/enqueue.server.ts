@@ -122,11 +122,12 @@ export async function enqueueGenerationJobs({
         jobId: job.id,
       },
     );
-
+    console.log("[enqueue] Job added to Redis queue:", job.id);
+    
     jobIds.push(job.id);
   }
 
-  console.log("[enqueue] Job added to Redis queue:", job.id);
+  
 
   return { jobIds, skipped };
 }
