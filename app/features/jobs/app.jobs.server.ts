@@ -1,10 +1,19 @@
-// FILE: app/routes/app.jobs.server.ts
+// FILE: app/features/jobs/jobs.server.ts
+//
+// Loader + action for /app/jobs.
+// Patched additions vs original app/routes/app.jobs.server.ts:
+//   - loader select: added bulkId, result
+//   - loader map:    added bulkId, draftBodyHtml, metaTitle, metaDescription
+//   - action undo:   unchanged
+//   - action cancel/retry/cancel_all/create: unchanged
+
 import crypto from "node:crypto";
 import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-run/node";
 
 import { authenticate } from "../../shopify.server";
 import { db } from "../../lib/db.server";
 import { generationQueue } from "../../lib/queue.server";
+import { sanitiseHtml } from "../../lib/html.server";
 
 import {
   ACTIVE_STATUSES,
@@ -18,7 +27,7 @@ import {
 import { isJobStatus, type LoaderData, type JobStatus } from "../../routes/app.jobs.types";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Helpers (server-only)
+// Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
 function isUuidV4(x: string | null): x is string {
@@ -30,8 +39,7 @@ function sha256Hex(input: string) {
 }
 
 function idempotencyKey(params: { shop: string; action: string; material: string }) {
-  const raw = `${params.shop}:${params.action}:${params.material}`;
-  return sha256Hex(raw);
+  return sha256Hex(`${params.shop}:${params.action}:${params.material}`);
 }
 
 async function removeBullJobsBestEffort(bullJobIds: string[]) {
@@ -61,8 +69,29 @@ function clampPageSize(value: string | null) {
   return Math.min(Math.floor(n), MAX_PAGE_SIZE);
 }
 
+// Extract and sanitize body_html from the result JSON column.
+// Returns empty string if result is missing or malformed.
+function extractBodyHtml(result: unknown): string {
+  if (!result || typeof result !== "object") return "";
+  const r = result as Record<string, unknown>;
+  if (typeof r.body_html !== "string") return "";
+  return sanitiseHtml(r.body_html);
+}
+
+function extractMetaTitle(result: unknown): string {
+  if (!result || typeof result !== "object") return "";
+  const r = result as Record<string, unknown>;
+  return typeof r.meta_title === "string" ? r.meta_title : "";
+}
+
+function extractMetaDescription(result: unknown): string {
+  if (!result || typeof result !== "object") return "";
+  const r = result as Record<string, unknown>;
+  return typeof r.meta_description === "string" ? r.meta_description : "";
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// Loader — cursor-based pagination, shop-scoped
+// Loader
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function loader({ request }: LoaderFunctionArgs): Promise<Response> {
@@ -94,6 +123,9 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
       previousDescription: true,
       createdAt: true,
       updatedAt: true,
+      // ── new fields ──────────────────────────────────────────────────────
+      bulkId: true,   // for tab separation (Individual vs Bulk Runs)
+      result: true,   // for draftBodyHtml / metaTitle / metaDescription
     },
   });
 
@@ -126,6 +158,11 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
       hasPreviousDescription: !!j.previousDescription,
       createdAt: toIso(j.createdAt),
       updatedAt: toIso(j.updatedAt),
+      // ── new fields ──────────────────────────────────────────────────────
+      bulkId: j.bulkId ?? null,
+      draftBodyHtml: extractBodyHtml(j.result),
+      metaTitle: extractMetaTitle(j.result),
+      metaDescription: extractMetaDescription(j.result),
     })),
     hasActiveJobs,
     hasNextPage,
@@ -190,11 +227,7 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
       }
     }
 
-    return json({
-      ok: true,
-      cancelled: res.cancelled,
-      alreadyCancelled: (res as any).alreadyCancelled ?? false,
-    });
+    return json({ ok: true, cancelled: res.cancelled, alreadyCancelled: (res as any).alreadyCancelled ?? false });
   }
 
   // ── cancel_all ────────────────────────────────────────────────────────────
@@ -209,9 +242,7 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
       orderBy: { createdAt: "asc" },
     });
 
-    if (pendingJobs.length === 0) {
-      return json({ ok: true, cancelled: 0 });
-    }
+    if (pendingJobs.length === 0) return json({ ok: true, cancelled: 0 });
 
     const ids = pendingJobs.map((j) => j.id);
     await db.generationJob.updateMany({
@@ -263,25 +294,14 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
       }
 
       const failureVersion = jobRecord.updatedAt.getTime();
-      const idem = idempotencyKey({
-        shop: shopDomain,
-        action: "retry",
-        material: `${jobRecord.id}:${failureVersion}`,
-      });
-
+      const idem = idempotencyKey({ shop: shopDomain, action: "retry", material: `${jobRecord.id}:${failureVersion}` });
       const short = idem.slice(0, 24);
       const newTraceId = `trace_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
       const newBullJobId = `${shopDomain}:${jobRecord.id}:retry_${short}`;
 
       await tx.generationJob.update({
         where: { id: jobRecord.id },
-        data: {
-          status: "PENDING",
-          errorMessage: null,
-          progress: 0,
-          traceId: newTraceId,
-          bullJobId: newBullJobId,
-        },
+        data: { status: "PENDING", errorMessage: null, progress: 0, traceId: newTraceId, bullJobId: newBullJobId },
       });
 
       const jobData = {
@@ -299,13 +319,9 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
       return { ok: true as const, status: 200, retried: jobRecord.id, jobData, newBullJobId };
     });
 
-    if (!res.ok) {
-      return json({ ok: false, error: res.error }, { status: res.status });
-    }
+    if (!res.ok) return json({ ok: false, error: res.error }, { status: res.status });
 
-    if ((res as any).alreadyQueued) {
-      return json({ ok: true, retried: jobId, alreadyQueued: true });
-    }
+    if ((res as any).alreadyQueued) return json({ ok: true, retried: jobId, alreadyQueued: true });
 
     const { jobData, newBullJobId } = res as any;
 
@@ -317,22 +333,14 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
       });
     } catch (err: any) {
       const msg = typeof err?.message === "string" ? err.message : "";
-
       if (msg.includes("Job") && msg.includes("already exists")) {
         return json({ ok: true, retried: jobId, alreadyQueued: true });
       }
-
       console.error("[retry] enqueue failed:", err);
-
       await db.generationJob.update({
         where: { id: jobId, shopDomain },
-        data: {
-          status: "FAILED",
-          errorMessage: "Retry enqueue failed. Please try again.",
-          progress: 0,
-        },
+        data: { status: "FAILED", errorMessage: "Retry enqueue failed. Please try again.", progress: 0 },
       });
-
       return json({ ok: false, error: "Retry enqueue failed" }, { status: 503 });
     }
 
@@ -350,14 +358,8 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
 
     const job = await db.generationJob.create({
       data: {
-        shopDomain,
-        productId,
-        productTitle,
-        vibe,
-        format,
-        keywords,
-        status: "PENDING",
-        progress: 0,
+        shopDomain, productId, productTitle, vibe, format, keywords,
+        status: "PENDING", progress: 0,
         traceId: crypto.randomUUID(),
         inputHash: sha256Hex(`${shopDomain}:${productId}:${vibe}:${format}:${keywords}`),
         includeSocials: false,
@@ -365,12 +367,7 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
     });
 
     const bullJobId = `${shopDomain}:${job.id}`;
-
-    await db.generationJob.update({
-      where: { id: job.id },
-      data: { bullJobId },
-    });
-
+    await db.generationJob.update({ where: { id: job.id }, data: { bullJobId } });
     await generationQueue.add(
       `generate:${productId}`,
       { jobId: job.id, shopDomain, productTitle, vibe, format, keywords },
@@ -381,10 +378,6 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
   }
 
   // ── undo ──────────────────────────────────────────────────────────────────
-  //
-  // Writes either the previousDescription snapshot (if one exists) or an empty
-  // string back to the Shopify product, effectively clearing the generated
-  // description. Single-use per job — status becomes UNDONE afterwards.
 
   if (intent === "undo") {
     const jobId = String(form.get("jobId") ?? "");
@@ -394,74 +387,42 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
 
     const jobRecord = await db.generationJob.findFirst({
       where: { id: jobId, shopDomain },
-      select: {
-        id: true,
-        productId: true,
-        status: true,
-        generatedDescription: true,
-        previousDescription: true,
-      },
+      select: { id: true, productId: true, status: true, generatedDescription: true, previousDescription: true },
     });
 
-    if (!jobRecord) {
-      return json({ ok: false, error: "Job not found" }, { status: 404 });
-    }
+    if (!jobRecord) return json({ ok: false, error: "Job not found" }, { status: 404 });
 
     if (jobRecord.status !== "COMPLETED") {
-      return json(
-        { ok: false, error: "Only completed jobs can be undone." },
-        { status: 422 },
-      );
+      return json({ ok: false, error: "Only completed jobs can be undone." }, { status: 422 });
     }
 
-    // Use the saved snapshot if available, otherwise fall back to empty string
-    // which clears the generated description on the product.
     const descriptionToRestore = jobRecord.previousDescription ?? "";
 
     try {
       const response = await admin.graphql(
-  `#graphql
-  mutation productUpdate($input: ProductInput!) {
-    productUpdate(input: $input) {
-      product { id descriptionHtml }
-      userErrors { field message }
-    }
-  }`,
-  {
-    variables: {
-      input: {
-        id: jobRecord.productId,
-        descriptionHtml: descriptionToRestore,
-      },
-    },
-  },
-);
+        `#graphql
+        mutation productUpdate($input: ProductInput!) {
+          productUpdate(input: $input) {
+            product { id descriptionHtml }
+            userErrors { field message }
+          }
+        }`,
+        { variables: { input: { id: jobRecord.productId, descriptionHtml: descriptionToRestore } } },
+      );
       const body = await response.json();
       const userErrors = body?.data?.productUpdate?.userErrors ?? [];
-
       if (userErrors.length > 0) {
         const msg = userErrors.map((e: any) => e.message).join(", ");
-        console.error("[undo] Shopify userErrors:", msg);
-        return json(
-          { ok: false, error: `Shopify rejected the update: ${msg}` },
-          { status: 422 },
-        );
+        return json({ ok: false, error: `Shopify rejected the update: ${msg}` }, { status: 422 });
       }
     } catch (err) {
       console.error("[undo] Shopify API error:", err);
-      return json(
-        { ok: false, error: "Failed to update product on Shopify. Please try again." },
-        { status: 502 },
-      );
+      return json({ ok: false, error: "Failed to update product on Shopify. Please try again." }, { status: 502 });
     }
 
-    // Mark as undone — single-use, snapshot consumed.
     await db.generationJob.update({
       where: { id: jobId },
-      data: {
-        previousDescription: null,
-        status: "UNDONE",
-      },
+      data: { previousDescription: null, status: "UNDONE" },
     });
 
     return json({ ok: true, restored: true });

@@ -1,13 +1,17 @@
 /**
  * Route: /app/products
  *
- *
+ * Changes from original:
+ *  - IndexTable is now selectable (useIndexResourceState)
+ *  - promotedBulkActions triggers BulkGenerateModal
+ *  - BulkGenerateModal imported and rendered at bottom
+ *  - After successful bulk enqueue, toast + redirect to /app/jobs
  */
 
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { useLoaderData, useNavigate } from "@remix-run/react";
 import { authenticate } from "../shopify.server";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import {
   Page,
   Card,
@@ -19,6 +23,8 @@ import {
   Badge,
   Box,
   Divider,
+  useIndexResourceState,
+  Banner,
 } from "@shopify/polaris";
 
 import { ProductSearchBar } from "../components/producttable/ProductSearchbar";
@@ -31,74 +37,75 @@ import {
   type ProductFilters,
   EMPTY_FILTERS,
 } from "../components/producttable/Productfiltermodal";
+import { BulkGenerateModal } from "../components/BulkComponents/BulkGenerateModal";
+import { BulkProgressBar } from "../components/BulkComponents/BulkProgressBar";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin } = await authenticate.admin(request);
 
   const url = new URL(request.url);
   const search = url.searchParams.get("search") || "";
-
   const cursor = url.searchParams.get("cursor");
 
   const filters: string[] = [];
 
-if (search) {
-  filters.push(`title:*${search}*`);
-}
+  if (search) {
+    filters.push(`title:*${search}*`);
+  }
 
-if (url.searchParams.getAll("status").length > 0) {
-  const statuses = url.searchParams.getAll("status");
-  filters.push(statuses.map(s => `status:${s}`).join(" OR "));
-}
+  if (url.searchParams.getAll("status").length > 0) {
+    const statuses = url.searchParams.getAll("status");
+    filters.push(statuses.map((s) => `status:${s}`).join(" OR "));
+  }
 
-const shopifyQuery = filters.join(" AND ");
+  const shopifyQuery = filters.join(" AND ");
 
-const response = await admin.graphql(`
-  query getProducts($cursor: String, $query: String) {
-    products(first: 20, after: $cursor, query: $query) {
-      pageInfo {
-        hasNextPage
-        endCursor
-      }
-      edges {
-        node {
-          id
-          title
-          status
-          totalInventory
-          productType
-          collections(first: 10) {
-            edges {
-              node {
-                title
+  const response = await admin.graphql(
+    `
+    query getProducts($cursor: String, $query: String) {
+      products(first: 20, after: $cursor, query: $query) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        edges {
+          node {
+            id
+            title
+            status
+            totalInventory
+            productType
+            collections(first: 10) {
+              edges {
+                node {
+                  title
+                }
               }
             }
           }
         }
       }
-    }
-    collections(first: 50) {
-      edges {
-        node {
-          id
-          title
+      collections(first: 50) {
+        edges {
+          node {
+            id
+            title
+          }
         }
       }
     }
-  }
-`, {
-  variables: {
-    cursor,
-    query: shopifyQuery,
-  },
-});
+  `,
+    {
+      variables: {
+        cursor,
+        query: shopifyQuery,
+      },
+    },
+  );
 
   const data = await response.json();
-
   const productData = data.data.products;
-
   const products = productData.edges.map((edge: any) => edge.node);
-
   const collections = data.data.collections.edges.map(
     (edge: any) => edge.node.title,
   );
@@ -256,40 +263,58 @@ export default function ProductsDashboard() {
   const [appliedFilters, setAppliedFilters] =
     useState<ProductFilters>(EMPTY_FILTERS);
 
+  // ── Bulk generate state ────────────────────────────────────────────────────
+  const [bulkModalOpen, setBulkModalOpen] = useState(false);
+  const [bulkSuccessBanner, setBulkSuccessBanner] = useState<{
+    count: number;
+  } | null>(null);
+  // Track the active bulk run for the progress bar
+  const [activeBulk, setActiveBulk] = useState<{
+    bulkId: string;
+    productCount: number;
+  } | null>(null);
+
   const resourceName = { singular: "product", plural: "products" };
 
   // ── Filtering ──────────────────────────────────────────────────────────────
   const filteredProducts = products.filter((p: any) => {
-  if (
-    appliedFilters.statuses.length > 0 &&
-    !appliedFilters.statuses.includes(p.status)
-  )
-    return false;
+    if (
+      appliedFilters.statuses.length > 0 &&
+      !appliedFilters.statuses.includes(p.status)
+    )
+      return false;
 
-  if (appliedFilters.stock.length > 0) {
-    const cat = getStockCategory(p.totalInventory ?? 0);
-    if (!appliedFilters.stock.includes(cat)) return false;
-  }
+    if (appliedFilters.stock.length > 0) {
+      const cat = getStockCategory(p.totalInventory ?? 0);
+      if (!appliedFilters.stock.includes(cat)) return false;
+    }
 
-  if (
-    appliedFilters.productTypes?.length > 0 &&
-    !appliedFilters.productTypes.includes(p.productType)
-  )
-    return false;
+    if (
+      appliedFilters.productTypes?.length > 0 &&
+      !appliedFilters.productTypes.includes(p.productType)
+    )
+      return false;
 
-  if (appliedFilters.collections?.length > 0) {
-    const productCollectionTitles =
-      p.collections?.edges.map((e: any) => e.node.title) || [];
+    if (appliedFilters.collections?.length > 0) {
+      const productCollectionTitles =
+        p.collections?.edges.map((e: any) => e.node.title) || [];
+      const matches = appliedFilters.collections.some((selected: string) =>
+        productCollectionTitles.includes(selected),
+      );
+      if (!matches) return false;
+    }
 
-    const matches = appliedFilters.collections.some((selected: string) =>
-      productCollectionTitles.includes(selected)
-    );
+    return true;
+  });
 
-    if (!matches) return false;
-  }
-
-  return true;
-});
+  // ── IndexTable selection (Polaris hook) ───────────────────────────────────
+  // useIndexResourceState tracks selected row IDs (the Shopify GID strings).
+  const {
+    selectedResources,
+    allResourcesSelected,
+    handleSelectionChange,
+    clearSelection,
+  } = useIndexResourceState(filteredProducts, { resourceIDResolver: (p: any) => p.id });
 
   // True when any search or filter is active
   const isFiltered =
@@ -342,7 +367,6 @@ export default function ProductsDashboard() {
     }
   };
 
-  // Resets search + all filters and restores full product list
   const handleClearAll = () => {
     setSearchQuery("");
     setAppliedFilters(EMPTY_FILTERS);
@@ -350,12 +374,39 @@ export default function ProductsDashboard() {
     navigate("/app/products");
   };
 
+  // Called by BulkGenerateModal after successful enqueue
+  const handleBulkSuccess = useCallback(
+    (jobIds: string[], bulkId: string | null) => {
+      setBulkModalOpen(false);
+      clearSelection();
+      setBulkSuccessBanner({ count: jobIds.length });
+
+      // If we have a bulkId, show the inline progress bar instead of redirecting
+      if (bulkId) {
+        setActiveBulk({ bulkId, productCount: jobIds.length });
+      } else {
+        // Single product — just redirect to jobs after a moment
+        setTimeout(() => navigate("/app/jobs"), 2000);
+      }
+    },
+    [clearSelection, navigate],
+  );
+
+  // ── Promoted bulk actions (shown in IndexTable toolbar when rows selected) ──
+  const promotedBulkActions = [
+    {
+      content: `✨ Generate AI Descriptions (${selectedResources.length})`,
+      onAction: () => setBulkModalOpen(true),
+    },
+  ];
+
   // ── Row markup ─────────────────────────────────────────────────────────────
   const rowMarkup = filteredProducts.map((product: any, index: number) => (
     <IndexTable.Row
       id={product.id}
       key={product.id}
       position={index}
+      selected={selectedResources.includes(product.id)}
       onClick={() => {
         const numericId = product.id.split("/").pop();
         if (numericId) navigate(`/app/products/${numericId}`);
@@ -398,6 +449,27 @@ export default function ProductsDashboard() {
       }}
     >
       <BlockStack gap="600">
+        {/* ── Bulk progress bar (replaces the redirect for multi-product runs) ── */}
+        {activeBulk && (
+          <BulkProgressBar
+            bulkId={activeBulk.bulkId}
+            productCount={activeBulk.productCount}
+            onDone={() => {
+              // Keep the bar visible so user can read the result; they can dismiss it
+            }}
+            onDismiss={() => setActiveBulk(null)}
+          />
+        )}
+
+        {/* ── Bulk success banner (single product or fallback) ───────────────── */}
+        {bulkSuccessBanner && !activeBulk && (
+          <Banner
+            tone="success"
+            title={`${bulkSuccessBanner.count} job${bulkSuccessBanner.count !== 1 ? "s" : ""} queued — redirecting to History…`}
+            onDismiss={() => setBulkSuccessBanner(null)}
+          />
+        )}
+
         {/* ── Stat Cards ────────────────────────────────────────────────── */}
         <div style={{ display: "flex", gap: "14px", flexWrap: "wrap" }}>
           <StatCard
@@ -451,11 +523,6 @@ export default function ProductsDashboard() {
                     ? `${totalProducts} products`
                     : `${filteredProducts.length} of ${totalProducts} products`}
                 </Text>
-                {/*
-                 * ── Clear filtered results button ──────────────────────────
-                 * Visible only when a search query or filter is active.
-                 * Resets search + all filters in one click.
-                 */}
                 {isFiltered && (
                   <Button
                     variant="plain"
@@ -477,11 +544,12 @@ export default function ProductsDashboard() {
               searchQuery={searchQuery}
               onSearchChange={(value) => {
                 setSearchQuery(value);
-
                 if (value.trim() === "") {
                   navigate("/app/products");
                 } else {
-                  navigate(`/app/products?search=${encodeURIComponent(value)}`);
+                  navigate(
+                    `/app/products?search=${encodeURIComponent(value)}`,
+                  );
                 }
               }}
               onFilterOpen={() => {
@@ -499,15 +567,21 @@ export default function ProductsDashboard() {
 
           <Divider />
 
+          {/* ── IndexTable — now selectable ─────────────────────────────── */}
           <IndexTable
             resourceName={resourceName}
             itemCount={filteredProducts.length}
+            selectedItemsCount={
+              allResourcesSelected ? "All" : selectedResources.length
+            }
+            onSelectionChange={handleSelectionChange}
+            promotedBulkActions={promotedBulkActions}
             headings={[
               { title: "Product" },
               { title: "Status" },
               { title: "Inventory", alignment: "end" },
             ]}
-            selectable={false}
+            selectable={true}
             emptyState={
               <Box padding="800">
                 <BlockStack gap="300" align="center">
@@ -531,6 +605,7 @@ export default function ProductsDashboard() {
         </Card>
       </BlockStack>
 
+      {/* ── Filter modal ──────────────────────────────────────────────────── */}
       <ProductFilterModal
         open={filterModalOpen}
         onClose={() => setFilterModalOpen(false)}
@@ -540,6 +615,14 @@ export default function ProductsDashboard() {
         onClear={() => setPendingFilters(EMPTY_FILTERS)}
         productTypeOptions={productTypes}
         collectionOptions={collections}
+      />
+
+      {/* ── Bulk Generate modal ───────────────────────────────────────────── */}
+      <BulkGenerateModal
+        open={bulkModalOpen}
+        selectedProductIds={selectedResources}
+        onClose={() => setBulkModalOpen(false)}
+        onSuccess={handleBulkSuccess}
       />
     </Page>
   );

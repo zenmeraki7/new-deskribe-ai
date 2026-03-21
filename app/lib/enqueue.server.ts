@@ -12,15 +12,28 @@ interface EnqueueParams {
   keywords: string;
   includeSocials: boolean;
   adminGraphql: (query: string, opts?: any) => Promise<Response>;
+  /** Optional: group all jobs under one bulk run ID (uuid). Auto-generated if omitted and productIds.length > 1. */
+  bulkId?: string;
+}
+
+export interface EnqueueResult {
+  jobIds: string[];
+  skipped: string[];
+  /** Present when multiple products are queued together */
+  bulkId: string | null;
 }
 
 function hashInput(input: string) {
   return crypto.createHash("sha256").update(input).digest("hex");
 }
 
+function newUuid() {
+  return crypto.randomUUID();
+}
+
 async function fetchProductMeta(
   adminGraphql: (query: string, opts?: any) => Promise<Response>,
-  productId: string
+  productId: string,
 ) {
   try {
     const response = await adminGraphql(
@@ -34,7 +47,7 @@ async function fetchProductMeta(
           tags
         }
       }`,
-      { variables: { id: productId } }
+      { variables: { id: productId } },
     );
     const data = await response.json();
     const p = data?.data?.product;
@@ -59,14 +72,23 @@ export async function enqueueGenerationJobs({
   keywords,
   includeSocials,
   adminGraphql,
-}: EnqueueParams): Promise<{ jobIds: string[]; skipped: string[] }> {
+  bulkId: explicitBulkId,
+}: EnqueueParams): Promise<EnqueueResult> {
   const jobIds: string[] = [];
   const skipped: string[] = [];
+
+  // Assign a bulkId when this is a multi-product run so the jobs can be
+  // grouped on the History page. Single-product jobs get null unless the
+  // caller explicitly passes one.
+  const bulkId =
+    explicitBulkId ??
+    (productIds.length > 1 ? newUuid() : null);
 
   for (const productId of productIds) {
     const material = `${shopDomain}:${productId}:${vibe}:${format}:${keywords}:${includeSocials}`;
     const inputHash = hashInput(material);
 
+    // Idempotency: reuse an in-flight job with the same parameters
     const existing = await db.generationJob.findFirst({
       where: {
         shopDomain,
@@ -104,6 +126,8 @@ export async function enqueueGenerationJobs({
         format,
         keywords,
         includeSocials,
+        // ← key addition: tag all jobs in this bulk run
+        bulkId,
       },
     });
 
@@ -118,16 +142,13 @@ export async function enqueueGenerationJobs({
         keywords,
         includeSocials,
       },
-      {
-        jobId: job.id,
-      },
+      { jobId: job.id },
     );
-    console.log("[enqueue] Job added to Redis queue:", job.id);
-    
+
+    console.log("[enqueue] Job added to Redis queue:", job.id, bulkId ? `(bulk: ${bulkId})` : "");
+
     jobIds.push(job.id);
   }
 
-  
-
-  return { jobIds, skipped };
+  return { jobIds, skipped, bulkId };
 }

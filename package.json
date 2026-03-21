@@ -22,7 +22,7 @@
   },
   "type": "module",
   "engines": {
-    "node": "24.x"
+    "node": ">=18"
   },
   "dependencies": {
     "@prisma/client": "^6.2.1",
@@ -31,9 +31,11 @@
     "@remix-run/node": "^2.16.1",
     "@remix-run/react": "^2.16.1",
     "@remix-run/serve": "^2.16.1",
-    "@shopify/app-bridge-react": "^4.1.6",
+    "@shopify/app": "^3.58.2",
+    "@shopify/app-bridge-react": "^4.2.10",
+    "@shopify/cli": "^3.92.1",
     "@shopify/polaris": "^12.0.0",
-    "@shopify/shopify-app-remix": "^3.7.0",
+    "@shopify/shopify-app-remix": "^4.2.0",
     "@shopify/shopify-app-session-storage-prisma": "^6.0.0",
     "bullmq": "^5.69.3",
     "crypto": "^1.0.1",
