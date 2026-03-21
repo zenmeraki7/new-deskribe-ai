@@ -202,7 +202,7 @@ export function BulkGenerateModal({
                     {count} product{count !== 1 ? "s" : ""} selected
                   </Text>
                   <Text as="p" variant="bodySm" tone="subdued">
-                    Each product will be queued as a separate job. You can monitor and apply results from the History page.
+                    Each product will be processed individually. You can track progress and apply the generated descriptions from the History page.
                   </Text>
                 </BlockStack>
               </InlineStack>
