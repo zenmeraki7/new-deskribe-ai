@@ -39,9 +39,24 @@ import {
 } from "../components/producttable/Productfiltermodal";
 import { BulkGenerateModal } from "../components/BulkComponents/BulkGenerateModal";
 import { BulkProgressBar } from "../components/BulkComponents/BulkProgressBar";
+import { resolvePlan, BULK_LIMITS, type Plan } from "../lib/rateLimiter.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin } = await authenticate.admin(request);
+  const { admin, billing } = await authenticate.admin(request);
+
+  // Resolve plan for bulk limit enforcement
+  let shopPlan: Plan = "free";
+  let bulkLimit = BULK_LIMITS.free;
+  try {
+    const { appSubscriptions } = await billing.check();
+    shopPlan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
+    bulkLimit =
+      BULK_LIMITS[shopPlan] === Infinity
+        ? 999999 // serialize Infinity as large number for JSON
+        : BULK_LIMITS[shopPlan];
+  } catch {
+    // fail open — treat as free
+  }
 
   const url = new URL(request.url);
   const search = url.searchParams.get("search") || "";
@@ -142,6 +157,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     draftProducts,
     totalInventory,
     generatedDescriptions,
+    shopPlan,
+    bulkLimit,
   };
 };
 
@@ -252,6 +269,8 @@ export default function ProductsDashboard() {
     draftProducts,
     totalInventory,
     generatedDescriptions,
+    shopPlan,
+    bulkLimit,
   } = useLoaderData<typeof loader>();
 
   const navigate = useNavigate();
@@ -314,7 +333,9 @@ export default function ProductsDashboard() {
     allResourcesSelected,
     handleSelectionChange,
     clearSelection,
-  } = useIndexResourceState(filteredProducts, { resourceIDResolver: (p: any) => p.id });
+  } = useIndexResourceState(filteredProducts, {
+    resourceIDResolver: (p: any) => p.id,
+  });
 
   // True when any search or filter is active
   const isFiltered =
@@ -393,51 +414,99 @@ export default function ProductsDashboard() {
   );
 
   // ── Promoted bulk actions (shown in IndexTable toolbar when rows selected) ──
-  const promotedBulkActions = [
-    {
-      content: `✨ Generate AI Descriptions (${selectedResources.length})`,
-      onAction: () => setBulkModalOpen(true),
-    },
-  ];
+  // ── Bulk selection cap warning ─────────────────────────────────────────────
+  const atBulkLimit =
+    bulkLimit !== 999999 && selectedResources.length >= bulkLimit;
+
+  const overBulkLimit = selectedResources.length > bulkLimit;
+
+  // ── Promoted bulk actions ──────────────────────────────────────────────────
+  const promotedBulkActions =
+    shopPlan === "free"
+      ? [
+          {
+            content: "✨ Bulk Generate (Pro feature)",
+            onAction: () => setBulkModalOpen(true),
+            disabled: true,
+          },
+        ]
+      : [
+          {
+            content: `✨ Generate AI Descriptions (${selectedResources.length})`,
+            onAction: () => {
+              if (overBulkLimit) return; // safety guard — button should be disabled
+              setBulkModalOpen(true);
+            },
+            disabled: overBulkLimit,
+          },
+        ];
 
   // ── Row markup ─────────────────────────────────────────────────────────────
-  const rowMarkup = filteredProducts.map((product: any, index: number) => (
-    <IndexTable.Row
-      id={product.id}
-      key={product.id}
-      position={index}
-      selected={selectedResources.includes(product.id)}
-      onClick={() => {
-        const numericId = product.id.split("/").pop();
-        if (numericId) navigate(`/app/products/${numericId}`);
-      }}
-    >
-      <IndexTable.Cell>
-        <Text variant="bodyMd" fontWeight="semibold" as="span">
-          {product.title}
-        </Text>
-      </IndexTable.Cell>
-      <IndexTable.Cell>
-        <Badge
-          tone={
-            product.status === "ACTIVE"
-              ? "success"
-              : product.status === "DRAFT"
-                ? "info"
-                : "warning"
-          }
-        >
-          {product.status.charAt(0) + product.status.slice(1).toLowerCase()}
-        </Badge>
-      </IndexTable.Cell>
-      <IndexTable.Cell>
-        <Text as="span" alignment="end" numeric>
-          {product.totalInventory ?? 0}
-        </Text>
-      </IndexTable.Cell>
-    </IndexTable.Row>
-  ));
-
+  // ── Row markup — click row = navigate, NO modal open ──────────────────────
+  const rowMarkup = filteredProducts.map((product: any, index: number) => {
+    const numericId = product.id.split("/").pop();
+    return (
+      <IndexTable.Row
+        id={product.id}
+        key={product.id}
+        position={index}
+        selected={selectedResources.includes(product.id)}
+        onClick={() => {
+          // Row click just selects the row for bulk (Polaris default behaviour)
+          // Navigation is handled by the explicit button below
+        }}
+      >
+        <IndexTable.Cell>
+  <div
+    style={{
+      maxWidth: "300px",
+      whiteSpace: "nowrap",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+    }}
+    title={product.title} // 👈 full title on hover
+  >
+    <Text variant="bodyMd" fontWeight="semibold" as="span">
+      {product.title}
+    </Text>
+  </div>
+</IndexTable.Cell>
+        <IndexTable.Cell>
+          <Badge
+            tone={
+              product.status === "ACTIVE"
+                ? "success"
+                : product.status === "DRAFT"
+                  ? "info"
+                  : "warning"
+            }
+          >
+            {product.status.charAt(0) + product.status.slice(1).toLowerCase()}
+          </Badge>
+        </IndexTable.Cell>
+        <IndexTable.Cell>
+          <Text as="span" alignment="end" numeric>
+            {product.totalInventory ?? 0}
+          </Text>
+        </IndexTable.Cell>
+        <IndexTable.Cell>
+          {/* Explicit generate button — the ONLY way to open the single editor */}
+          <Button
+            size="slim"
+            variant="primary"
+            disabled={selectedResources.length > 1}
+            onClick={(e) => {
+              e?.stopPropagation?.();
+              navigate(`/app/products/${numericId}`);
+            }}
+            icon={<span style={{ fontSize: 12 }}>✨</span>}
+          >
+            Generate
+          </Button>
+        </IndexTable.Cell>
+      </IndexTable.Row>
+    );
+  });
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <Page
@@ -547,9 +616,7 @@ export default function ProductsDashboard() {
                 if (value.trim() === "") {
                   navigate("/app/products");
                 } else {
-                  navigate(
-                    `/app/products?search=${encodeURIComponent(value)}`,
-                  );
+                  navigate(`/app/products?search=${encodeURIComponent(value)}`);
                 }
               }}
               onFilterOpen={() => {
@@ -567,6 +634,50 @@ export default function ProductsDashboard() {
 
           <Divider />
 
+          {/* Bulk limit warning — shown when selection is at/over limit */}
+          {selectedResources.length > 0 && bulkLimit !== 999999 && (
+            <Box paddingInline="400" paddingBlockStart="200">
+              {overBulkLimit ? (
+                <Banner
+                  tone="critical"
+                  title={`Too many products selected`}
+                  action={
+                    shopPlan !== "pro"
+                      ? {
+                          content: "Upgrade plan",
+                          url: "/app/billing",
+                          target: "_self",
+                        }
+                      : undefined
+                  }
+                >
+                  Your {shopPlan} plan supports bulk generation for up to{" "}
+                  <strong>{bulkLimit} products</strong> at a time. Please
+                  deselect {selectedResources.length - bulkLimit} product
+                  {selectedResources.length - bulkLimit !== 1 ? "s" : ""}.
+                </Banner>
+              ) : atBulkLimit ? (
+                <Banner
+                  tone="warning"
+                  title={`Selection limit reached (${bulkLimit}/${bulkLimit})`}
+                >
+                  You've reached the maximum for your {shopPlan} plan.{" "}
+                  {shopPlan !== "pro" && (
+                    <a href="/app/billing" style={{ color: "#2c6ecb" }}>
+                      Upgrade for a higher limit.
+                    </a>
+                  )}
+                </Banner>
+              ) : (
+                <Text as="p" variant="bodySm" tone="subdued">
+                  {selectedResources.length} selected ·{" "}
+                  {bulkLimit - selectedResources.length} remaining ({shopPlan}{" "}
+                  plan limit: {bulkLimit})
+                </Text>
+              )}
+            </Box>
+          )}
+
           {/* ── IndexTable — now selectable ─────────────────────────────── */}
           <IndexTable
             resourceName={resourceName}
@@ -580,6 +691,7 @@ export default function ProductsDashboard() {
               { title: "Product" },
               { title: "Status" },
               { title: "Inventory", alignment: "end" },
+              { title: "" }, // Generate button column — no heading
             ]}
             selectable={true}
             emptyState={
@@ -623,6 +735,8 @@ export default function ProductsDashboard() {
         selectedProductIds={selectedResources}
         onClose={() => setBulkModalOpen(false)}
         onSuccess={handleBulkSuccess}
+        bulkLimit={bulkLimit}
+        shopPlan={shopPlan}
       />
     </Page>
   );

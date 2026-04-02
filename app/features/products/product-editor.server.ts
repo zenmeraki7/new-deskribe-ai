@@ -19,11 +19,27 @@ import {
   UUID_V4_RE,
 } from "../../routes/app.products.$productId.constants";
 import type { LoaderData, ProductMeta, DraftResult } from "../../routes/app.products.$productId.types";
+import { checkAndIncrementRateLimit, checkAndIncrementKeywordLimit, KEYWORD_LIMITS } from "../../lib/rateLimiter.server";
+import { resolvePlan, type Plan } from "../../lib/rateLimiter.server";
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Product ID handling (defensive)
 // Supports route param being either numeric ID or full GID.
 // ─────────────────────────────────────────────────────────────────────────────
+async function getShopPlan(
+  billing: Awaited<ReturnType<typeof authenticate.admin>>["billing"],
+): Promise<Plan> {
+  try {
+    const { appSubscriptions } = await billing.check();
+    const name = appSubscriptions?.[0]?.name ?? null;
+    return resolvePlan(name);
+  } catch {
+    // Fail open to free — never block a user because billing check failed
+    return "free";
+  }
+}
+
 
 function normalizeProductGid(raw: string): string | null {
   const decoded = (() => {
@@ -345,7 +361,7 @@ if (!product) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function action({ request, params }: ActionFunctionArgs): Promise<Response> {
-  const { admin, session } = await authenticate.admin(request);
+  const { admin, session, billing  } = await authenticate.admin(request);
   const shopDomain = session.shop;
 
   const rawId = params.productId ?? "";
@@ -358,7 +374,32 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
   const intent = String(form.get("intent") ?? "");
 
   if (intent === "generate") {
-    // NOTE: These are UI knobs, not trust boundaries. We still bound everything.
+
+    const plan = await getShopPlan(billing);
+    const limitResult = await checkAndIncrementRateLimit(shopDomain, plan);
+
+    if (!limitResult.allowed) {
+      const isGlobal = limitResult.reason === "global_limit";
+      return json(
+        {
+          ok: false,
+          kind: "error",
+          code: isGlobal ? "GLOBAL_LIMIT_REACHED" : "RATE_LIMIT_EXCEEDED",
+          error: isGlobal
+            ? "Service is temporarily at capacity. Please try again in a few hours."
+            : `Daily generation limit reached (${limitResult.shopUsed}/${limitResult.shopLimit}). ${
+                plan === "free"
+                  ? "Upgrade to Pro for 100 generations/day."
+                  : "Limit resets at midnight UTC."
+              }`,
+          shopUsed: limitResult.shopUsed,
+          shopLimit: limitResult.shopLimit,
+          plan,
+        },
+        { status: 429 },
+      );
+    }
+    
     const vibe = String(form.get("vibe") ?? "casual").slice(0, 40);
     const format = String(form.get("format") ?? "paragraph").slice(0, 40);
     const includeSocials = form.get("includeSocials") === "true";
@@ -466,28 +507,57 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
   }
 
   if (intent === "suggest_keywords") {
-    // Hard requirement: do not trust client-provided meta fields for generation logic.
-    // Always fetch meta server-side from Shopify to ensure correctness and shop scoping.
-    try {
-      const product = await fetchProductMeta(admin.graphql, productGid);
-      if (!product) {
-  throw new Response("Product not found", { status: 404 });
-}
-      // DeepSeek call should be strict JSON validated in ../lib/deepseek.server (contract requirement).
-      const keywords = await suggestKeywords(
-        String(product.title ?? ""),
-        String(product.vendor ?? ""),
-        String(product.productType ?? ""),
-        Array.isArray(product.tags) ? product.tags.filter((t) => typeof t === "string") : [],
-      );
+  try {
+    const plan = await getShopPlan(billing);
+    const limitResult = await checkAndIncrementKeywordLimit(shopDomain, plan);
 
-      const safe = normalizeKeywordList(keywords);
-      return json({ ok: true, kind: "suggest_keywords", keywords: safe });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-      return json({ ok: false, kind: "error", error: message, code: "SUGGEST_FAILED" }, { status: 500 });
+    if (!limitResult.allowed) {
+      const isNotAllowed = limitResult.reason === "not_allowed";
+      return json(
+        {
+          ok: false,
+          kind: "error",
+          code: "KEYWORD_LIMIT_EXCEEDED",
+          error: isNotAllowed
+            ? "Keyword suggestions are not available on the Free plan. Upgrade to Basic or higher."
+            : `Daily keyword suggestion limit reached (${limitResult.used}/${limitResult.limit}). Resets at midnight UTC.`,
+          plan,
+          keywordUsed: limitResult.used,
+          keywordLimit: limitResult.limit,
+        },
+        { status: 403 },
+      );
     }
+
+    const product = await fetchProductMeta(admin.graphql, productGid);
+    if (!product) {
+      throw new Response("Product not found", { status: 404 });
+    }
+
+    const keywords = await suggestKeywords(
+      String(product.title ?? ""),
+      String(product.vendor ?? ""),
+      String(product.productType ?? ""),
+      Array.isArray(product.tags)
+        ? product.tags.filter((t) => typeof t === "string")
+        : [],
+    );
+
+    // Cap returned keywords to plan limit
+    const planLimit = KEYWORD_LIMITS[plan];
+    const capCount = planLimit === Infinity ? 20 : planLimit;
+    const safe = normalizeKeywordList(keywords).slice(0, capCount);
+
+    return json({ ok: true, kind: "suggest_keywords", keywords: safe });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return json(
+      { ok: false, kind: "error", error: message, code: "SUGGEST_FAILED" },
+      { status: 500 },
+    );
   }
+}
+  
 
   if (intent === "fetch_description") {
     const gql = await adminGraphqlWithRetry<any>(

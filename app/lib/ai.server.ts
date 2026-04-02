@@ -197,3 +197,70 @@ Example output:
     throw new Error("AI returned invalid keyword format");
   }
 }
+
+// ── Bulk keyword suggestion ────────────────────────────────────────────────────
+// Takes meta from multiple products, finds common themes, suggests shared keywords.
+export async function suggestKeywordsBulk(products: {
+  title: string;
+  vendor: string;
+  productType: string;
+  tags: string[];
+}[]): Promise<string[]> {
+  if (products.length === 0) return [];
+
+  // Build a compact product list for the prompt — avoid token bloat
+  const productLines = products
+    .slice(0, 50) // hard cap just in case
+    .map((p, i) =>
+      `${i + 1}. "${p.title}" | Brand: ${p.vendor || "unknown"} | Type: ${p.productType || "unknown"} | Tags: ${p.tags.slice(0, 8).join(", ") || "none"}`,
+    )
+    .join("\n");
+
+  const prompt = `
+You are an SEO expert for Shopify stores.
+
+I am generating product descriptions for ${products.length} products in bulk.
+Suggest SEO keywords that are relevant across this entire product collection.
+
+Products:
+${productLines}
+
+Rules:
+- Return ONLY a valid JSON array of strings
+- No markdown, no explanation, no code fences
+- Maximum 20 keywords
+- Focus on shared themes, categories, and use cases across ALL products
+- Include both short-tail (1-2 words) and long-tail (3-5 words) keywords
+- Prioritize keywords a customer would use to find this type of product
+- If products span multiple categories, include category-level keywords
+
+Example output:
+["keyword one", "keyword two", "keyword three"]
+`;
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4.1-mini",
+    temperature: 0.4,
+    messages: [
+      {
+        role: "system",
+        content: "You generate SEO keyword lists for product collections. Always respond with a plain JSON array of strings only.",
+      },
+      { role: "user", content: prompt },
+    ],
+  });
+
+  const raw = completion.choices?.[0]?.message?.content ?? "[]";
+  const text = stripJsonFences(raw);
+
+  try {
+    const parsed = JSON.parse(text);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((k): k is string => typeof k === "string")
+      .slice(0, 20);
+  } catch (err) {
+    console.error("Bulk keyword suggestion parse error:", err, "Raw:", raw);
+    throw new Error("AI returned invalid keyword format");
+  }
+}

@@ -1,5 +1,11 @@
 // FILE: app/routes/app.jobs.ui.tsx
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Page,
   Card,
@@ -63,8 +69,17 @@ interface JobDetailModalProps {
 }
 
 function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
-  const undoFetcher = useFetcher<{ ok: boolean; error?: string; restored?: boolean }>();
-  const applyFetcher = useFetcher<{ ok: boolean; error?: string; applied?: boolean; kind?: string }>();
+  const undoFetcher = useFetcher<{
+    ok: boolean;
+    error?: string;
+    restored?: boolean;
+  }>();
+  const applyFetcher = useFetcher<{
+    ok: boolean;
+    error?: string;
+    applied?: boolean;
+    kind?: string;
+  }>();
 
   const isUndoing = undoFetcher.state !== "idle";
   const isApplying = applyFetcher.state !== "idle";
@@ -92,13 +107,15 @@ function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
   };
 
   const { label, tone } = statusBadge(job.status);
-  const applySuccess = applyResult?.ok === true && applyResult?.applied === true;
+  const applySuccess =
+    applyResult?.ok === true && applyResult?.applied === true;
   const canApply = job.status === "COMPLETED" && !applySuccess && !isApplying;
   const canUndo = job.status === "COMPLETED" && !undoResult?.restored;
 
   // draftBodyHtml is the server-sanitized body_html from result JSON.
   // Falls back to generatedDescription (set after apply).
-  const draftHtml = (job as any).draftBodyHtml || job.generatedDescription || "";
+  const draftHtml =
+    (job as any).draftBodyHtml || job.generatedDescription || "";
   const metaTitle = (job as any).metaTitle || "";
   const metaDescription = (job as any).metaDescription || "";
 
@@ -108,7 +125,9 @@ function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
       onClose={onClose}
       title={
         <InlineStack gap="200" blockAlign="center">
-          <Text as="span" variant="headingMd">{job.productTitle ?? job.productId}</Text>
+          <Text as="span" variant="headingMd">
+            {job.productTitle ?? job.productId}
+          </Text>
           {applySuccess && <Badge tone="success">Applied</Badge>}
         </InlineStack>
       }
@@ -124,7 +143,15 @@ function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
       }
       secondaryActions={[
         ...(canUndo
-          ? [{ content: "↩ Undo", onAction: handleUndo, loading: isUndoing, disabled: isUndoing, destructive: true }]
+          ? [
+              {
+                content: "↩ Undo",
+                onAction: handleUndo,
+                loading: isUndoing,
+                disabled: isUndoing,
+                destructive: true,
+              },
+            ]
           : []),
         { content: "Close", onAction: onClose },
       ]}
@@ -140,7 +167,8 @@ function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
           )}
           {undoResult && !undoResult.ok && (
             <Banner tone="critical" title="Undo failed">
-              {undoResult.error ?? "Could not restore the previous description."}
+              {undoResult.error ??
+                "Could not restore the previous description."}
             </Banner>
           )}
           {applySuccess && (
@@ -156,7 +184,9 @@ function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
 
           {/* Status + timestamps */}
           <InlineStack gap="300" blockAlign="center">
-            <Text as="span" variant="bodyMd" fontWeight="semibold">Status:</Text>
+            <Text as="span" variant="bodyMd" fontWeight="semibold">
+              Status:
+            </Text>
             <Badge tone={tone}>{label}</Badge>
           </InlineStack>
 
@@ -164,12 +194,30 @@ function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
 
           <BlockStack gap="200">
             <InlineStack gap="200" wrap>
-              <Text as="span" variant="bodySm" tone="subdued" fontWeight="semibold">Created:</Text>
-              <Text as="span" variant="bodySm" tone="subdued">{safeDateLabel(job.createdAt)}</Text>
+              <Text
+                as="span"
+                variant="bodySm"
+                tone="subdued"
+                fontWeight="semibold"
+              >
+                Created:
+              </Text>
+              <Text as="span" variant="bodySm" tone="subdued">
+                {safeDateLabel(job.createdAt)}
+              </Text>
             </InlineStack>
             <InlineStack gap="200" wrap>
-              <Text as="span" variant="bodySm" tone="subdued" fontWeight="semibold">Last updated:</Text>
-              <Text as="span" variant="bodySm" tone="subdued">{safeDateLabel(job.updatedAt)}</Text>
+              <Text
+                as="span"
+                variant="bodySm"
+                tone="subdued"
+                fontWeight="semibold"
+              >
+                Last updated:
+              </Text>
+              <Text as="span" variant="bodySm" tone="subdued">
+                {safeDateLabel(job.updatedAt)}
+              </Text>
             </InlineStack>
           </BlockStack>
 
@@ -178,11 +226,15 @@ function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
           {(job.format || job.tone || job.costTokens > 0) && (
             <>
               <BlockStack gap="200">
-                <Text as="p" variant="bodyMd" fontWeight="semibold">Generation settings</Text>
+                <Text as="p" variant="bodyMd" fontWeight="semibold">
+                  Generation settings
+                </Text>
                 <InlineStack gap="200" wrap>
                   {job.format && <Tag>Format: {job.format}</Tag>}
                   {job.tone && <Tag>Tone: {job.tone}</Tag>}
-                  {job.costTokens > 0 && <Tag>{job.costTokens.toLocaleString()} tokens</Tag>}
+                  {job.costTokens > 0 && (
+                    <Tag>{job.costTokens.toLocaleString()} tokens</Tag>
+                  )}
                 </InlineStack>
               </BlockStack>
               <Divider />
@@ -192,9 +244,22 @@ function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
           {job.status === "FAILED" && job.errorMessage && (
             <>
               <BlockStack gap="100">
-                <Text as="p" variant="bodyMd" fontWeight="semibold" tone="critical">Error</Text>
-                <Box padding="300" background="bg-surface-critical-subdued" borderRadius="200">
-                  <Text as="p" variant="bodySm" tone="critical">{job.errorMessage}</Text>
+                <Text
+                  as="p"
+                  variant="bodyMd"
+                  fontWeight="semibold"
+                  tone="critical"
+                >
+                  Error
+                </Text>
+                <Box
+                  padding="300"
+                  background="bg-surface-critical-subdued"
+                  borderRadius="200"
+                >
+                  <Text as="p" variant="bodySm" tone="critical">
+                    {job.errorMessage}
+                  </Text>
                 </Box>
               </BlockStack>
               <Divider />
@@ -205,7 +270,9 @@ function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
           {job.status === "COMPLETED" && (metaTitle || metaDescription) && (
             <>
               <BlockStack gap="200">
-                <Text as="p" variant="bodyMd" fontWeight="semibold">SEO Preview</Text>
+                <Text as="p" variant="bodyMd" fontWeight="semibold">
+                  SEO Preview
+                </Text>
                 <div
                   style={{
                     padding: 16,
@@ -216,13 +283,35 @@ function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
                     maxWidth: 600,
                   }}
                 >
-                  <div style={{ fontSize: 18, color: "#1a0dab", marginBottom: 4, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>
+                  <div
+                    style={{
+                      fontSize: 18,
+                      color: "#1a0dab",
+                      marginBottom: 4,
+                      overflow: "hidden",
+                      whiteSpace: "nowrap",
+                      textOverflow: "ellipsis",
+                    }}
+                  >
                     {metaTitle || job.productTitle}
                   </div>
-                  <div style={{ fontSize: 13, color: "#006621", marginBottom: 4 }}>
+                  <div
+                    style={{ fontSize: 13, color: "#006621", marginBottom: 4 }}
+                  >
                     your-store.myshopify.com › products
                   </div>
-                  <div style={{ fontSize: 14, color: "#545454", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" } as any}>
+                  <div
+                    style={
+                      {
+                        fontSize: 14,
+                        color: "#545454",
+                        display: "-webkit-box",
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: "vertical",
+                        overflow: "hidden",
+                      } as any
+                    }
+                  >
                     {metaDescription}
                   </div>
                 </div>
@@ -234,7 +323,9 @@ function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
           {/* Generated description */}
           {draftHtml ? (
             <BlockStack gap="200">
-              <Text as="p" variant="bodyMd" fontWeight="semibold">Generated description</Text>
+              <Text as="p" variant="bodyMd" fontWeight="semibold">
+                Generated description
+              </Text>
               <Box
                 padding="300"
                 background="bg-surface-secondary"
@@ -243,7 +334,13 @@ function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
                 borderColor="border"
               >
                 <div
-                  style={{ fontSize: 13, lineHeight: 1.6, color: "#202223", maxHeight: 320, overflowY: "auto" }}
+                  style={{
+                    fontSize: 13,
+                    lineHeight: 1.6,
+                    color: "#202223",
+                    maxHeight: 320,
+                    overflowY: "auto",
+                  }}
                   dangerouslySetInnerHTML={{ __html: draftHtml }}
                 />
               </Box>
@@ -256,16 +353,25 @@ function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
               )}
             </BlockStack>
           ) : job.status === "COMPLETED" ? (
-            <Banner tone="warning" title="Description not available in this view">
-              Open the full product editor to preview and apply the generated description.
+            <Banner
+              tone="warning"
+              title="Description not available in this view"
+            >
+              Open the full product editor to preview and apply the generated
+              description.
             </Banner>
           ) : (
-            <Text as="p" variant="bodySm" tone="subdued">No generated description available yet.</Text>
+            <Text as="p" variant="bodySm" tone="subdued">
+              No generated description available yet.
+            </Text>
           )}
 
           {job.status === "COMPLETED" && (
             <InlineStack>
-              <Button variant="plain" url={`/app/products/${job.productId.split("/").pop()}`}>
+              <Button
+                variant="plain"
+                url={`/app/products/${job.productId.split("/").pop()}`}
+              >
                 Open full editor with diff view ↗
               </Button>
             </InlineStack>
@@ -287,8 +393,16 @@ interface JobRowProps {
 }
 
 function JobTableRow({ job, index, onViewDetails }: JobRowProps) {
-  const actionFetcher = useFetcher<{ ok: boolean; error?: string; alreadyQueued?: boolean }>();
-  const undoFetcher = useFetcher<{ ok: boolean; error?: string; restored?: boolean }>();
+  const actionFetcher = useFetcher<{
+    ok: boolean;
+    error?: string;
+    alreadyQueued?: boolean;
+  }>();
+  const undoFetcher = useFetcher<{
+    ok: boolean;
+    error?: string;
+    restored?: boolean;
+  }>();
 
   const isSubmitting = actionFetcher.state !== "idle";
   const isUndoing = undoFetcher.state !== "idle";
@@ -320,7 +434,8 @@ function JobTableRow({ job, index, onViewDetails }: JobRowProps) {
   const displayName = job.productTitle ?? job.productId;
   const updatedDate = safeDateLabel(job.updatedAt);
   const progress = clampProgress(job.progress);
-  const canUndo = job.status === "COMPLETED" && !hasUndone && job.status !== "UNDONE";
+  const canUndo =
+    job.status === "COMPLETED" && !hasUndone && job.status !== "UNDONE";
 
   const rowError =
     actionFetcher.data?.ok === false
@@ -333,41 +448,88 @@ function JobTableRow({ job, index, onViewDetails }: JobRowProps) {
     <IndexTable.Row id={job.id} key={job.id} position={index}>
       <IndexTable.Cell>
         <BlockStack gap="100">
-          <Text as="span" variant="bodyMd" fontWeight="semibold">{displayName}</Text>
-          {rowError && <Text as="span" variant="bodySm" tone="critical">{safeShortError(rowError, 120)}</Text>}
+          <Text as="span" variant="bodyMd" fontWeight="semibold">
+            <span
+              style={{
+                display: "block",
+                maxWidth: 280,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {displayName}
+            </span>
+          </Text>
+          {rowError && (
+            <Text as="span" variant="bodySm" tone="critical">
+              {safeShortError(rowError, 120)}
+            </Text>
+          )}
         </BlockStack>
       </IndexTable.Cell>
       <IndexTable.Cell>
         <InlineStack gap="200" blockAlign="center">
-          {isSubmitting ? <Spinner size="small" /> : <Badge tone={tone}>{label}</Badge>}
+          {isSubmitting ? (
+            <Spinner size="small" />
+          ) : (
+            <Badge tone={tone}>{label}</Badge>
+          )}
           {job.status === "PROCESSING" && progress > 0 && (
-            <Text as="span" variant="bodySm" tone="subdued">{progress}%</Text>
+            <Text as="span" variant="bodySm" tone="subdued">
+              {progress}%
+            </Text>
           )}
         </InlineStack>
       </IndexTable.Cell>
       <IndexTable.Cell>
         {job.status === "FAILED" && job.errorMessage ? (
           <Tooltip content={job.errorMessage}>
-            <Text as="span" variant="bodySm" tone="critical">{safeShortError(job.errorMessage, 60)}</Text>
+            <Text as="span" variant="bodySm" tone="critical">
+              {safeShortError(job.errorMessage, 60)}
+            </Text>
           </Tooltip>
         ) : job.costTokens > 0 ? (
-          <Text as="span" variant="bodySm" tone="subdued">{job.costTokens.toLocaleString()} tokens</Text>
+          <Text as="span" variant="bodySm" tone="subdued">
+            {job.costTokens.toLocaleString()} tokens
+          </Text>
         ) : (
-          <Text as="span" variant="bodySm" tone="subdued">—</Text>
+          <Text as="span" variant="bodySm" tone="subdued">
+            —
+          </Text>
         )}
       </IndexTable.Cell>
       <IndexTable.Cell>
-        <Text as="span" variant="bodySm" tone="subdued">{updatedDate}</Text>
+        <Text as="span" variant="bodySm" tone="subdued">
+          {updatedDate}
+        </Text>
       </IndexTable.Cell>
       <IndexTable.Cell>
         <InlineStack gap="200" wrap blockAlign="center">
           {job.status === "FAILED" && (
-            <Button size="slim" onClick={handleRetry} loading={isSubmitting} disabled={isSubmitting}>Retry</Button>
+            <Button
+              size="slim"
+              onClick={handleRetry}
+              loading={isSubmitting}
+              disabled={isSubmitting}
+            >
+              Retry
+            </Button>
           )}
           {job.status === "PENDING" && (
-            <Button size="slim" tone="critical" onClick={handleCancel} loading={isSubmitting} disabled={isSubmitting}>Cancel</Button>
+            <Button
+              size="slim"
+              tone="critical"
+              onClick={handleCancel}
+              loading={isSubmitting}
+              disabled={isSubmitting}
+            >
+              Cancel
+            </Button>
           )}
-          <Button size="slim" onClick={() => onViewDetails(job)}>View</Button>
+          <Button size="slim" onClick={() => onViewDetails(job)}>
+            View
+          </Button>
           <Button
             size="slim"
             tone={canUndo ? "critical" : undefined}
@@ -411,7 +573,9 @@ function buildBulkRuns(jobs: JobRow[]): BulkRun[] {
       jobs: runJobs,
       totalCount: runJobs.length,
       completedCount: runJobs.filter((j) => j.status === "COMPLETED").length,
-      pendingCount: runJobs.filter((j) => j.status === "PENDING" || j.status === "PROCESSING").length,
+      pendingCount: runJobs.filter(
+        (j) => j.status === "PENDING" || j.status === "PROCESSING",
+      ).length,
       failedCount: runJobs.filter((j) => j.status === "FAILED").length,
       latestUpdatedAt: runJobs.reduce(
         (latest, j) => (j.updatedAt > latest ? j.updatedAt : latest),
@@ -425,18 +589,24 @@ function BulkRunRow({ run, index }: { run: BulkRun; index: number }) {
   const navigate = useNavigate();
   const { completedCount, pendingCount, failedCount, totalCount, bulkId } = run;
   const percentDone =
-    totalCount === 0 ? 100 : Math.round(((completedCount + failedCount) / totalCount) * 100);
+    totalCount === 0
+      ? 100
+      : Math.round(((completedCount + failedCount) / totalCount) * 100);
   const isActive = pendingCount > 0;
-  const overallTone =
-    isActive ? "attention"
-    : failedCount > 0 && completedCount === 0 ? "critical"
-    : failedCount > 0 ? "warning"
-    : "success";
-  const overallLabel =
-    isActive ? "In Progress"
-    : failedCount > 0 && completedCount === 0 ? "Failed"
-    : failedCount > 0 ? "Partial"
-    : "Completed";
+  const overallTone = isActive
+    ? "attention"
+    : failedCount > 0 && completedCount === 0
+      ? "critical"
+      : failedCount > 0
+        ? "warning"
+        : "success";
+  const overallLabel = isActive
+    ? "In Progress"
+    : failedCount > 0 && completedCount === 0
+      ? "Failed"
+      : failedCount > 0
+        ? "Partial"
+        : "Completed";
 
   return (
     <IndexTable.Row id={bulkId} position={index}>
@@ -446,7 +616,9 @@ function BulkRunRow({ run, index }: { run: BulkRun; index: number }) {
             Bulk run — {run.jobs[0]?.productTitle ?? ""}
             {totalCount > 1 && ` + ${totalCount - 1} more`}
           </Text>
-          <Text as="span" variant="bodySm" tone="subdued">{bulkId.slice(0, 8)}…</Text>
+          <Text as="span" variant="bodySm" tone="subdued">
+            {bulkId.slice(0, 8)}…
+          </Text>
         </BlockStack>
       </IndexTable.Cell>
       <IndexTable.Cell>
@@ -458,12 +630,24 @@ function BulkRunRow({ run, index }: { run: BulkRun; index: number }) {
       <IndexTable.Cell>
         <BlockStack gap="100">
           <div style={{ width: 120 }}>
-            <div style={{ height: 6, background: "#e1e3e5", borderRadius: 3, overflow: "hidden" }}>
+            <div
+              style={{
+                height: 6,
+                background: "#e1e3e5",
+                borderRadius: 3,
+                overflow: "hidden",
+              }}
+            >
               <div
                 style={{
                   height: "100%",
                   width: `${percentDone}%`,
-                  background: failedCount > 0 && !isActive ? "#c0392b" : isActive ? "#f59e0b" : "#22c55e",
+                  background:
+                    failedCount > 0 && !isActive
+                      ? "#c0392b"
+                      : isActive
+                        ? "#f59e0b"
+                        : "#22c55e",
                   borderRadius: 3,
                   transition: "width 0.3s ease",
                 }}
@@ -471,12 +655,15 @@ function BulkRunRow({ run, index }: { run: BulkRun; index: number }) {
             </div>
           </div>
           <Text as="span" variant="bodySm" tone="subdued">
-            {completedCount}/{totalCount} done{failedCount > 0 && ` · ${failedCount} failed`}
+            {completedCount}/{totalCount} done
+            {failedCount > 0 && ` · ${failedCount} failed`}
           </Text>
         </BlockStack>
       </IndexTable.Cell>
       <IndexTable.Cell>
-        <Text as="span" variant="bodySm" tone="subdued">{safeDateLabel(run.latestUpdatedAt)}</Text>
+        <Text as="span" variant="bodySm" tone="subdued">
+          {safeDateLabel(run.latestUpdatedAt)}
+        </Text>
       </IndexTable.Cell>
       <IndexTable.Cell>
         <Button size="slim" onClick={() => navigate(`/app/bulk/${bulkId}`)}>
@@ -496,7 +683,11 @@ export default function JobsRoute() {
     useLoaderData<LoaderData>();
 
   const revalidator = useRevalidator();
-  const cancelAllFetcher = useFetcher<{ ok: boolean; cancelled?: number; error?: string }>();
+  const cancelAllFetcher = useFetcher<{
+    ok: boolean;
+    cancelled?: number;
+    error?: string;
+  }>();
   const [params] = useSearchParams();
   const navigate = useNavigate();
 
@@ -504,7 +695,10 @@ export default function JobsRoute() {
   const [selectedJob, setSelectedJob] = useState<JobRow | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
 
-  const handleViewDetails = useCallback((job: JobRow) => { setSelectedJob(job); setModalOpen(true); }, []);
+  const handleViewDetails = useCallback((job: JobRow) => {
+    setSelectedJob(job);
+    setModalOpen(true);
+  }, []);
   const handleModalClose = useCallback(() => setModalOpen(false), []);
 
   const isCancellingAll = cancelAllFetcher.state !== "idle";
@@ -514,22 +708,39 @@ export default function JobsRoute() {
 
   const timerRef = useRef<number | null>(null);
   useEffect(() => {
-    if (timerRef.current) { window.clearTimeout(timerRef.current); timerRef.current = null; }
+    if (timerRef.current) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
     if (!hasActiveJobs) return;
     let stopped = false;
     const scheduleNext = () => {
       if (stopped) return;
-      const ms = Math.max(750, Math.floor(POLL_INTERVAL_MS + (Math.random() * 2 - 1) * POLL_INTERVAL_MS * 0.2));
+      const ms = Math.max(
+        750,
+        Math.floor(
+          POLL_INTERVAL_MS + (Math.random() * 2 - 1) * POLL_INTERVAL_MS * 0.2,
+        ),
+      );
       timerRef.current = window.setTimeout(tick, ms);
     };
     const tick = () => {
       if (stopped) return;
-      if (typeof document !== "undefined" && document.hidden) { scheduleNext(); return; }
+      if (typeof document !== "undefined" && document.hidden) {
+        scheduleNext();
+        return;
+      }
       if (revalidator.state === "idle") revalidator.revalidate();
       scheduleNext();
     };
     scheduleNext();
-    return () => { stopped = true; if (timerRef.current) { window.clearTimeout(timerRef.current); timerRef.current = null; } };
+    return () => {
+      stopped = true;
+      if (timerRef.current) {
+        window.clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    };
   }, [hasActiveJobs, revalidator]);
 
   const handleCancelAll = useCallback(() => {
@@ -561,14 +772,40 @@ export default function JobsRoute() {
   const bulkRuns = buildBulkRuns(bulkJobs);
 
   const tabs = [
-    { id: "all", content: <InlineStack gap="200" blockAlign="center"><span>All</span><Badge>{jobs.length}</Badge></InlineStack>, accessibilityLabel: "All", panelID: "all-panel" },
-    { id: "individual", content: <InlineStack gap="200" blockAlign="center"><span>Individual</span><Badge>{individualJobs.length}</Badge></InlineStack>, accessibilityLabel: "Individual jobs", panelID: "individual-panel" },
+    {
+      id: "all",
+      content: (
+        <InlineStack gap="200" blockAlign="center">
+          <span>All</span>
+          <Badge>{jobs.length}</Badge>
+        </InlineStack>
+      ),
+      accessibilityLabel: "All",
+      panelID: "all-panel",
+    },
+    {
+      id: "individual",
+      content: (
+        <InlineStack gap="200" blockAlign="center">
+          <span>Individual</span>
+          <Badge>{individualJobs.length}</Badge>
+        </InlineStack>
+      ),
+      accessibilityLabel: "Individual jobs",
+      panelID: "individual-panel",
+    },
     {
       id: "bulk",
       content: (
         <InlineStack gap="200" blockAlign="center">
           <span>Bulk Runs</span>
-          <Badge tone={bulkRuns.some((r) => r.pendingCount > 0) ? "attention" : undefined}>{bulkRuns.length}</Badge>
+          <Badge
+            tone={
+              bulkRuns.some((r) => r.pendingCount > 0) ? "attention" : undefined
+            }
+          >
+            {bulkRuns.length}
+          </Badge>
         </InlineStack>
       ),
       accessibilityLabel: "Bulk runs",
@@ -579,24 +816,43 @@ export default function JobsRoute() {
   function renderJobTable(jobList: JobRow[]) {
     if (jobList.length === 0) {
       return (
-        <EmptyState heading="No jobs here" image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png">
-          <p>Generate descriptions from the <Link to="/app/products">Products</Link> page.</p>
+        <EmptyState
+          heading="No jobs here"
+          image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
+        >
+          <p>
+            Generate descriptions from the{" "}
+            <Link to="/app/products">Products</Link> page.
+          </p>
         </EmptyState>
       );
     }
     return (
       <>
         <Box padding="300" borderBlockEndWidth="1px" borderColor="border">
-          <Text as="p" variant="bodySm" tone="subdued">Jobs are shop-scoped and actions are idempotent.</Text>
+          <Text as="p" variant="bodySm" tone="subdued">
+            Jobs are shop-scoped and actions are idempotent.
+          </Text>
         </Box>
         <IndexTable
           resourceName={{ singular: "job", plural: "jobs" }}
           itemCount={jobList.length}
-          headings={[{ title: "Product" }, { title: "Status" }, { title: "Details" }, { title: "Updated" }, { title: "Actions" }]}
+          headings={[
+            { title: "Product", width: "30%" },
+            { title: "Status", width: "12%" },
+            { title: "Details", width: "20%" },
+            { title: "Updated", width: "20%" },
+            { title: "Actions", width: "18%" },
+          ]}
           selectable={false}
         >
           {jobList.map((job, idx) => (
-            <JobTableRow key={job.id} job={job} index={idx} onViewDetails={handleViewDetails} />
+            <JobTableRow
+              key={job.id}
+              job={job}
+              index={idx}
+              onViewDetails={handleViewDetails}
+            />
           ))}
         </IndexTable>
       </>
@@ -606,8 +862,15 @@ export default function JobsRoute() {
   function renderBulkRunsTable() {
     if (bulkRuns.length === 0) {
       return (
-        <EmptyState heading="No bulk runs yet" image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png">
-          <p>Select multiple products on the <Link to="/app/products">Products</Link> page and click "Generate AI Descriptions".</p>
+        <EmptyState
+          heading="No bulk runs yet"
+          image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
+        >
+          <p>
+            Select multiple products on the{" "}
+            <Link to="/app/products">Products</Link> page and click "Generate AI
+            Descriptions".
+          </p>
         </EmptyState>
       );
     }
@@ -615,13 +878,20 @@ export default function JobsRoute() {
       <>
         <Box padding="300" borderBlockEndWidth="1px" borderColor="border">
           <Text as="p" variant="bodySm" tone="subdued">
-            Each bulk run groups all products from a single batch generation. Click "Review & Apply" to manage results.
+            Each bulk run groups all products from a single batch generation.
+            Click "Review & Apply" to manage results.
           </Text>
         </Box>
         <IndexTable
           resourceName={{ singular: "bulk run", plural: "bulk runs" }}
           itemCount={bulkRuns.length}
-          headings={[{ title: "Run" }, { title: "Status" }, { title: "Progress" }, { title: "Updated" }, { title: "Actions" }]}
+          headings={[
+            { title: "Run" },
+            { title: "Status" },
+            { title: "Progress" },
+            { title: "Updated" },
+            { title: "Actions" },
+          ]}
           selectable={false}
         >
           {bulkRuns.map((run, idx) => (
@@ -638,15 +908,26 @@ export default function JobsRoute() {
         <Card>
           <InlineStack align="space-between" blockAlign="center">
             <BlockStack gap="100">
-              <Text as="h2" variant="headingMd">History Details</Text>
+              <Text as="h2" variant="headingMd">
+                History Details
+              </Text>
               <InlineStack gap="200" blockAlign="center">
                 {isRevalidating && <Spinner size="small" />}
-                {autoRefreshLabel && <Text as="span" variant="bodySm" tone="subdued">{autoRefreshLabel}</Text>}
+                {autoRefreshLabel && (
+                  <Text as="span" variant="bodySm" tone="subdued">
+                    {autoRefreshLabel}
+                  </Text>
+                )}
               </InlineStack>
             </BlockStack>
             <InlineStack gap="300" wrap>
               {totalPending > 0 && (
-                <Button tone="critical" onClick={handleCancelAll} loading={isCancellingAll} disabled={isCancellingAll}>
+                <Button
+                  tone="critical"
+                  onClick={handleCancelAll}
+                  loading={isCancellingAll}
+                  disabled={isCancellingAll}
+                >
                   {`⛔ Cancel All Pending (${totalPending})`}
                 </Button>
               )}
@@ -654,11 +935,14 @@ export default function JobsRoute() {
           </InlineStack>
         </Card>
 
-        {cancelAllResult?.ok && typeof cancelAllResult.cancelled === "number" && (
-          <Banner tone="success" title="Bulk cancellation complete">
-            {cancelAllResult.cancelled > 0 ? `${cancelAllResult.cancelled} pending job(s) cancelled.` : "No pending jobs were found."}
-          </Banner>
-        )}
+        {cancelAllResult?.ok &&
+          typeof cancelAllResult.cancelled === "number" && (
+            <Banner tone="success" title="Bulk cancellation complete">
+              {cancelAllResult.cancelled > 0
+                ? `${cancelAllResult.cancelled} pending job(s) cancelled.`
+                : "No pending jobs were found."}
+            </Banner>
+          )}
         {cancelAllResult && !cancelAllResult.ok && (
           <Banner tone="critical" title="Cancellation failed">
             {cancelAllResult.error ?? "An unknown error occurred."}
@@ -666,7 +950,12 @@ export default function JobsRoute() {
         )}
 
         <Card padding="0">
-          <Tabs tabs={tabs} selected={selectedTab} onSelect={setSelectedTab} fitted />
+          <Tabs
+            tabs={tabs}
+            selected={selectedTab}
+            onSelect={setSelectedTab}
+            fitted
+          />
           <Divider />
           {selectedTab === 0 && renderJobTable(jobs)}
           {selectedTab === 1 && renderJobTable(individualJobs)}
@@ -675,13 +964,21 @@ export default function JobsRoute() {
 
         {selectedTab !== 2 && (hasNextPage || !isOnFirstPage) && (
           <InlineStack align="space-between">
-            <Button disabled={isOnFirstPage} onClick={handlePrev}>← Newer</Button>
-            <Button disabled={!hasNextPage} onClick={handleNext}>Older →</Button>
+            <Button disabled={isOnFirstPage} onClick={handlePrev}>
+              ← Newer
+            </Button>
+            <Button disabled={!hasNextPage} onClick={handleNext}>
+              Older →
+            </Button>
           </InlineStack>
         )}
       </BlockStack>
 
-      <JobDetailModal job={selectedJob} open={modalOpen} onClose={handleModalClose} />
+      <JobDetailModal
+        job={selectedJob}
+        open={modalOpen}
+        onClose={handleModalClose}
+      />
     </Page>
   );
 }

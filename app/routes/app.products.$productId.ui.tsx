@@ -14,6 +14,7 @@ import {
   Spinner,
   Checkbox,
   InlineGrid,
+  Tooltip,
 } from "@shopify/polaris";
 import { useFetcher, useLoaderData, useNavigate } from "@remix-run/react";
 
@@ -26,12 +27,6 @@ import {
 } from "./app.products.$productId.constants";
 
 import { DiffViewer } from "../components/DiffViewer";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// UI-only helpers
-// IMPORTANT: No client-side “sanitizers”. All HTML must be sanitized on server.
-// Rendering is sandboxed inside DiffViewer iframes (defense-in-depth).
-// ─────────────────────────────────────────────────────────────────────────────
 
 function isUuidV4(jobId: string) {
   return UUID_V4_RE.test(jobId);
@@ -76,18 +71,6 @@ interface PollPayload {
   errorMessage: string | null;
 }
 
-/**
- * Job polling hook (UI-only)
- *
- * Assumption (safest default): /app/api/job/:jobId is authenticated + shop-scoped
- * and returns server-sanitized result.body_html.
- *
- * Hardening:
- * - Jittered polling to avoid herd effects
- * - Tab visibility guard
- * - Timer cleanup on unmount and on jobId changes (prevents leaks)
- * - Fail-closed: if jobId invalid, do nothing
- */
 function useJobPoll() {
   const fetcher = useFetcher<PollPayload>();
   const timerRef = useRef<number | null>(null);
@@ -118,24 +101,18 @@ function useJobPoll() {
   }, []);
 
   useEffect(() => {
-    // Always clear any pending timeouts when jobId changes/unmount.
     clearTimer();
-
     if (!jobId) return;
 
     let stopped = false;
 
     const tick = () => {
       if (stopped) return;
-
-      // Pause when tab hidden to reduce unnecessary load.
       if (typeof document !== "undefined" && document.hidden) {
         timerRef.current = window.setTimeout(tick, scheduleMs());
         return;
       }
-
       fetcher.load(`/app/api/job/${jobId}`);
-
       timerRef.current = window.setTimeout(tick, scheduleMs());
     };
 
@@ -176,8 +153,8 @@ function useJobPoll() {
     status,
     result,
     errorMessage,
-    jobId, // current polled job
-    lastCompletedJobId, // server-owned job id that completed
+    jobId,
+    lastCompletedJobId,
     isPolling: status !== "IDLE" && !terminal.has(status),
     stop,
   };
@@ -188,17 +165,16 @@ function useJobPoll() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function ProductEditorModalRoute() {
-  const { product, activeJob, latestDraft, policyWarnings } = useLoaderData<LoaderData>();
+  const { product, activeJob, latestDraft, policyWarnings, shopPlan } =
+    useLoaderData<LoaderData>();
 
   const navigate = useNavigate();
 
-  // Form state (bounded / UI-only)
   const [vibe, setVibe] = useState<string>("casual");
   const [format, setFormat] = useState<string>("paragraph");
   const [keywords, setKeywords] = useState<string>("");
   const [includeSocials, setIncludeSocials] = useState<boolean>(false);
 
-  // Fetchers
   const generateFetcher = useFetcher<any>();
   const applyFetcher = useFetcher<any>();
   const descFetcher = useFetcher<any>();
@@ -213,17 +189,14 @@ export default function ProductEditorModalRoute() {
     isPolling,
   } = useJobPoll();
 
-  // Start polling when generate returns jobId
   useEffect(() => {
-  const data = generateFetcher.data;
-  const jobId = data?.jobId;
+    const data = generateFetcher.data;
+    const jobId = data?.jobId;
+    if (data?.ok && typeof jobId === "string" && isUuidV4(jobId)) {
+      startPolling(jobId);
+    }
+  }, [generateFetcher.data?.jobId, startPolling]);
 
-  if (data?.ok && typeof jobId === "string" && isUuidV4(jobId)) {
-    startPolling(jobId);
-  }
-}, [generateFetcher.data?.jobId, startPolling]);
-
-  // Auto-resume polling if an active job exists (on mount)
   useEffect(() => {
     if (activeJob && (activeJob.status === "PENDING" || activeJob.status === "PROCESSING")) {
       startPolling(activeJob.id);
@@ -231,7 +204,6 @@ export default function ProductEditorModalRoute() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Lazy load current description
   const handleLoadComparison = useCallback(() => {
     if (descFetcher.state !== "idle") return;
     const fd = new FormData();
@@ -239,7 +211,6 @@ export default function ProductEditorModalRoute() {
     descFetcher.submit(fd, { method: "post" });
   }, [descFetcher]);
 
-  // Suggest keywords (server-owned meta; do NOT send client fields)
   const handleSuggestKeywords = useCallback(() => {
     if (keywordFetcher.state !== "idle") return;
     const fd = new FormData();
@@ -248,18 +219,17 @@ export default function ProductEditorModalRoute() {
   }, [keywordFetcher]);
 
   const suggestedKeywords: string[] =
-  keywordFetcher.data?.ok && Array.isArray(keywordFetcher.data?.keywords)
-    ? keywordFetcher.data.keywords
-    : [];
+    keywordFetcher.data?.ok && Array.isArray(keywordFetcher.data?.keywords)
+      ? keywordFetcher.data.keywords
+      : [];
 
-    const handleAddSuggestedKeyword = useCallback((kw: string) => {
-  setKeywords((prev) => {
-    const existing = prev.split(",").map((k) => k.trim()).filter(Boolean);
-    if (existing.some((k) => k.toLowerCase() === kw.toLowerCase())) return prev;
-    return [...existing, kw].join(", ");
-  });
-}, []);
-
+  const handleAddSuggestedKeyword = useCallback((kw: string) => {
+    setKeywords((prev) => {
+      const existing = prev.split(",").map((k) => k.trim()).filter(Boolean);
+      if (existing.some((k) => k.toLowerCase() === kw.toLowerCase())) return prev;
+      return [...existing, kw].join(", ");
+    });
+  }, []);
 
   const isGenerating =
     isPolling ||
@@ -269,37 +239,59 @@ export default function ProductEditorModalRoute() {
 
   const isApplying = applyFetcher.state !== "idle";
 
-  // Draft source precedence: live poll result → latestDraft from loader (already server-sanitized)
-  const draftResult: DraftResult | null = (pollResult as DraftResult | null) ?? (latestDraft?.result ?? null);
+  const draftResult: DraftResult | null =
+    (pollResult as DraftResult | null) ?? (latestDraft?.result ?? null);
 
-  const draftHtml = typeof draftResult?.body_html === "string" ? draftResult.body_html : "";
-  const currentHtml = typeof descFetcher.data?.descriptionHtml === "string" ? descFetcher.data.descriptionHtml : "";
+  const draftHtml =
+    typeof draftResult?.body_html === "string" ? draftResult.body_html : "";
+  const currentHtml =
+    typeof descFetcher.data?.descriptionHtml === "string"
+      ? descFetcher.data.descriptionHtml
+      : "";
 
   const highlightKeywords = useMemo(() => parseKeywords(keywords), [keywords]);
 
+  // ── Generate error state ──────────────────────────────────────────────────
   const generateError =
-  generateFetcher.data?.intent === "generate" &&
-  generateFetcher.data?.ok === false
-    ? String(generateFetcher.data.error ?? "")
-    : "";
+    generateFetcher.data?.ok === false
+      ? String(generateFetcher.data.error ?? "")
+      : "";
 
+  const isRateLimited =
+    generateFetcher.data?.ok === false &&
+    (generateFetcher.data?.code === "RATE_LIMIT_EXCEEDED" ||
+      generateFetcher.data?.code === "GLOBAL_LIMIT_REACHED");
+
+  const isFreePlanLimit =
+    generateFetcher.data?.code === "RATE_LIMIT_EXCEEDED" &&
+    generateFetcher.data?.plan === "free";
+
+  // ── Keyword suggestion state ──────────────────────────────────────────────
+  // Free plan: button disabled client-side, server also blocks
+  const keywordSuggestBlocked = shopPlan === "free";
+
+  // When server returns a limit error after the click
+  const keywordLimitError =
+    keywordFetcher.data?.ok === false &&
+    keywordFetcher.data?.code === "KEYWORD_LIMIT_EXCEEDED";
+
+  // ── Apply state ───────────────────────────────────────────────────────────
   const applyError =
-    applyFetcher.data && applyFetcher.data.ok === false ? String(applyFetcher.data.error ?? "") : "";
-  const applySuccess = applyFetcher.data?.ok === true && applyFetcher.data?.applied === true;
+    applyFetcher.data && applyFetcher.data.ok === false
+      ? String(applyFetcher.data.error ?? "")
+      : "";
+  const applySuccess =
+    applyFetcher.data?.ok === true && applyFetcher.data?.applied === true;
 
   const handleClose = () => navigate("/app/products");
 
-  // Temporarily add this right before the DiffViewer in your ui.tsx:
-useEffect(() => {
-  if (draftResult) {
-    console.log("=== DRAFT RESULT ===", JSON.stringify(draftResult, null, 2));
-    console.log("=== DRAFT HTML ===", draftHtml);
-  }
-}, [draftResult, draftHtml]);
+  useEffect(() => {
+    if (draftResult) {
+      console.log("=== DRAFT RESULT ===", JSON.stringify(draftResult, null, 2));
+      console.log("=== DRAFT HTML ===", draftHtml);
+    }
+  }, [draftResult, draftHtml]);
 
-  // Apply must use server-owned job id:
-  // - Prefer the last completed polled job
-  // - Else fallback to latestDraft.id (server-owned completed job id from loader)
   const applyJobId = lastCompletedJobId ?? latestDraft?.id ?? null;
 
   const canApply = Boolean(
@@ -313,8 +305,7 @@ useEffect(() => {
       pollStatus !== "PROCESSING",
   );
 
-  const primaryGenerateDisabled = isGenerating; // server also enforces idempotency
-
+  const primaryGenerateDisabled = isGenerating;
 
   return (
     <Modal
@@ -336,7 +327,7 @@ useEffect(() => {
           fd.set("intent", "generate");
           fd.set("vibe", clampTextInput(vibe, 40));
           fd.set("format", clampTextInput(format, 40));
-          fd.set("keywords", clampTextInput(keywords, 2000)); // server re-normalizes & caps
+          fd.set("keywords", clampTextInput(keywords, 2000));
           fd.set("includeSocials", String(includeSocials));
           generateFetcher.submit(fd, { method: "post" });
         },
@@ -348,7 +339,8 @@ useEffect(() => {
     >
       <Modal.Section>
         <BlockStack gap="400">
-          {/* Banners */}
+
+          {/* ── Policy warnings ── */}
           {policyWarnings.length > 0 && (
             <Banner tone="warning" title="SEO Policy Warnings">
               <ul>
@@ -359,9 +351,26 @@ useEffect(() => {
             </Banner>
           )}
 
+          {/* ── Generate error ── */}
           {generateError && (
-            <Banner tone="critical" title="Generation failed">
-              {generateError}
+            <Banner
+              tone={isRateLimited ? "warning" : "critical"}
+              title={isRateLimited ? "Generation limit reached" : "Generation failed"}
+              action={
+                isFreePlanLimit
+                  ? { content: "Upgrade plan", url: "/app/billing", target: "_self" }
+                  : undefined
+              }
+            >
+              <BlockStack gap="100">
+                <Text as="p" variant="bodySm">{generateError}</Text>
+                {generateFetcher.data?.shopUsed !== undefined && (
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    Usage today: {generateFetcher.data.shopUsed} /{" "}
+                    {generateFetcher.data.shopLimit}
+                  </Text>
+                )}
+              </BlockStack>
             </Banner>
           )}
 
@@ -389,7 +398,7 @@ useEffect(() => {
             </Banner>
           )}
 
-          {/* Generation inputs */}
+          {/* ── Generation settings card ── */}
           <Card>
             <BlockStack gap="300">
               <Text as="h3" variant="headingSm">
@@ -410,7 +419,6 @@ useEffect(() => {
                   onChange={setVibe}
                   disabled={isGenerating}
                 />
-
                 <Select
                   label="Format"
                   options={[
@@ -424,104 +432,125 @@ useEffect(() => {
                 />
               </InlineGrid>
 
-              <InlineStack gap="200" blockAlign="end">
-                {/* Keywords field — replace the existing InlineStack gap="200" block with this: */}
-<BlockStack gap="200">
-  <InlineStack gap="200" blockAlign="end">
-    <div style={{ flex: 1 }}>
-      <TextField
-        label="Keywords"
-        value={keywords}
-        onChange={(v) => setKeywords(clampTextInput(v, 2000))}
-        placeholder="e.g. organic cotton, eco-friendly t-shirt"
-        autoComplete="off"
-        disabled={isGenerating}
-        helpText="Comma-separated seed keywords for SEO targeting."
-      />
-    </div>
-    <div style={{ paddingTop: 22 }}>
-      <Button
-        onClick={handleSuggestKeywords}
-        loading={keywordFetcher.state !== "idle"}
-        disabled={isGenerating}
-        size="slim"
-      >
-        ✨ Suggest
-      </Button>
-    </div>
-  </InlineStack>
+              {/* ── Keywords ── */}
+              <BlockStack gap="200">
+                <InlineStack gap="200" blockAlign="end">
+                  <div style={{ flex: 1 }}>
+                    <TextField
+                      label="Keywords"
+                      value={keywords}
+                      onChange={(v) => setKeywords(clampTextInput(v, 2000))}
+                      placeholder="e.g. organic cotton, eco-friendly t-shirt"
+                      autoComplete="off"
+                      disabled={isGenerating}
+                      helpText="Comma-separated seed keywords for SEO targeting."
+                    />
+                  </div>
+                  <div style={{ paddingTop: 22 }}>
+                    {keywordSuggestBlocked ? (
+                      <Tooltip content="Upgrade to Basic or higher to use keyword suggestions">
+                        <Button size="slim" disabled>
+                          ✨ Suggest
+                        </Button>
+                      </Tooltip>
+                    ) : (
+                      <Button
+                        onClick={handleSuggestKeywords}
+                        loading={keywordFetcher.state !== "idle"}
+                        disabled={isGenerating}
+                        size="slim"
+                      >
+                        ✨ Suggest
+                      </Button>
+                    )}
+                  </div>
+                </InlineStack>
 
-  {/* Current keyword tags */}
-  {parseKeywords(keywords).length > 0 && (
-    <InlineStack gap="100" wrap>
-      {parseKeywords(keywords).map((kw) => (
-        <div
-          key={kw}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 4,
-            background: "#f1f2f3",
-            border: "1px solid #c9cccf",
-            borderRadius: 4,
-            padding: "2px 8px",
-            fontSize: 13,
-          }}
-        >
-          {kw}
-          <button
-            onClick={() =>
-              setKeywords(
-                parseKeywords(keywords)
-                  .filter((k) => k !== kw)
-                  .join(", ")
-              )
-            }
-            style={{
-              background: "none",
-              border: "none",
-              cursor: "pointer",
-              padding: "0 2px",
-              fontSize: 12,
-              color: "#6d7175",
-            }}
-          >
-            ×
-          </button>
-        </div>
-      ))}
-    </InlineStack>
-  )}
+                {/* Keyword limit error banner */}
+                {keywordLimitError && (
+                  <Banner
+                    tone={keywordFetcher.data?.plan === "free" ? "warning" : "info"}
+                    title="Keyword suggestion limit reached"
+                    action={
+                      keywordFetcher.data?.plan !== "pro"
+                        ? { content: "Upgrade plan", url: "/app/billing", target: "_self" }
+                        : undefined
+                    }
+                  >
+                    {keywordFetcher.data?.error}
+                  </Banner>
+                )}
 
-  {/* Suggested keyword chips */}
-  {suggestedKeywords.length > 0 && (
-    <BlockStack gap="100">
-      <Text variant="bodySm" tone="subdued">
-        Suggested — click to add:
-      </Text>
-      <InlineStack gap="100" wrap>
-        {suggestedKeywords.map((kw) => (
-          <button
-            key={kw}
-            onClick={() => handleAddSuggestedKeyword(kw)}
-            style={{
-              background: "none",
-              border: "1px solid #c9cccf",
-              borderRadius: 4,
-              padding: "2px 8px",
-              cursor: "pointer",
-              fontSize: 13,
-              color: "#202223",
-            }}
-          >
-            + {kw}
-          </button>
-        ))}
-      </InlineStack>
-    </BlockStack>
-  )}
-</BlockStack>
-              </InlineStack>
+                {/* Current keyword tags */}
+                {parseKeywords(keywords).length > 0 && (
+                  <InlineStack gap="100" wrap>
+                    {parseKeywords(keywords).map((kw) => (
+                      <div
+                        key={kw}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                          background: "#f1f2f3",
+                          border: "1px solid #c9cccf",
+                          borderRadius: 4,
+                          padding: "2px 8px",
+                          fontSize: 13,
+                        }}
+                      >
+                        {kw}
+                        <button
+                          onClick={() =>
+                            setKeywords(
+                              parseKeywords(keywords)
+                                .filter((k) => k !== kw)
+                                .join(", "),
+                            )
+                          }
+                          style={{
+                            background: "none",
+                            border: "none",
+                            cursor: "pointer",
+                            padding: "0 2px",
+                            fontSize: 12,
+                            color: "#6d7175",
+                          }}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </InlineStack>
+                )}
+
+                {/* Suggested keyword chips */}
+                {suggestedKeywords.length > 0 && (
+                  <BlockStack gap="100">
+                    <Text variant="bodySm" tone="subdued">
+                      Suggested — click to add:
+                    </Text>
+                    <InlineStack gap="100" wrap>
+                      {suggestedKeywords.map((kw) => (
+                        <button
+                          key={kw}
+                          onClick={() => handleAddSuggestedKeyword(kw)}
+                          style={{
+                            background: "none",
+                            border: "1px solid #c9cccf",
+                            borderRadius: 4,
+                            padding: "2px 8px",
+                            cursor: "pointer",
+                            fontSize: 13,
+                            color: "#202223",
+                          }}
+                        >
+                          + {kw}
+                        </button>
+                      ))}
+                    </InlineStack>
+                  </BlockStack>
+                )}
+              </BlockStack>
 
               <Checkbox
                 label="Include Instagram caption"
@@ -532,28 +561,25 @@ useEffect(() => {
             </BlockStack>
           </Card>
 
-          {/* AI generation progress */}
-         {isGenerating && (
-  <Card>
-    <InlineStack gap="300" blockAlign="center">
-      <Spinner size="small" />
-      <Text as="p">
-        {pollStatus === "PROCESSING"
-          ? "Deskribe AI is generating your product description…"
-          : "Preparing to generate your product description…"}
-      </Text>
-    </InlineStack>
-  </Card>
-)}
+          {/* ── Generating progress ── */}
+          {isGenerating && (
+            <Card>
+              <InlineStack gap="300" blockAlign="center">
+                <Spinner size="small" />
+                <Text as="p">
+                  {pollStatus === "PROCESSING"
+                    ? "Deskribe AI is generating your product description…"
+                    : "Preparing to generate your product description…"}
+                </Text>
+              </InlineStack>
+            </Card>
+          )}
 
-          {/* SEO meta preview (plain text only) */}
+          {/* ── SEO preview ── */}
           {draftResult && (
             <Card>
               <BlockStack gap="200">
-                <Text as="h3" variant="headingSm">
-                  SEO Preview
-                </Text>
-
+                <Text as="h3" variant="headingSm">SEO Preview</Text>
                 <div
                   style={{
                     padding: 16,
@@ -577,7 +603,7 @@ useEffect(() => {
                     {draftResult.meta_title ?? product.title}
                   </div>
                   <div style={{ fontSize: 13, color: "#006621", marginBottom: 4 }}>
-                    {`your-store.myshopify.com › products`}
+                    your-store.myshopify.com › products
                   </div>
                   <div
                     style={{
@@ -620,30 +646,31 @@ useEffect(() => {
             </Card>
           )}
 
-          {/* Compare / Diff view */}
+          {/* ── Diff viewer ── */}
           <Card>
             <BlockStack gap="300">
               <InlineStack align="space-between" blockAlign="center">
-                <Text as="h3" variant="headingSm">
-                  Compare
-                </Text>
+                <Text as="h3" variant="headingSm">Compare</Text>
                 {!currentHtml && (
-                  <Button onClick={handleLoadComparison} loading={descFetcher.state !== "idle"} size="slim">
+                  <Button
+                    onClick={handleLoadComparison}
+                    loading={descFetcher.state !== "idle"}
+                    size="slim"
+                  >
                     Load current description
                   </Button>
                 )}
               </InlineStack>
-
               <DiffViewer
-                beforeHtml={currentHtml} // server-sanitized by fetch_description
-                afterHtml={draftHtml} // server-sanitized by loader/poll endpoint
-                keywords={highlightKeywords} // highlight-only
+                beforeHtml={currentHtml}
+                afterHtml={draftHtml}
+                keywords={highlightKeywords}
                 isLoading={descFetcher.state !== "idle"}
               />
             </BlockStack>
           </Card>
 
-          {/* Apply to Shopify */}
+          {/* ── Apply to Shopify ── */}
           {(latestDraft || pollStatus === "COMPLETED") && (
             <InlineStack align="end">
               <Button
@@ -653,7 +680,6 @@ useEffect(() => {
                 loading={isApplying}
                 onClick={() => {
                   if (!applyJobId || !isUuidV4(applyJobId)) return;
-
                   const fd = new FormData();
                   fd.set("intent", "apply");
                   fd.set("jobId", applyJobId);
@@ -664,6 +690,7 @@ useEffect(() => {
               </Button>
             </InlineStack>
           )}
+
         </BlockStack>
       </Modal.Section>
     </Modal>

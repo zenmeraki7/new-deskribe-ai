@@ -52,6 +52,7 @@ export interface LoaderData {
   activeJob: ActiveJob | null;
   latestDraft: LatestDraft | null;
   policyWarnings: string[]; // server-produced warnings (safe strings)
+   shopPlan: "free" | "basic" | "advanced" | "pro";
 }
 
 // Action results are intentionally explicit and "tagged" by shape.
