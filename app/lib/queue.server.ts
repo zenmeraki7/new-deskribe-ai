@@ -1,40 +1,8 @@
 // FILE: app/lib/queue.server.ts
+// app/lib/queue.server.ts
 import { Queue } from "bullmq";
-import IORedis from "ioredis";
-
-function requireEnv(name: string): string {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing required env: ${name}`);
-  return v;
-}
-
-const redisUrl = requireEnv("REDIS_URL");
-const isTls = redisUrl.startsWith("rediss://");
-
-export const redisConnection = new IORedis(redisUrl, {
-  maxRetriesPerRequest: null,
-  enableReadyCheck: false,
-  ...(isTls
-    ? {
-        tls: {
-          rejectUnauthorized: false,
-        },
-      }
-    : {}),
-});
-
-redisConnection.on("connect", () => {
-  console.log("[redis] connected");
-});
-
-redisConnection.on("ready", () => {
-  console.log("[redis] ready");
-});
-
-redisConnection.on("error", (err) => {
-  console.error("[redis] connection error:", err);
-});
+import { getRedis } from "./redis.server";
 
 export const generationQueue = new Queue("generation", {
-  connection: redisConnection,
+  connection: getRedis(),
 });

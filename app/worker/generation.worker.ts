@@ -3,7 +3,7 @@ import { Worker, type Job } from "bullmq";
 import { z } from "zod";
 
 import { db } from "../lib/db.server";
-import { redisConnection } from "../lib/queue.server";
+import { getRedis  } from "../lib/redis.server";
 import { sanitiseHtml } from "../lib/html.server";
 import { generateProductDescription } from "../lib/ai.server";
 
@@ -163,7 +163,7 @@ export const generationWorker = new Worker<GenerationJobData>(
     }
   },
   {
-    connection: redisConnection,
+    connection: getRedis (),
     concurrency: LIMITS.CONCURRENCY,
   },
 );

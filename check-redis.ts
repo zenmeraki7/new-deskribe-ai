@@ -1,15 +1,15 @@
 // FILE: scripts/check-redis.ts
-import { redisConnection } from "./app/lib/queue.server";
+import { getRedis } from "./app/lib/redis.server";
 
 async function main() {
-  const keys = await redisConnection.keys("bull:generation:*");
+  const keys = await getRedis().keys("bull:generation:*");
   console.log("Total Redis keys:", keys.length);
 
-  const waiting = await redisConnection.lrange("bull:generation:wait", 0, -1);
-  const active = await redisConnection.lrange("bull:generation:active", 0, -1);
-  const failed = await redisConnection.zrange("bull:generation:failed", 0, -1);
-  const completed = await redisConnection.zrange("bull:generation:completed", 0, -1);
-  const delayed = await redisConnection.zrange("bull:generation:delayed", 0, -1);
+  const waiting = await getRedis().lrange("bull:generation:wait", 0, -1);
+  const active = await getRedis().lrange("bull:generation:active", 0, -1);
+  const failed = await getRedis().zrange("bull:generation:failed", 0, -1);
+  const completed = await getRedis().zrange("bull:generation:completed", 0, -1);
+  const delayed = await getRedis().zrange("bull:generation:delayed", 0, -1);
 
   console.log("Waiting:", waiting);
   console.log("Active:", active);
@@ -18,7 +18,7 @@ async function main() {
   console.log("Delayed:", delayed);
 
   const jobId = "6926fce8-1f77-4b3f-abc1-a6ec8879fb39";
-  const jobData = await redisConnection.hgetall(`bull:generation:${jobId}`);
+  const jobData = await getRedis().hgetall(`bull:generation:${jobId}`);
   console.log("\nStuck job data:", jobData);
 }
 
@@ -28,5 +28,5 @@ main()
     process.exitCode = 1;
   })
   .finally(async () => {
-    await redisConnection.quit();
+    await getRedis().quit();
   });

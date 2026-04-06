@@ -1,6 +1,6 @@
 // FILE: app/lib/rate-limit.server.ts
 
-import { redisConnection } from "./queue.server";
+import { getRedis } from "./redis.server";
 import { db } from "./db.server";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -90,11 +90,11 @@ export async function checkAndIncrementRateLimit(
   // Pro plan has no per-shop limit — skip Redis entirely for counting,
   // but still increment global so the circuit-breaker stays accurate.
   if (shopLimit === Infinity) {
-    const globalCount = await redisConnection.incr(globalKey);
-    await redisConnection.expire(globalKey, KEY_TTL_SECONDS, "NX" as any);
+    const globalCount = await getRedis().incr(globalKey);
+    await getRedis().expire(globalKey, KEY_TTL_SECONDS, "NX" as any);
 
     if (globalCount > GLOBAL_DAILY_LIMIT) {
-      await redisConnection.decr(globalKey);
+      await getRedis().decr(globalKey);
       return {
         allowed: false,
         reason: "global_limit",
@@ -111,7 +111,7 @@ export async function checkAndIncrementRateLimit(
   }
 
   // ── Finite plan: atomic pipeline ──────────────────────────────────────────
-  const pipeline = redisConnection.pipeline();
+  const pipeline = getRedis().pipeline();
   pipeline.incr(shopKey);
   pipeline.expire(shopKey, KEY_TTL_SECONDS, "NX" as any);
   pipeline.incr(globalKey);
@@ -123,7 +123,7 @@ export async function checkAndIncrementRateLimit(
 
   // Check global limit first
   if (globalCount > GLOBAL_DAILY_LIMIT) {
-    await redisConnection.pipeline().decr(shopKey).decr(globalKey).exec();
+    await getRedis.pipeline().decr(shopKey).decr(globalKey).exec();
     return {
       allowed: false,
       reason: "global_limit",
@@ -134,7 +134,7 @@ export async function checkAndIncrementRateLimit(
 
   // Check per-shop limit
   if (shopCount > shopLimit) {
-    await redisConnection.pipeline().decr(shopKey).decr(globalKey).exec();
+    await getRedis().pipeline().decr(shopKey).decr(globalKey).exec();
     return {
       allowed: false,
       reason: "shop_limit",
@@ -168,11 +168,11 @@ export async function checkAndIncrementKeywordLimit(
 
   // Finite plans — use Redis counter
   const key = shopKeywordRedisKey(shopDomain);
-  const count = await redisConnection.incr(key);
-  await redisConnection.expire(key, KEY_TTL_SECONDS, "NX" as any);
+  const count = await getRedis().incr(key);
+  await getRedis().expire(key, KEY_TTL_SECONDS, "NX" as any);
 
   if (count > limit) {
-    await redisConnection.decr(key); // roll back
+    await getRedis().decr(key); // roll back
     return { allowed: false, reason: "limit_reached", used: count - 1, limit };
   }
 
@@ -203,6 +203,6 @@ async function persistUsageToDB(
 
 export async function getShopUsageToday(shopDomain: string): Promise<number> {
   const key = shopRedisKey(shopDomain);
-  const val = await redisConnection.get(key);
+  const val = await getRedis().get(key);
   return val ? parseInt(val, 10) : 0;
 }

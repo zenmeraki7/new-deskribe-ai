@@ -113,14 +113,15 @@ export async function loader({ request }: LoaderFunctionArgs) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Action — suggest_keywords | generate
+// Action — suggest_keywords | generate | apply
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function action({ request }: ActionFunctionArgs) {
-  const { admin, session } = await authenticate.admin(request);
+  const { admin } = await authenticate.admin(request);
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
 
+  // ── suggest_keywords ──────────────────────────────────────────────────────
   if (intent === "suggest_keywords") {
     const title = String(form.get("title") ?? "");
     const vendor = String(form.get("vendor") ?? "");
@@ -131,66 +132,89 @@ export async function action({ request }: ActionFunctionArgs) {
       .filter(Boolean);
 
     try {
-  const keywords = await suggestKeywords(title, vendor, productType, tags);
-  return json({ ok: true, kind: "suggest_keywords", keywords });
-} catch (err) {
-  console.error("Keyword generation error:", err);
-
-  return json(
-    {
-      ok: false,
-      kind: "error",
-      error: err instanceof Error ? err.message : "Keyword generation failed",
-    },
-    { status: 500 },
-  );
-}
+      const keywords = await suggestKeywords(title, vendor, productType, tags);
+      return json({ ok: true, kind: "suggest_keywords", keywords });
+    } catch (err) {
+      console.error("Keyword generation error:", err);
+      return json(
+        {
+          ok: false,
+          kind: "error",
+          error: err instanceof Error ? err.message : "Keyword generation failed",
+        },
+        { status: 500 },
+      );
+    }
   }
 
+  // ── generate ──────────────────────────────────────────────────────────────
   if (intent === "generate") {
+    try {
+      const productId = String(form.get("productId") ?? "");
+      const vibe = String(form.get("vibe") ?? "casual");
+      const format = String(form.get("format") ?? "paragraph");
+      const keywords = String(form.get("keywords") ?? "");
+      const includeSocials = form.get("includeSocials") === "true";
 
-  const productId = String(form.get("productId") ?? "");
-  const vibe = String(form.get("vibe") ?? "casual");
-  const format = String(form.get("format") ?? "paragraph");
-  const keywords = String(form.get("keywords") ?? "");
-  const includeSocials = form.get("includeSocials") === "true";
+      const resp = await admin.graphql(
+        `query ProductTitle($id: ID!) {
+          product(id: $id) { title vendor productType tags }
+        }`,
+        { variables: { id: productId } },
+      );
 
-  const resp = await admin.graphql(`
-    query ProductTitle($id: ID!) {
-      product(id: $id) { title vendor productType tags }
+      const data = await resp.json();
+      const p = data?.data?.product;
+
+      if (!p) {
+        return json(
+          { ok: false, kind: "error", error: "Product not found." },
+          { status: 404 },
+        );
+      }
+
+      const result = await generateProductDescription({
+        title: p.title,
+        vendor: p.vendor,
+        productType: p.productType,
+        tags: p.tags,
+        vibe,
+        format,
+        keywords: keywords.split(",").map((k: string) => k.trim()).filter(Boolean),
+        includeSocials,
+      });
+
+      const wordCount = result.body_html
+        .replace(/<[^>]+>/g, " ")
+        .trim()
+        .split(/\s+/).length;
+      const charCount = result.body_html.replace(/<[^>]+>/g, "").length;
+
+      return json({
+        ok: true,
+        kind: "generate",
+        result: {
+          ...result,
+          headline: `${p.title} — ${vibe}`,
+          wordCount,
+          charCount,
+          primary_keyword: result.keywords?.[0] ?? "",
+        },
+      });
+    } catch (err) {
+      console.error("Generation error:", err);
+      return json(
+        {
+          ok: false,
+          kind: "error",
+          error: err instanceof Error ? err.message : "Description generation failed",
+        },
+        { status: 500 },
+      );
     }
-  `,{ variables: { id: productId }});
+  }
 
-  const data = await resp.json();
-  const p = data?.data?.product;
-
-  const result = await generateProductDescription({
-    title: p.title,
-    vendor: p.vendor,
-    productType: p.productType,
-    tags: p.tags,
-    vibe,
-    format,
-    keywords: keywords.split(",").map(k => k.trim()).filter(Boolean),
-    includeSocials,
-  });
-
-  const wordCount = result.body_html.replace(/<[^>]+>/g," ").trim().split(/\s+/).length;
-  const charCount = result.body_html.replace(/<[^>]+>/g,"").length;
-
-  return json({
-    ok: true,
-    kind: "generate",
-    result: {
-      ...result,
-      headline: `${p.title} — ${vibe}`,
-      wordCount,
-      charCount,
-      primary_keyword: result.keywords?.[0] ?? "",
-    },
-  });
-
-}
+  // ── apply ─────────────────────────────────────────────────────────────────
   if (intent === "apply") {
     const productId = String(form.get("productId") ?? "");
     const bodyHtml = String(form.get("bodyHtml") ?? "");
@@ -202,46 +226,44 @@ export async function action({ request }: ActionFunctionArgs) {
       );
     }
 
-    const response = await admin.graphql(
-      `#graphql
-  mutation UpdateProduct($id: ID!, $descriptionHtml: String!) {
-    productUpdate(input: {
-      id: $id,
-      descriptionHtml: $descriptionHtml
-    }) {
-      product { id }
-      userErrors { field message }
+    try {
+      const response = await admin.graphql(
+        `#graphql
+        mutation UpdateProduct($id: ID!, $descriptionHtml: String!) {
+          productUpdate(input: {
+            id: $id,
+            descriptionHtml: $descriptionHtml
+          }) {
+            product { id }
+            userErrors { field message }
+          }
+        }`,
+        { variables: { id: productId, descriptionHtml: bodyHtml } },
+      );
+
+      const result = await response.json();
+      const userErrors = result?.data?.productUpdate?.userErrors;
+
+      if (userErrors && userErrors.length > 0) {
+        return json({ ok: false, error: userErrors[0].message }, { status: 400 });
+      }
+
+      return json({ ok: true, applied: true });
+    } catch (err) {
+      console.error("Apply error:", err);
+      return json(
+        { ok: false, error: err instanceof Error ? err.message : "Failed to apply description" },
+        { status: 500 },
+      );
     }
-  }`,
-      {
-        variables: {
-          id: productId,
-          descriptionHtml: bodyHtml,
-        },
-      },
-    );
-
-    // convert response to JSON
-    const result = await response.json();
-
-    // extract userErrors
-    const userErrors = result?.data?.productUpdate?.userErrors;
-
-    // if Shopify rejected update
-    if (userErrors && userErrors.length > 0) {
-      return json({ ok: false, error: userErrors[0].message }, { status: 400 });
-    }
-
-    // only if no errors:
-    return json({ ok: true, applied: true });
   }
 
-  // If no valid intent matched
   return json(
     { ok: false, kind: "error", error: "Invalid intent" },
     { status: 400 },
   );
 }
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Component
 // ─────────────────────────────────────────────────────────────────────────────
@@ -249,7 +271,10 @@ export async function action({ request }: ActionFunctionArgs) {
 export default function IndexPage() {
   const { product, error } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
-  const fetcher = useFetcher<any>();
+
+  // FIX: Separate fetchers for suggest and generate to avoid state conflicts
+  const suggestFetcher = useFetcher<any>();
+  const generateFetcher = useFetcher<any>();
   const applyFetcher = useFetcher<any>();
 
   // Settings state
@@ -258,20 +283,21 @@ export default function IndexPage() {
   const [keywords, setKeywords] = useState("");
   const [includeSocials, setIncludeSocials] = useState(false);
 
+  // FIX: showSuccessBanner is now properly wired
   const [showSuccessBanner, setShowSuccessBanner] = useState(false);
 
-  const isGenerating =
-    fetcher.state !== "idle" && fetcher.formData?.get("intent") === "generate";
-  const isSuggestingKeywords =
-    fetcher.state !== "idle" &&
-    fetcher.formData?.get("intent") === "suggest_keywords";
+  const isGenerating = generateFetcher.state !== "idle";
+  const isSuggestingKeywords = suggestFetcher.state !== "idle";
 
   const generationResult =
-    fetcher.data?.kind === "generate" && fetcher.data?.ok
-      ? fetcher.data.result
+    generateFetcher.data?.kind === "generate" && generateFetcher.data?.ok
+      ? generateFetcher.data.result
       : null;
 
-  const actionError = fetcher.data?.ok === false ? fetcher.data.error : null;
+  // Show errors from either fetcher
+  const actionError =
+    (generateFetcher.data?.ok === false ? generateFetcher.data.error : null) ??
+    (suggestFetcher.data?.ok === false ? suggestFetcher.data.error : null);
 
   const isApplying = applyFetcher.state !== "idle";
 
@@ -292,8 +318,8 @@ export default function IndexPage() {
     fd.append("format", format);
     fd.append("keywords", keywords);
     fd.append("includeSocials", String(includeSocials));
-    fetcher.submit(fd, { method: "POST" });
-  }, [product, vibe, format, keywords, includeSocials, fetcher]);
+    generateFetcher.submit(fd, { method: "POST" });
+  }, [product, vibe, format, keywords, includeSocials, generateFetcher]);
 
   const handleSuggestKeywords = useCallback(() => {
     if (!product) return;
@@ -303,8 +329,8 @@ export default function IndexPage() {
     fd.append("vendor", product.vendor);
     fd.append("productType", product.productType);
     fd.append("tags", product.tags.join(","));
-    fetcher.submit(fd, { method: "POST" });
-  }, [product, fetcher]);
+    suggestFetcher.submit(fd, { method: "POST" });
+  }, [product, suggestFetcher]);
 
   const handleKeywordTagRemove = useCallback((kw: string) => {
     setKeywords((prev) =>
@@ -316,22 +342,18 @@ export default function IndexPage() {
     );
   }, []);
 
+  // FIX: showSuccessBanner is now properly set and auto-dismissed
   useEffect(() => {
     if (applyFetcher.data?.ok && applyFetcher.data?.applied) {
       setShowSuccessBanner(true);
-
-      const timer = setTimeout(() => {
-        setShowSuccessBanner(false);
-      }, 4000);
-
+      const timer = setTimeout(() => setShowSuccessBanner(false), 4000);
       return () => clearTimeout(timer);
     }
   }, [applyFetcher.data]);
 
-  // Inject suggested keywords when they arrive
   const suggestedKeywords: string[] =
-    fetcher.data?.kind === "suggest_keywords" && fetcher.data?.ok
-      ? fetcher.data.keywords
+    suggestFetcher.data?.kind === "suggest_keywords" && suggestFetcher.data?.ok
+      ? suggestFetcher.data.keywords
       : [];
 
   const handleAddSuggestedKeyword = useCallback((kw: string) => {
@@ -345,6 +367,14 @@ export default function IndexPage() {
     });
   }, []);
 
+  const handleClear = useCallback(() => {
+    setVibe("casual");
+    setFormat("paragraph");
+    setKeywords("");
+    setIncludeSocials(false);
+    generateFetcher.load(window.location.pathname);
+  }, [generateFetcher]);
+
   // ── Derived ───────────────────────────────────────────────────────────────
 
   const imageUrl = product?.featuredImage?.url ?? DUMMY_IMAGE;
@@ -356,16 +386,10 @@ export default function IndexPage() {
 
   // ── Render ────────────────────────────────────────────────────────────────
 
+  // FIX: Removed stray success Banner from error branch
   if (error) {
     return (
       <Page title="DescribeAI" subtitle="AI Product Description Generator">
-            <Banner
-              tone="success"
-              title="Applied to Shopify"
-              onDismiss={() => setShowSuccessBanner(false)}
-            >
-              <Text as="p">Product description updated successfully.</Text>
-            </Banner>  
         <Layout>
           <Layout.Section>
             <Banner tone="critical" title="Error loading product">
@@ -397,18 +421,28 @@ export default function IndexPage() {
     <Page title="DescribeAI" subtitle="AI Product Description Generator">
       <Layout>
         <Layout.Section>
+          {/* FIX: Success banner uses showSuccessBanner state */}
+          {showSuccessBanner && (
+            <Banner
+              tone="success"
+              title="Applied to Shopify"
+              onDismiss={() => setShowSuccessBanner(false)}
+            >
+              <Text as="p">
+                The product description has been successfully updated in Shopify.
+              </Text>
+            </Banner>
+          )}
+
           {actionError && (
             <Banner tone="critical" title="Something went wrong">
               <Text as="p">{actionError}</Text>
             </Banner>
           )}
 
-          {applyFetcher.data?.ok && applyFetcher.data?.applied && (
-            <Banner tone="success" title="Applied to Shopify">
-              <Text as="p">
-                The product description has been successfully updated in
-                Shopify.
-              </Text>
+          {applyFetcher.data?.ok === false && applyFetcher.data?.error && (
+            <Banner tone="critical" title="Failed to apply description">
+              <Text as="p">{applyFetcher.data.error}</Text>
             </Banner>
           )}
 
@@ -594,7 +628,6 @@ export default function IndexPage() {
               </Card>
 
               {/* Generated Output */}
-
               <Card>
                 <BlockStack gap="300">
                   <Text variant="headingSm">Generated Output</Text>
@@ -670,12 +703,10 @@ export default function IndexPage() {
                             loading={isApplying}
                             onClick={() => {
                               if (!product || !generationResult) return;
-
                               const fd = new FormData();
                               fd.append("intent", "apply");
                               fd.append("productId", product.id);
                               fd.append("bodyHtml", generationResult.body_html);
-
                               applyFetcher.submit(fd, { method: "POST" });
                             }}
                           >
@@ -686,13 +717,7 @@ export default function IndexPage() {
                           <Button
                             variant="tertiary"
                             tone="critical"
-                            onClick={() => {
-                              setVibe("casual");
-                              setFormat("paragraph");
-                              setKeywords("");
-                              setIncludeSocials(false);
-                              fetcher.load(window.location.pathname); // clears fetcher.data
-                            }}
+                            onClick={handleClear}
                           >
                             Clear
                           </Button>
