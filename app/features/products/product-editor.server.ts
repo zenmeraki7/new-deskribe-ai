@@ -1,5 +1,4 @@
 // FILE: app/features/products/product-editor.server.ts
-import crypto from "node:crypto";
 import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-run/node";
 import { z } from "zod";
 
@@ -35,11 +34,9 @@ async function getShopPlan(
     const name = appSubscriptions?.[0]?.name ?? null;
     return resolvePlan(name);
   } catch {
-    // Fail open to free — never block a user because billing check failed
     return "free";
   }
 }
-
 
 function normalizeProductGid(raw: string): string | null {
   const decoded = (() => {
@@ -103,7 +100,7 @@ function keywordCsvFromInput(input: unknown): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Strict DraftResult runtime validation (Zod) — no silent parse fallbacks
+// Strict DraftResult runtime validation (Zod)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const DraftResultSchema = z
@@ -123,7 +120,6 @@ function parseDraftResultOrNull(value: unknown): DraftResult | null {
   if (!res.success) return null;
   const r = res.data;
 
-  // Enforce keyword caps at the boundary (defense-in-depth)
   const cappedKeywords = r.keywords ? normalizeKeywordList(r.keywords) : undefined;
 
   return {
@@ -133,10 +129,7 @@ function parseDraftResultOrNull(value: unknown): DraftResult | null {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Shopify GraphQL with retry/backoff + jitter (cost-aware, best-effort)
-// - Retries transient HTTP failures and 429/5xx
-// - Retries when Shopify reports throttling in errors or throttleStatus is low
-// NOTE: For full platform-wide throttling, centralize in a shared Admin client wrapper.
+// Shopify GraphQL with retry/backoff + jitter
 // ─────────────────────────────────────────────────────────────────────────────
 
 function sleep(ms: number) {
@@ -144,7 +137,7 @@ function sleep(ms: number) {
 }
 
 function jitter(ms: number) {
-  const ratio = 0.2; // ±20%
+  const ratio = 0.2;
   const delta = ms * ratio;
   return Math.max(0, Math.floor(ms + (Math.random() * 2 - 1) * delta));
 }
@@ -159,8 +152,6 @@ function isThrottleError(payload: any): boolean {
   }
 
   const ts = payload?.extensions?.cost?.throttleStatus;
-  // throttleStatus: { currentlyAvailable, maximumAvailable, restoreRate }
-  // If currentlyAvailable is extremely low, treat as throttled and back off.
   if (
     ts &&
     typeof ts.currentlyAvailable === "number" &&
@@ -192,14 +183,12 @@ async function adminGraphqlWithRetry<T>(
     try {
       const resp = await adminGraphql(query, { variables });
 
-      // Retry on transient HTTP errors (429/5xx)
       if (isRetryableHttpStatus(resp.status) && attempt < SHOPIFY_GQL_RETRY.MAX_ATTEMPTS) {
         await sleep(jitter(Math.min(delay, SHOPIFY_GQL_RETRY.MAX_DELAY_MS)));
         delay *= 2;
         continue;
       }
 
-      // Non-OK that isn't retryable: fail closed (surface error)
       if (!resp.ok) {
         const text = await resp.text().catch(() => "");
         throw new Error(`Shopify GraphQL HTTP ${resp.status}: ${text.slice(0, 300)}`);
@@ -207,7 +196,6 @@ async function adminGraphqlWithRetry<T>(
 
       const payload = await resp.json();
 
-      // Retry on throttle signals in payload
       if (isThrottleError(payload) && attempt < SHOPIFY_GQL_RETRY.MAX_ATTEMPTS) {
         await sleep(jitter(Math.min(delay, SHOPIFY_GQL_RETRY.MAX_DELAY_MS)));
         delay *= 2;
@@ -226,7 +214,7 @@ async function adminGraphqlWithRetry<T>(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Shopify product meta fetch (server-owned; do not trust client form fields)
+// Shopify product meta fetch
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function fetchProductMeta(adminGraphql: (query: string, opts?: any) => Promise<Response>, productGid: string) {
@@ -252,24 +240,23 @@ async function fetchProductMeta(adminGraphql: (query: string, opts?: any) => Pro
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Loader — metadata only; descriptionHtml fetched lazily
-// All responses are shop-scoped via authenticate.admin(session.shop).
+// Loader
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function loader({ request, params }: LoaderFunctionArgs): Promise<Response> {
-  const { admin, session } = await authenticate.admin(request);
+  const { admin, session, billing } = await authenticate.admin(request);
   const shopDomain = session.shop;
 
   const rawId = params.productId ?? "";
   const productGid = normalizeProductGid(rawId);
   if (!productGid) {
-  throw new Response("Invalid product ID", { status: 400 });
-}
+    throw new Response("Invalid product ID", { status: 400 });
+  }
 
   const product = await fetchProductMeta(admin.graphql, productGid);
-if (!product) {
-  throw new Response("Product not found", { status: 404 });
-}
+  if (!product) {
+    throw new Response("Product not found", { status: 404 });
+  }
 
   const tenMinutesAgo = new Date(Date.now() - ACTIVE_JOB_LOOKBACK_MS);
 
@@ -300,7 +287,6 @@ if (!product) {
     const parsed = parseDraftResultOrNull(latestDraft.result);
     const pk = typeof parsed?.primary_keyword === "string" ? parsed.primary_keyword.trim() : "";
     if (pk) {
-      // NOTE: This uses JSON path filtering; ensure Prisma/DB supports it in your environment.
       const conflict = await db.generationJob.findFirst({
         where: {
           shopDomain,
@@ -319,8 +305,6 @@ if (!product) {
     }
   }
 
-  // IMPORTANT: sanitize *server-side* before sending to the client for preview.
-  // Rendering itself is still sandboxed in the DiffViewer iframe (defense-in-depth).
   const sanitizedLatestDraft: LoaderData["latestDraft"] = latestDraft
     ? {
         id: latestDraft.id,
@@ -341,40 +325,115 @@ if (!product) {
       }
     : null;
 
+  // ── Fetch shop plan ─────────────────────────────────────────────────────
+  const shopPlan = await getShopPlan(billing);
+
+  // ── Fetch custom templates for this shop ────────────────────────────────
+  const customTemplates = await db.customTemplate.findMany({
+    where: { shopDomain },
+    orderBy: { createdAt: "desc" },
+    take: 20,
+    select: { id: true, name: true, instruction: true, createdAt: true },
+  });
+
   return json<LoaderData>({
     product,
     descriptionHtml: null,
-    activeJob: activeJob ? { id: activeJob.id, status: activeJob.status } : null,
+    activeJob: activeJob
+  ? {
+      id: activeJob.id,
+      status: activeJob.status as LoaderData["activeJob"] extends infer T
+        ? T extends { status: infer S }
+          ? S
+          : never
+        : never,
+    }
+  : null,
     latestDraft: sanitizedLatestDraft,
     policyWarnings,
+    shopPlan,
+    customTemplates: customTemplates.map((t) => ({
+      ...t,
+      createdAt: t.createdAt.toISOString(),
+    })),
   });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Action — generate | apply | suggest_keywords | fetch_description
-// Security invariants:
-// - Authenticated (authenticate.admin)
-// - Shop-scoped DB access
-// - Apply uses server-owned jobId + server-fetched result; never trusts client HTML
-// - Sanitization happens server-side (allowlist sanitizer in html.server.ts)
-// - Idempotency: generate uses deterministic matching against existing active job
+// Action
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function action({ request, params }: ActionFunctionArgs): Promise<Response> {
-  const { admin, session, billing  } = await authenticate.admin(request);
+  const { admin, session, billing } = await authenticate.admin(request);
   const shopDomain = session.shop;
 
   const rawId = params.productId ?? "";
   const productGid = normalizeProductGid(rawId);
   if (!productGid) {
-  throw new Response("Invalid product ID", { status: 400 });
-}
+    throw new Response("Invalid product ID", { status: 400 });
+  }
 
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
 
-  if (intent === "generate") {
+  // ── Intent: create_template ─────────────────────────────────────────────
+  if (intent === "create_template") {
+    const name = String(form.get("name") ?? "").trim().slice(0, 80);
+    const instruction = String(form.get("instruction") ?? "").trim().slice(0, 1000);
 
+    if (!name || !instruction) {
+      return json(
+        { ok: false, kind: "error", error: "Name and instruction are required", code: "INVALID_INPUT" },
+        { status: 400 },
+      );
+    }
+
+    const count = await db.customTemplate.count({ where: { shopDomain } });
+    if (count >= 10) {
+      return json(
+        {
+          ok: false,
+          kind: "error",
+          error: "Maximum 10 custom templates allowed. Delete one to add more.",
+          code: "TEMPLATE_LIMIT",
+        },
+        { status: 400 },
+      );
+    }
+
+    const template = await db.customTemplate.create({
+      data: { shopDomain, name, instruction },
+    });
+
+    return json({
+      ok: true,
+      kind: "create_template",
+      template: {
+        id: template.id,
+        name: template.name,
+        instruction: template.instruction,
+        createdAt: template.createdAt.toISOString(),
+      },
+    });
+  }
+
+  // ── Intent: delete_template ─────────────────────────────────────────────
+  if (intent === "delete_template") {
+    const templateId = String(form.get("templateId") ?? "").trim();
+    if (!templateId) {
+      return json(
+        { ok: false, kind: "error", error: "Missing templateId", code: "INVALID_INPUT" },
+        { status: 400 },
+      );
+    }
+
+    // shopDomain in where clause prevents deleting another shop's template
+    await db.customTemplate.deleteMany({ where: { id: templateId, shopDomain } });
+    return json({ ok: true, kind: "delete_template" });
+  }
+
+  // ── Intent: generate ────────────────────────────────────────────────────
+  if (intent === "generate") {
     const plan = await getShopPlan(billing);
     const limitResult = await checkAndIncrementRateLimit(shopDomain, plan);
 
@@ -389,7 +448,7 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
             ? "Service is temporarily at capacity. Please try again in a few hours."
             : `Daily generation limit reached (${limitResult.shopUsed}/${limitResult.shopLimit}). ${
                 plan === "free"
-                  ? "Upgrade to Pro for 100 generations/day."
+                  ? "Upgrade to Pro for unlimited generations/day."
                   : "Limit resets at midnight UTC."
               }`,
           shopUsed: limitResult.shopUsed,
@@ -399,17 +458,23 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
         { status: 429 },
       );
     }
-    
-    const vibe = String(form.get("vibe") ?? "casual").slice(0, 40);
+
+    const rawVibe = String(form.get("vibe") ?? "casual").slice(0, 40);
     const format = String(form.get("format") ?? "paragraph").slice(0, 40);
     const includeSocials = form.get("includeSocials") === "true";
-
-    // Keywords must be bounded and normalized server-side.
     const keywordsCsv = keywordCsvFromInput(form.get("keywords"));
 
-    // Idempotency (hard requirement) WITHOUT schema changes:
-    // - If a matching job is already PENDING/PROCESSING recently, return it.
-    // - Matching is deterministic on (shop, product, vibe, format, keywords, includeSocials) within lookback.
+    // ── Custom template instruction ──────────────────────────────────────
+    // When vibe starts with "custom:", the client sends the instruction text.
+    // We sanitize it server-side: plain text only, no HTML.
+    const customInstruction = String(form.get("customInstruction") ?? "")
+      .trim()
+      .slice(0, 1000);
+
+    // Normalize vibe: strip "custom:" prefix for storage, use "custom" as the vibe value
+    const vibe = rawVibe.startsWith("custom:") ? "custom" : rawVibe;
+
+    // Idempotency: if a matching active job exists within lookback, return it
     const lookback = new Date(Date.now() - ACTIVE_JOB_LOOKBACK_MS);
     const existing = await db.generationJob.findFirst({
       where: {
@@ -444,6 +509,7 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
         format,
         keywords: keywordsCsv,
         includeSocials,
+        customInstruction: customInstruction || undefined, // only pass if non-empty
         adminGraphql: admin.graphql,
       });
 
@@ -461,13 +527,13 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     }
   }
 
+  // ── Intent: apply ────────────────────────────────────────────────────────
   if (intent === "apply") {
     const jobId = String(form.get("jobId") ?? "");
     if (!jobId || !isUuidV4(jobId)) {
       return json({ ok: false, kind: "error", error: "Invalid jobId", code: "INVALID_JOB_ID" }, { status: 400 });
     }
 
-    // Server fetches the draft — never trust client-provided HTML
     const job = await db.generationJob.findFirst({
       where: { id: jobId, shopDomain, productId: productGid, status: "COMPLETED" },
       select: { result: true },
@@ -482,7 +548,6 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     }
 
     const rawHtml = typeof parsed.body_html === "string" ? parsed.body_html : "";
-    // Final sanitize pass before writing to Shopify
     const cleanHtml = sanitiseHtml(rawHtml);
 
     const gql = await adminGraphqlWithRetry<any>(
@@ -506,59 +571,59 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     return json({ ok: true, kind: "apply", applied: true });
   }
 
+  // ── Intent: suggest_keywords ─────────────────────────────────────────────
   if (intent === "suggest_keywords") {
-  try {
-    const plan = await getShopPlan(billing);
-    const limitResult = await checkAndIncrementKeywordLimit(shopDomain, plan);
+    try {
+      const plan = await getShopPlan(billing);
+      const limitResult = await checkAndIncrementKeywordLimit(shopDomain, plan);
 
-    if (!limitResult.allowed) {
-      const isNotAllowed = limitResult.reason === "not_allowed";
+      if (!limitResult.allowed) {
+        const isNotAllowed = limitResult.reason === "not_allowed";
+        return json(
+          {
+            ok: false,
+            kind: "error",
+            code: "KEYWORD_LIMIT_EXCEEDED",
+            error: isNotAllowed
+              ? "Keyword suggestions are not available on the Free plan. Upgrade to Basic or higher."
+              : `Daily keyword suggestion limit reached (${limitResult.used}/${limitResult.limit}). Resets at midnight UTC.`,
+            plan,
+            keywordUsed: limitResult.used,
+            keywordLimit: limitResult.limit,
+          },
+          { status: 403 },
+        );
+      }
+
+      const product = await fetchProductMeta(admin.graphql, productGid);
+      if (!product) {
+        throw new Response("Product not found", { status: 404 });
+      }
+
+      const keywords = await suggestKeywords(
+        String(product.title ?? ""),
+        String(product.vendor ?? ""),
+        String(product.productType ?? ""),
+        Array.isArray(product.tags)
+          ? product.tags.filter((t) => typeof t === "string")
+          : [],
+      );
+
+      const planLimit = KEYWORD_LIMITS[plan];
+      const capCount = planLimit === Infinity ? 20 : planLimit;
+      const safe = normalizeKeywordList(keywords).slice(0, capCount);
+
+      return json({ ok: true, kind: "suggest_keywords", keywords: safe });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
       return json(
-        {
-          ok: false,
-          kind: "error",
-          code: "KEYWORD_LIMIT_EXCEEDED",
-          error: isNotAllowed
-            ? "Keyword suggestions are not available on the Free plan. Upgrade to Basic or higher."
-            : `Daily keyword suggestion limit reached (${limitResult.used}/${limitResult.limit}). Resets at midnight UTC.`,
-          plan,
-          keywordUsed: limitResult.used,
-          keywordLimit: limitResult.limit,
-        },
-        { status: 403 },
+        { ok: false, kind: "error", error: message, code: "SUGGEST_FAILED" },
+        { status: 500 },
       );
     }
-
-    const product = await fetchProductMeta(admin.graphql, productGid);
-    if (!product) {
-      throw new Response("Product not found", { status: 404 });
-    }
-
-    const keywords = await suggestKeywords(
-      String(product.title ?? ""),
-      String(product.vendor ?? ""),
-      String(product.productType ?? ""),
-      Array.isArray(product.tags)
-        ? product.tags.filter((t) => typeof t === "string")
-        : [],
-    );
-
-    // Cap returned keywords to plan limit
-    const planLimit = KEYWORD_LIMITS[plan];
-    const capCount = planLimit === Infinity ? 20 : planLimit;
-    const safe = normalizeKeywordList(keywords).slice(0, capCount);
-
-    return json({ ok: true, kind: "suggest_keywords", keywords: safe });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    return json(
-      { ok: false, kind: "error", error: message, code: "SUGGEST_FAILED" },
-      { status: 500 },
-    );
   }
-}
-  
 
+  // ── Intent: fetch_description ────────────────────────────────────────────
   if (intent === "fetch_description") {
     const gql = await adminGraphqlWithRetry<any>(
       admin.graphql,

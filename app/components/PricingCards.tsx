@@ -23,11 +23,12 @@ const plans: Plan[] = [
     yearlyStrikePrice: 0,
     description: "Get started with AI-powered descriptions",
     features: [
-      { text: "10 AI descriptions / month", included: true },
+      { text: "10 AI descriptions / day", included: true },
       { text: "1 store connected", included: true },
-      { text: "Basic templates", included: true },
+      { text: "2 tones & 2 formats (Casual, Minimalist / Paragraph, Bullets)", included: true },
       { text: "Email support", included: false },
       { text: "SEO optimization", included: false },
+      { text: "Keyword suggestions", included: false },
       { text: "Bulk generation", included: false },
       { text: "Custom tone & style", included: false },
     ],
@@ -41,12 +42,13 @@ const plans: Plan[] = [
     yearlyStrikePrice: 119.88,
     description: "Perfect for growing stores",
     features: [
-      { text: "200 AI descriptions / month", included: true },
+      { text: "200 AI descriptions / day", included: true },
       { text: "2 stores connected", included: true },
-      { text: "All templates", included: true },
+      { text: "All tones & formats (5 styles, 3 formats)", included: true },
       { text: "Email support", included: true },
       { text: "SEO optimization", included: true },
-      { text: "Bulk generation", included: false },
+      { text: "5 keyword suggestions / day", included: true },
+      { text: "Bulk generation (20/batch)", included: true },
       { text: "Custom tone & style", included: false },
     ],
   },
@@ -61,11 +63,12 @@ const plans: Plan[] = [
     highlighted: true,
     badge: "Most Popular",
     features: [
-      { text: "1,000 AI descriptions / month", included: true },
+      { text: "1,000 AI descriptions / day", included: true },
       { text: "5 stores connected", included: true },
-      { text: "All templates + custom", included: true },
+      { text: "All tones & formats (5 styles, 3 formats)", included: true },
       { text: "Priority email support", included: true },
       { text: "Advanced SEO optimization", included: true },
+      { text: "15 keyword suggestions / day", included: true },
       { text: "Bulk generation (50/batch)", included: true },
       { text: "Custom tone & style", included: false },
     ],
@@ -84,12 +87,12 @@ const plans: Plan[] = [
       { text: "All templates + custom", included: true },
       { text: "24/7 priority support", included: true },
       { text: "Advanced SEO + keywords", included: true },
+      { text: "50 keyword suggestions / day", included: true },
       { text: "Unlimited bulk generation", included: true },
       { text: "Custom tone & style", included: true },
     ],
   },
 ];
-
 interface PricingCardsProps {
   billing: "monthly" | "yearly";
   currentPlanId?: string;

@@ -280,6 +280,7 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
           bulkId: true,
           bullJobId: true,
           traceId: true,
+          customInstruction: true,
         },
       });
 
@@ -314,6 +315,7 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
         format: jobRecord.format,
         keywords: jobRecord.keywords,
         includeSocials: jobRecord.includeSocials,
+        customInstruction: jobRecord.customInstruction ?? undefined,
       };
 
       return { ok: true as const, status: 200, retried: jobRecord.id, jobData, newBullJobId };

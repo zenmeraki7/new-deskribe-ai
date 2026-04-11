@@ -46,7 +46,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   // Resolve plan for bulk limit enforcement
   let shopPlan: Plan = "free";
-  let bulkLimit = BULK_LIMITS.free;
+  let bulkLimit: number = BULK_LIMITS.free;
   try {
     const { appSubscriptions } = await billing.check();
     shopPlan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
@@ -61,7 +61,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   const search = url.searchParams.get("search") || "";
   const cursor = url.searchParams.get("cursor");
-
+  
   const filters: string[] = [];
 
   if (search) {
@@ -125,13 +125,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     (edge: any) => edge.node.title,
   );
 
-  const productTypes = [
-    ...new Set(
-      products
-        .map((p: any) => p.productType)
-        .filter((type: string) => type && type.trim() !== ""),
-    ),
-  ];
+  const productTypes = Array.from(
+  new Set(
+    products
+      .map((p: any) => p.productType)
+      .filter((type: string): type is string => !!type && type.trim() !== "")
+  )
+);
 
   const totalProducts = products.length;
   const activeProducts = products.filter(
@@ -415,8 +415,9 @@ export default function ProductsDashboard() {
 
   // ── Promoted bulk actions (shown in IndexTable toolbar when rows selected) ──
   // ── Bulk selection cap warning ─────────────────────────────────────────────
+  const UNLIMITED = 999999;
   const atBulkLimit =
-    bulkLimit !== 999999 && selectedResources.length >= bulkLimit;
+    bulkLimit !== UNLIMITED && selectedResources.length >= bulkLimit;
 
   const overBulkLimit = selectedResources.length > bulkLimit;
 
@@ -495,10 +496,9 @@ export default function ProductsDashboard() {
             size="slim"
             variant="primary"
             disabled={selectedResources.length > 1}
-            onClick={(e) => {
-              e?.stopPropagation?.();
-              navigate(`/app/products/${numericId}`);
-            }}
+            onClick={() => {
+  navigate(`/app/products/${numericId}`);
+}}
             icon={<span style={{ fontSize: 12 }}>✨</span>}
           >
             Generate

@@ -46,6 +46,14 @@ export interface LatestDraft {
   createdAt: string; // ISO string
 }
 
+export interface CustomTemplate {
+  id: string;
+  name: string;
+  instruction: string;
+  createdAt: string;
+}
+
+
 export interface LoaderData {
   product: ProductMeta;
   descriptionHtml: string | null; // lazy-loaded by action intent fetch_description
@@ -53,6 +61,7 @@ export interface LoaderData {
   latestDraft: LatestDraft | null;
   policyWarnings: string[]; // server-produced warnings (safe strings)
    shopPlan: "free" | "basic" | "advanced" | "pro";
+   customTemplates: CustomTemplate[];
 }
 
 // Action results are intentionally explicit and "tagged" by shape.
@@ -61,6 +70,8 @@ export type ActionResult =
   | { ok: true; kind: "apply"; applied: true }
   | { ok: true; kind: "suggest_keywords"; keywords: string[] }
   | { ok: true; kind: "fetch_description"; descriptionHtml: string; descriptionText: string }
+  | { ok: true; kind: "create_template"; template: CustomTemplate }
+  | { ok: true; kind: "delete_template" }  
   | { ok: false; kind: "error"; error: string; code?: string };
 
 /**

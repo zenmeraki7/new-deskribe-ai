@@ -61,7 +61,7 @@ model GenerationJob {
   productTitle        String
   progress            Int      @default(0)
   traceId             String?
-
+  customInstruction String? 
   // Description snapshot fields — added for undo support
   generatedDescription String?  // The AI-generated description written to Shopify
   previousDescription  String?  // Snapshot of the product description BEFORE generation
@@ -98,4 +98,15 @@ model GlobalUsage {
 
   @@unique([date])
   @@index([date])
+}
+
+model CustomTemplate {
+  id          String   @id @default(cuid())
+  shopDomain  String
+  name        String           // e.g. "My Beach Vibes"
+  instruction String           // e.g. "Write in a fun surfer tone, use emojis..."
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([shopDomain])
 }

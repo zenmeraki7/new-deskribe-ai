@@ -87,6 +87,7 @@ export const generationWorker = new Worker<GenerationJobData>(
         vibe: true,
         format: true,
         includeSocials: true,
+         customInstruction: true,
       },
     });
 
@@ -95,7 +96,7 @@ export const generationWorker = new Worker<GenerationJobData>(
     if (dbJob.status === "COMPLETED") return { ok: true, already: "COMPLETED" as const };
     if (dbJob.status === "CANCELLED") return { ok: true, already: "CANCELLED" as const };
     if (dbJob.status === "FAILED") return { ok: true, already: "FAILED" as const };
-    if (dbJob.status !== "PENDING") return { ok: true, already: dbJob.status as const };
+    if (dbJob.status !== "PENDING") return { ok: true, already: dbJob.status  };
 
     // Claim: PENDING → PROCESSING
     const claimed = await db.generationJob.updateMany({
@@ -135,6 +136,7 @@ export const generationWorker = new Worker<GenerationJobData>(
   format: dbJob.format ?? "paragraph",
   keywords: keywordsList,
   includeSocials: dbJob.includeSocials ?? false,
+  customInstruction: dbJob.customInstruction ?? undefined,
 });
 
       await setProgressSafe(jobId, shopDomain, 80);

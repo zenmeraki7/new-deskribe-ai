@@ -464,7 +464,6 @@ export default function IndexPage() {
                 <Box
                   background="bg-surface-secondary"
                   borderRadius="200"
-                  overflow="hidden"
                 >
                   <div
                     style={{
@@ -489,11 +488,11 @@ export default function IndexPage() {
                   <Text variant="headingMd" as="h3">
                     {product.title}
                   </Text>
-                  <Text variant="bodySm" tone="subdued">
+                  <Text as="p" variant="bodySm" tone="subdued">
                     /products/{product.handle}
                   </Text>
                   {product.vendor && (
-                    <Text variant="bodySm" tone="subdued">
+                    <Text as="p" variant="bodySm" tone="subdued">
                       Vendor: {product.vendor}
                     </Text>
                   )}
@@ -582,7 +581,7 @@ export default function IndexPage() {
                     {/* Suggested keywords */}
                     {suggestedKeywords.length > 0 && (
                       <BlockStack gap="100">
-                        <Text variant="bodySm" tone="subdued">
+                        <Text as="p" variant="bodySm" tone="subdued">
                           Suggested — click to add:
                         </Text>
                         <InlineStack gap="100" wrap>
@@ -630,7 +629,9 @@ export default function IndexPage() {
               {/* Generated Output */}
               <Card>
                 <BlockStack gap="300">
-                  <Text variant="headingSm">Generated Output</Text>
+                  <Text as="p" variant="headingSm">
+                    Generated Output
+                  </Text>
                   <Divider />
 
                   {isGenerating ? (
@@ -656,7 +657,9 @@ export default function IndexPage() {
                         <>
                           <Divider />
                           <BlockStack gap="100">
-                            <Text variant="headingSm">Instagram Caption</Text>
+                            <Text as="p" variant="headingSm">
+                              Instagram Caption
+                            </Text>
                             <Text as="p" tone="subdued">
                               {generationResult.social_caption}
                             </Text>
@@ -668,30 +671,34 @@ export default function IndexPage() {
 
                       <InlineStack gap="600">
                         <BlockStack gap="050">
-                          <Text variant="headingMd">
+                          <Text as="p" variant="headingMd">
                             {generationResult.wordCount}
                           </Text>
-                          <Text variant="bodySm" tone="subdued">
+                          <Text as="p" variant="bodySm" tone="subdued">
                             Words
                           </Text>
                         </BlockStack>
                         <BlockStack gap="050">
-                          <Text variant="headingMd">
+                          <Text as="p" variant="headingMd">
                             {generationResult.charCount}
                           </Text>
-                          <Text variant="bodySm" tone="subdued">
+                          <Text as="p" variant="bodySm" tone="subdued">
                             Characters
                           </Text>
                         </BlockStack>
                         <BlockStack gap="050">
-                          <Text variant="headingMd">{vibe}</Text>
-                          <Text variant="bodySm" tone="subdued">
+                          <Text as="p" variant="headingMd">
+                            {vibe}
+                          </Text>
+                          <Text as="p" variant="bodySm" tone="subdued">
                             Style
                           </Text>
                         </BlockStack>
                         <BlockStack gap="050">
-                          <Text variant="headingMd">{format}</Text>
-                          <Text variant="bodySm" tone="subdued">
+                          <Text as="p" variant="headingMd">
+                            {format}
+                          </Text>
+                          <Text as="p" variant="bodySm" tone="subdued">
                             Format
                           </Text>
                         </BlockStack>
@@ -726,7 +733,7 @@ export default function IndexPage() {
 
                       {generationResult.primary_keyword && (
                         <InlineStack gap="200" blockAlign="center">
-                          <Text variant="bodySm" tone="subdued">
+                          <Text as="p" variant="bodySm" tone="subdued">
                             Primary keyword:
                           </Text>
                           <Badge>{generationResult.primary_keyword}</Badge>
@@ -734,7 +741,7 @@ export default function IndexPage() {
                       )}
                     </BlockStack>
                   ) : (
-                    <Text tone="subdued">
+                    <Text as="p" tone="subdued">
                       Configure settings above and click "Generate Description"
                       to create an AI-powered product description.
                     </Text>

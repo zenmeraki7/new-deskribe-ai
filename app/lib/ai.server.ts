@@ -35,7 +35,9 @@ export async function generateProductDescription(params: {
   format: string;
   keywords: string[];
   includeSocials: boolean;
+  customInstruction?: string;
 }): Promise<DraftResult> {
+  const { customInstruction } = params;
   const {
     title,
     vendor,
@@ -59,7 +61,12 @@ export async function generateProductDescription(params: {
     ? `Also generate a short, engaging Instagram caption with 3–5 relevant hashtags in "social_caption".`
     : `Set "social_caption" to an empty string.`;
 
-  const prompt = `
+const styleInstruction: string =
+  vibe === "custom" && typeof customInstruction === "string"
+    ? `Follow these custom writing instructions exactly:\n"${customInstruction}"\nDo not default to any built-in style — follow the instructions above precisely.`
+    : `Writing Style: ${vibe}`;
+
+const prompt = `
 You are an expert Shopify ecommerce copywriter.
 
 Write a high-converting SEO-optimized product description.
@@ -70,9 +77,9 @@ Product Information:
 - Category: ${productType}
 - Tags: ${tags.join(", ")}
 
-Writing Style: ${vibe}
-Format Rule: ${formatInstruction}
-SEO Keywords to naturally include: ${keywords.length > 0 ? keywords.join(", ") : "none provided — infer from product info"}
+${styleInstruction}
+
+${formatInstruction}
 
 STRUCTURE (always use these exact section headings):
 1. <p><strong>Product Overview</strong></p> — 2–3 sentence engaging intro that naturally includes the primary keyword

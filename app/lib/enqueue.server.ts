@@ -11,6 +11,7 @@ interface EnqueueParams {
   format: string;
   keywords: string;
   includeSocials: boolean;
+  customInstruction?: string;
   adminGraphql: (query: string, opts?: any) => Promise<Response>;
   /** Optional: group all jobs under one bulk run ID (uuid). Auto-generated if omitted and productIds.length > 1. */
   bulkId?: string;
@@ -73,9 +74,11 @@ export async function enqueueGenerationJobs({
   includeSocials,
   adminGraphql,
   bulkId: explicitBulkId,
+  customInstruction = "", 
 }: EnqueueParams): Promise<EnqueueResult> {
   const jobIds: string[] = [];
   const skipped: string[] = [];
+
 
   // Assign a bulkId when this is a multi-product run so the jobs can be
   // grouped on the History page. Single-product jobs get null unless the
@@ -128,6 +131,7 @@ export async function enqueueGenerationJobs({
         includeSocials,
         // ← key addition: tag all jobs in this bulk run
         bulkId,
+        customInstruction: customInstruction || null,
       },
     });
 
@@ -141,6 +145,7 @@ export async function enqueueGenerationJobs({
         format,
         keywords,
         includeSocials,
+        customInstruction: customInstruction || undefined, 
       },
       { jobId: job.id },
     );
