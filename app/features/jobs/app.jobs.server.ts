@@ -169,6 +169,7 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
     nextCursor: hasNextPage ? pageRows[pageRows.length - 1]?.id ?? null : null,
     prevCursor: cursor,
     totalPending,
+    shopDomain,
   });
 }
 

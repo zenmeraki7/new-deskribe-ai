@@ -66,9 +66,10 @@ interface JobDetailModalProps {
   job: JobRow | null;
   open: boolean;
   onClose: () => void;
+  shopDomain: string;
 }
 
-function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
+function JobDetailModal({ job, open, onClose, shopDomain }: JobDetailModalProps) {
   const undoFetcher = useFetcher<{
     ok: boolean;
     error?: string;
@@ -295,11 +296,9 @@ function JobDetailModal({ job, open, onClose }: JobDetailModalProps) {
                   >
                     {metaTitle || job.productTitle}
                   </div>
-                  <div
-                    style={{ fontSize: 13, color: "#006621", marginBottom: 4 }}
-                  >
-                    your-store.myshopify.com › products
-                  </div>
+                  <div style={{ fontSize: 13, color: "#006621", marginBottom: 4 }}>
+  {shopDomain} › products
+</div>
                   <div
                     style={
                       {
@@ -679,7 +678,7 @@ function BulkRunRow({ run, index }: { run: BulkRun; index: number }) {
 // ---------------------------------------------------------------------------
 
 export default function JobsRoute() {
-  const { jobs, hasActiveJobs, hasNextPage, nextCursor, totalPending } =
+  const { jobs, hasActiveJobs, hasNextPage, nextCursor, totalPending, shopDomain  } =
     useLoaderData<LoaderData>();
 
   const revalidator = useRevalidator();
@@ -978,6 +977,7 @@ export default function JobsRoute() {
         job={selectedJob}
         open={modalOpen}
         onClose={handleModalClose}
+        shopDomain={shopDomain}
       />
     </Page>
   );

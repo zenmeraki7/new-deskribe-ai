@@ -365,6 +365,7 @@ export default function ProductEditorModalRoute() {
     policyWarnings,
     shopPlan,
     customTemplates,
+      shopDomain,
   } = useLoaderData<LoaderData>();
 
   const navigate = useNavigate();
@@ -1003,9 +1004,9 @@ export default function ProductEditorModalRoute() {
                     >
                       {draftResult.meta_title ?? product.title}
                     </div>
-                    <div style={{ fontSize: 13, color: "#006621", marginBottom: 4 }}>
-                      your-store.myshopify.com › products
-                    </div>
+                  <div style={{ fontSize: 13, color: "#006621", marginBottom: 4 }}>
+  {shopDomain} › products
+</div>
                     <div
                       style={{
                         fontSize: 14,

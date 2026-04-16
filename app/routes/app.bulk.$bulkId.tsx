@@ -94,6 +94,7 @@ export interface BulkLoaderData {
   pendingCount: number;
   failedCount: number;
   appliedCount: number;
+  shopDomain: string;
 }
 
 // ── Loader ────────────────────────────────────────────────────────────────────

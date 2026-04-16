@@ -61,6 +61,7 @@ interface PreviewModalProps {
   isApplying: boolean;
   applySuccess: boolean;
   applyError: string | null;
+  shopDomain: string;
 }
 
 function PreviewModal({
@@ -71,6 +72,7 @@ function PreviewModal({
   isApplying,
   applySuccess,
   applyError,
+  shopDomain
 }: PreviewModalProps) {
   if (!job) return null;
 
@@ -141,8 +143,8 @@ function PreviewModal({
                     {job.metaTitle || job.productTitle}
                   </div>
                   <div style={{ fontSize: 13, color: "#006621", marginBottom: 4 }}>
-                    your-store.myshopify.com › products
-                  </div>
+  {shopDomain} › products
+</div>
                   <div style={{ fontSize: 14, color: "#545454", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" } as any}>
                     {job.metaDescription}
                   </div>
@@ -359,6 +361,7 @@ export default function BulkReviewPage() {
     pendingCount,
     failedCount,
     appliedCount,
+    shopDomain 
   } = data;
 
   // Per-job fetchers: apply_one + retry_one
@@ -632,6 +635,8 @@ export default function BulkReviewPage() {
             ? (applyFetcher.data.error ?? null)
             : null
         }
+        shopDomain={shopDomain}
+
       />
     </Page>
   );

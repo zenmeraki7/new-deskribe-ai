@@ -193,5 +193,6 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
 
   return json(res, {
     headers: noStoreHeaders(),
+    
   });
 }

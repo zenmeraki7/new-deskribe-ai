@@ -579,7 +579,8 @@ export default function ProductsDashboard() {
         </div>
 
         {/* ── Products Table ─────────────────────────────────────────────── */}
-        <Card padding="0">
+        <div style={{marginBottom:"10px"}}>
+          <Card padding="0">
           {/* Table header */}
           <Box paddingInline="400" paddingBlock="300">
             <InlineStack align="space-between" blockAlign="center">
@@ -715,6 +716,7 @@ export default function ProductsDashboard() {
             {rowMarkup}
           </IndexTable>
         </Card>
+        </div>
       </BlockStack>
 
       {/* ── Filter modal ──────────────────────────────────────────────────── */}

@@ -488,9 +488,9 @@ export default function IndexPage() {
                   <Text variant="headingMd" as="h3">
                     {product.title}
                   </Text>
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    /products/{product.handle}
-                  </Text>
+                  {/* <Text as="p" variant="bodySm" tone="subdued">
+{product.handle}
+                  </Text> */}
                   {product.vendor && (
                     <Text as="p" variant="bodySm" tone="subdued">
                       Vendor: {product.vendor}
@@ -749,8 +749,9 @@ export default function IndexPage() {
                 </BlockStack>
               </Card>
 
+              <div style={{marginBottom:'10px'}}>
               <Card>
-                <BlockStack gap="400">
+                  <BlockStack gap="400">
                   <Text as="h2" variant="headingMd">
                     🚀 How It Works
                   </Text>
@@ -789,6 +790,7 @@ export default function IndexPage() {
                   </List>
                 </BlockStack>
               </Card>
+               </div>
             </BlockStack>
           </div>
         </Layout.Section>
