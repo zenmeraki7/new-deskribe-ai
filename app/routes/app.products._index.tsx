@@ -61,7 +61,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   const search = url.searchParams.get("search") || "";
   const cursor = url.searchParams.get("cursor");
-  
+
   const filters: string[] = [];
 
   if (search) {
@@ -126,12 +126,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   );
 
   const productTypes = Array.from(
-  new Set(
-    products
-      .map((p: any) => p.productType)
-      .filter((type: string): type is string => !!type && type.trim() !== "")
-  )
-);
+    new Set(
+      products
+        .map((p: any) => p.productType)
+        .filter((type: string): type is string => !!type && type.trim() !== ""),
+    ),
+  );
 
   const totalProducts = products.length;
   const activeProducts = products.filter(
@@ -458,20 +458,20 @@ export default function ProductsDashboard() {
         }}
       >
         <IndexTable.Cell>
-  <div
-    style={{
-      maxWidth: "300px",
-      whiteSpace: "nowrap",
-      overflow: "hidden",
-      textOverflow: "ellipsis",
-    }}
-    title={product.title} // 👈 full title on hover
-  >
-    <Text variant="bodyMd" fontWeight="semibold" as="span">
-      {product.title}
-    </Text>
-  </div>
-</IndexTable.Cell>
+          <div
+            style={{
+              maxWidth: "300px",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+            title={product.title} // 👈 full title on hover
+          >
+            <Text variant="bodyMd" fontWeight="semibold" as="span">
+              {product.title}
+            </Text>
+          </div>
+        </IndexTable.Cell>
         <IndexTable.Cell>
           <Badge
             tone={
@@ -497,8 +497,8 @@ export default function ProductsDashboard() {
             variant="primary"
             disabled={selectedResources.length > 1}
             onClick={() => {
-  navigate(`/app/products/${numericId}`);
-}}
+              navigate(`/app/products/${numericId}`);
+            }}
             icon={<span style={{ fontSize: 12 }}>✨</span>}
           >
             Generate
@@ -579,143 +579,139 @@ export default function ProductsDashboard() {
         </div>
 
         {/* ── Products Table ─────────────────────────────────────────────── */}
-        <div style={{marginBottom:"10px"}}>
+        <div style={{ marginBottom: "10px" }}>
           <Card padding="0">
-          {/* Table header */}
-          <Box paddingInline="400" paddingBlock="300">
-            <InlineStack align="space-between" blockAlign="center">
-              <Text variant="headingMd" as="h2">
-                All Products
-              </Text>
-              <InlineStack gap="300" blockAlign="center">
-                <Text variant="bodySm" tone="subdued" as="span">
-                  {filteredProducts.length === totalProducts
-                    ? `${totalProducts} products`
-                    : `${filteredProducts.length} of ${totalProducts} products`}
+            {/* Table header */}
+            <Box paddingInline="400" paddingBlock="300">
+              <InlineStack align="space-between" blockAlign="center">
+                <Text variant="headingMd" as="h2">
+                  All Products
                 </Text>
-                {isFiltered && (
-                  <Button
-                    variant="plain"
-                    tone="critical"
-                    onClick={handleClearAll}
-                  >
-                    Clear results
-                  </Button>
-                )}
-              </InlineStack>
-            </InlineStack>
-          </Box>
-
-          <Divider />
-
-          {/* Search + Filter bar */}
-          <Box paddingInline="400" paddingBlock="300">
-            <ProductSearchBar
-              searchQuery={searchQuery}
-              onSearchChange={(value) => {
-                setSearchQuery(value);
-                if (value.trim() === "") {
-                  navigate("/app/products");
-                } else {
-                  navigate(`/app/products?search=${encodeURIComponent(value)}`);
-                }
-              }}
-              onFilterOpen={() => {
-                setPendingFilters({ ...appliedFilters });
-                setFilterModalOpen(true);
-              }}
-              activeFilterCount={activeFilterCount}
-            />
-            <ActiveFilterPills
-              pills={activeFilterPills}
-              onRemove={handleRemovePill}
-              onClearAll={handleClearAll}
-            />
-          </Box>
-
-          <Divider />
-
-          {/* Bulk limit warning — shown when selection is at/over limit */}
-          {selectedResources.length > 0 && bulkLimit !== 999999 && (
-            <Box paddingInline="400" paddingBlockStart="200">
-              {overBulkLimit ? (
-                <Banner
-                  tone="critical"
-                  title={`Too many products selected`}
-                  action={
-                    shopPlan !== "pro"
-                      ? {
-                          content: "Upgrade plan",
-                          url: "/app/billing",
-                          target: "_self",
-                        }
-                      : undefined
-                  }
-                >
-                  Your {shopPlan} plan supports bulk generation for up to{" "}
-                  <strong>{bulkLimit} products</strong> at a time. Please
-                  deselect {selectedResources.length - bulkLimit} product
-                  {selectedResources.length - bulkLimit !== 1 ? "s" : ""}.
-                </Banner>
-              ) : atBulkLimit ? (
-                <Banner
-                  tone="warning"
-                  title={`Selection limit reached (${bulkLimit}/${bulkLimit})`}
-                >
-                  You've reached the maximum for your {shopPlan} plan.{" "}
-                  {shopPlan !== "pro" && (
-                    <a href="/app/billing" style={{ color: "#2c6ecb" }}>
-                      Upgrade for a higher limit.
-                    </a>
-                  )}
-                </Banner>
-              ) : (
-                <Text as="p" variant="bodySm" tone="subdued">
-                  {selectedResources.length} selected ·{" "}
-                  {bulkLimit - selectedResources.length} remaining ({shopPlan}{" "}
-                  plan limit: {bulkLimit})
-                </Text>
-              )}
-            </Box>
-          )}
-
-          {/* ── IndexTable — now selectable ─────────────────────────────── */}
-          <IndexTable
-            resourceName={resourceName}
-            itemCount={filteredProducts.length}
-            selectedItemsCount={
-              allResourcesSelected ? "All" : selectedResources.length
-            }
-            onSelectionChange={handleSelectionChange}
-            promotedBulkActions={promotedBulkActions}
-            headings={[
-              { title: "Product" },
-              { title: "Status" },
-              { title: "Inventory", alignment: "end" },
-              { title: "" }, // Generate button column — no heading
-            ]}
-            selectable={true}
-            emptyState={
-              <Box padding="800">
-                <BlockStack gap="300" align="center">
-                  <Text
-                    variant="bodyMd"
-                    tone="subdued"
-                    as="p"
-                    alignment="center"
-                  >
-                    No products match your current filters.
+                <InlineStack gap="300" blockAlign="center">
+                  <Text variant="bodySm" tone="subdued" as="span">
+                    {filteredProducts.length === totalProducts
+                      ? `${totalProducts} products`
+                      : `${filteredProducts.length} of ${totalProducts} products`}
                   </Text>
-                  <Button variant="plain" onClick={handleClearAll}>
-                    Clear all filters
-                  </Button>
-                </BlockStack>
+                  {isFiltered && (
+                    <Button
+                      variant="plain"
+                      tone="critical"
+                      onClick={handleClearAll}
+                    >
+                      Clear results
+                    </Button>
+                  )}
+                </InlineStack>
+              </InlineStack>
+            </Box>
+
+            <Divider />
+
+            {/* Search + Filter bar */}
+            <Box paddingInline="400" paddingBlock="300">
+              <ProductSearchBar
+                searchQuery={searchQuery}
+                onSearchChange={(value) => {
+                  setSearchQuery(value);
+                  if (value.trim() === "") {
+                    navigate("/app/products");
+                  } else {
+                    navigate(
+                      `/app/products?search=${encodeURIComponent(value)}`,
+                    );
+                  }
+                }}
+                onFilterOpen={() => {
+                  setPendingFilters({ ...appliedFilters });
+                  setFilterModalOpen(true);
+                }}
+                activeFilterCount={activeFilterCount}
+              />
+              <ActiveFilterPills
+                pills={activeFilterPills}
+                onRemove={handleRemovePill}
+                onClearAll={handleClearAll}
+              />
+            </Box>
+
+            <Divider />
+
+            {/* Bulk limit warning — shown when selection is at/over limit */}
+            {selectedResources.length > 0 && bulkLimit !== 999999 && (
+              <Box paddingInline="400" paddingBlockStart="200">
+                {overBulkLimit ? (
+                  <Banner
+                    tone="critical"
+                    title="Bulk generation not available"
+                    action={{
+                      content: "Upgrade plan",
+                      url: "/app/billing",
+                      target: "_self",
+                    }}
+                  >
+                    Bulk generation is only available on paid plans. Upgrade to
+                    generate descriptions for multiple products at once.
+                  </Banner>
+                ) : atBulkLimit ? (
+                  <Banner
+                    tone="warning"
+                    title={`Selection limit reached (${bulkLimit}/${bulkLimit})`}
+                  >
+                    You've reached the maximum for your {shopPlan} plan.{" "}
+                    {shopPlan !== "pro" && (
+                      <a href="/app/billing" style={{ color: "#2c6ecb" }}>
+                        Upgrade for a higher limit.
+                      </a>
+                    )}
+                  </Banner>
+                ) : (
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    {selectedResources.length} selected ·{" "}
+                    {bulkLimit - selectedResources.length} remaining ({shopPlan}{" "}
+                    plan limit: {bulkLimit})
+                  </Text>
+                )}
               </Box>
-            }
-          >
-            {rowMarkup}
-          </IndexTable>
-        </Card>
+            )}
+
+            {/* ── IndexTable — now selectable ─────────────────────────────── */}
+            <IndexTable
+              resourceName={resourceName}
+              itemCount={filteredProducts.length}
+              selectedItemsCount={
+                allResourcesSelected ? "All" : selectedResources.length
+              }
+              onSelectionChange={handleSelectionChange}
+              promotedBulkActions={promotedBulkActions}
+              headings={[
+                { title: "Product" },
+                { title: "Status" },
+                { title: "Inventory", alignment: "end" },
+                { title: "" }, // Generate button column — no heading
+              ]}
+              selectable={true}
+              emptyState={
+                <Box padding="800">
+                  <BlockStack gap="300" align="center">
+                    <Text
+                      variant="bodyMd"
+                      tone="subdued"
+                      as="p"
+                      alignment="center"
+                    >
+                      No products match your current filters.
+                    </Text>
+                    <Button variant="plain" onClick={handleClearAll}>
+                      Clear all filters
+                    </Button>
+                  </BlockStack>
+                </Box>
+              }
+            >
+              {rowMarkup}
+            </IndexTable>
+          </Card>
         </div>
       </BlockStack>
 

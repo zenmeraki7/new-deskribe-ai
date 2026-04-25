@@ -10,6 +10,7 @@ import { db } from "../lib/db.server";
 import { sanitiseHtml } from "../lib/html.server";
 import { generationQueue } from "../lib/queue.server";
 import BulkReviewPage from "./app.bulk.$bulkId.ui";
+import { checkAndIncrementRateLimit, resolvePlan } from "app/lib/rateLimiter.server";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -167,6 +168,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     pendingCount,
     failedCount,
     appliedCount,
+    shopDomain,
   };
 
   return json(data);
@@ -263,6 +265,15 @@ export async function action({ request, params }: ActionFunctionArgs) {
     if (!isUuid(jobId)) {
       return json({ ok: false, error: "Invalid jobId" }, { status: 400 });
     }
+const { billing } = await authenticate.admin(request); // already have this from top-level auth
+  const { appSubscriptions } = await billing.check();
+  const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
+  const limitResult = await checkAndIncrementRateLimit(shopDomain, plan);
+  
+  if (!limitResult.allowed) {
+    return json({ ok: false, error: "Daily generation limit reached.", code: "RATE_LIMIT_EXCEEDED" }, { status: 429 });
+  }
+
 
     const job = await db.generationJob.findFirst({
       where: { id: jobId, shopDomain, bulkId, status: "FAILED" },

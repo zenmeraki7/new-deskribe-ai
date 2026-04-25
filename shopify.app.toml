@@ -5,9 +5,6 @@ name = "desKribe-ai"
 application_url = "https://deskribe-ai-438778859601.herokuapp.com/"
 embedded = true
 
-[build]
-automatically_update_urls_on_dev = true
-
 [webhooks]
 api_version = "2026-01"
 
@@ -24,6 +21,7 @@ api_version = "2026-01"
 scopes = "write_products"
 
 [auth]
-redirect_urls = [
-  "https://deskribe-ai-438778859601.herokuapp.com/api/auth"
-]
+redirect_urls = [ "https://deskribe-ai-438778859601.herokuapp.com/api/auth" ]
+
+[build]
+automatically_update_urls_on_dev = true

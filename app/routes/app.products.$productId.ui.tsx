@@ -194,6 +194,7 @@ interface TemplateBuilderProps {
   isSaving: boolean;
   saveError: string;
   onSave: (name: string, instruction: string) => void;
+  onSaveAndGenerate: (name: string, instruction: string) => void;
   onDelete: (id: string) => void;
 }
 
@@ -213,6 +214,7 @@ function TemplateBuilderModal({
   isSaving,
   saveError,
   onSave,
+  onSaveAndGenerate,
   onDelete,
 }: TemplateBuilderProps) {
   const [name, setName] = useState("");
@@ -235,18 +237,26 @@ function TemplateBuilderModal({
 
   const canSave = name.trim().length > 0 && instruction.trim().length > 0 && !isSaving;
 
+
   return (
     <Modal
       open={open}
       onClose={onClose}
       title="Custom Writing Style"
       primaryAction={{
-        content: isSaving ? "Saving…" : "Save Template",
-        onAction: () => canSave && onSave(name.trim(), instruction.trim()),
+        content: isSaving ? "Saving…" : "Save & Generate",
+        onAction: () => canSave && onSaveAndGenerate(name.trim(), instruction.trim()),
         loading: isSaving,
         disabled: !canSave,
       }}
-      secondaryActions={[{ content: "Cancel", onAction: onClose }]}
+      secondaryActions={[
+        {
+          content: isSaving ? "Saving…" : "Save only",
+          onAction: () => canSave && onSave(name.trim(), instruction.trim()),
+          disabled: !canSave || isSaving,
+        },
+        { content: "Cancel", onAction: onClose },
+      ]}
     >
       <Modal.Section>
         <BlockStack gap="400">
@@ -426,7 +436,7 @@ export default function ProductEditorModalRoute() {
       ...builtIn,
       ...paidVibes,
       ...savedTemplates,
-      // { label: "✦ Create custom style…", value: "custom_new" },
+      { label: "Create custom style", value: "custom_new" },
     ];
   }, [shopPlan, customTemplates]);
 
@@ -489,8 +499,23 @@ export default function ProductEditorModalRoute() {
   }, [shopPlan]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Template save handler ─────────────────────────────────────────────────
+  const pendingGenerateRef = useRef(false);
+
   const handleSaveTemplate = useCallback(
     (name: string, instruction: string) => {
+      pendingGenerateRef.current = false;
+      const fd = new FormData();
+      fd.set("intent", "create_template");
+      fd.set("name", name);
+      fd.set("instruction", instruction);
+      templateFetcher.submit(fd, { method: "post" });
+    },
+    [templateFetcher],
+  );
+
+  const handleSaveAndGenerateTemplate = useCallback(
+    (name: string, instruction: string) => {
+      pendingGenerateRef.current = true;
       const fd = new FormData();
       fd.set("intent", "create_template");
       fd.set("name", name);
@@ -521,11 +546,25 @@ export default function ProductEditorModalRoute() {
     if (templateFetcher.data?.ok && templateFetcher.data?.kind === "create_template") {
       setShowTemplateBuilder(false);
       const newTemplate = templateFetcher.data.template;
+      const savedInstruction = newTemplate?.instruction ?? "";
       if (newTemplate?.id) {
         const newVibe = `custom:${newTemplate.id}`;
         prevVibeRef.current = newVibe;
         setVibe(newVibe);
-        setActiveCustomInstruction(newTemplate.instruction ?? "");
+        setActiveCustomInstruction(savedInstruction);
+
+        // Auto-trigger generation if user clicked "Save & Generate"
+        if (pendingGenerateRef.current) {
+          pendingGenerateRef.current = false;
+          const fd = new FormData();
+          fd.set("intent", "generate");
+          fd.set("vibe", newVibe);
+          fd.set("format", format);
+          fd.set("keywords", clampTextInput(keywords, 2000));
+          fd.set("includeSocials", String(includeSocials));
+          fd.set("customInstruction", clampTextInput(savedInstruction, 1000));
+          generateFetcher.submit(fd, { method: "post" });
+        }
       }
     }
   }, [templateFetcher.data]);
@@ -649,13 +688,15 @@ export default function ProductEditorModalRoute() {
       isUuidV4(applyJobId) &&
       !isApplying &&
       !isGenerating &&
-      !terminalStatuses.includes(pollStatus) === false && // pollStatus is terminal or IDLE
+      terminalStatuses.includes(pollStatus) && // pollStatus is terminal or IDLE
       pollStatus !== "PENDING" &&
       pollStatus !== "PROCESSING",
   );
 
   // Whether the currently selected vibe is a custom template
   const isCustomVibeSelected = vibe.startsWith("custom:");
+
+  const canUseCustomTemplates = shopPlan === "advanced" || shopPlan === "pro";
 
   return (
     <>
@@ -667,12 +708,13 @@ export default function ProductEditorModalRoute() {
         isSaving={templateFetcher.state !== "idle"}
         saveError={templateSaveError}
         onSave={handleSaveTemplate}
+        onSaveAndGenerate={handleSaveAndGenerateTemplate}
         onDelete={handleDeleteTemplate}
       />
 
       {/* ── Main Product Editor Modal ── */}
       <Modal
-        open
+        open={!showTemplateBuilder}
         onClose={handleClose}
         title={
           <InlineStack gap="200" blockAlign="center">
@@ -771,9 +813,15 @@ export default function ProductEditorModalRoute() {
                   Generation Settings
                 </Text>
 
-                {shopPlan === "free" && (
+                 {shopPlan === "free" && (
                   <Text as="p" variant="bodySm" tone="subdued">
                     ✦ Upgrade to Basic or higher to unlock all writing styles and formats (Luxury, Technical, Playful, Hybrid).
+                  </Text>
+                )}
+
+                {(shopPlan === "free" || shopPlan === "basic") && (
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    ✦ Upgrade to Advanced or Pro to create custom writing style templates.
                   </Text>
                 )}
 
@@ -790,17 +838,23 @@ export default function ProductEditorModalRoute() {
                       />
                     </div>
                     {/* "+" button always visible to manage templates */}
-                    {/* <div style={{ paddingBottom: 2 }}>
-                      <Tooltip content="Create or manage custom writing styles">
+                      <div style={{ paddingBottom: 2 }}>
+                      <Tooltip
+                        content={
+                          canUseCustomTemplates
+                            ? "Create or manage custom writing styles"
+                            : "Upgrade to Advanced or Pro to create custom writing styles"
+                        }
+                      >
                         <Button
                           size="slim"
-                          onClick={() => setShowTemplateBuilder(true)}
-                          disabled={isGenerating}
+                          onClick={() => canUseCustomTemplates && setShowTemplateBuilder(true)}
+                          disabled={isGenerating || !canUseCustomTemplates}
                         >
                           +
                         </Button>
                       </Tooltip>
-                    </div> */}
+                    </div>
                   </div>
 
                   <Select

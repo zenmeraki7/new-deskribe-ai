@@ -123,7 +123,7 @@ export async function checkAndIncrementRateLimit(
 
   // Check global limit first
   if (globalCount > GLOBAL_DAILY_LIMIT) {
-    await getRedis.pipeline().decr(shopKey).decr(globalKey).exec();
+    await getRedis().pipeline().decr(shopKey).decr(globalKey).exec();
     return {
       allowed: false,
       reason: "global_limit",

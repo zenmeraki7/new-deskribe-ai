@@ -30,6 +30,7 @@ model Session {
 
 model History {
   id             String   @id @default(cuid())
+  shopDomain     String   @default("")
   productId      String
   productTitle   String
   description    String

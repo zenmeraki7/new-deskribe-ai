@@ -33,10 +33,12 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     return json({ error: "Invalid bulkId" }, { status: 400 });
   }
 
-  const jobs = await db.generationJob.findMany({
-    where: { bulkId },
-    select: { status: true },
-  });
+ const { session } = await authenticate.admin(request);
+
+const jobs = await db.generationJob.findMany({
+  where: { bulkId, shopDomain: session.shop }, // ← scope to shop
+  select: { status: true },
+});
 
   if (jobs.length === 0) {
     return json({ error: "Bulk run not found" }, { status: 404 });

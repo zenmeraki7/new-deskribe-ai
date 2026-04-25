@@ -377,7 +377,7 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
   const intent = String(form.get("intent") ?? "");
 
   // ── Intent: create_template ─────────────────────────────────────────────
-  if (intent === "create_template") {
+   if (intent === "create_template") {
     const name = String(form.get("name") ?? "").trim().slice(0, 80);
     const instruction = String(form.get("instruction") ?? "").trim().slice(0, 1000);
 
@@ -388,7 +388,23 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
       );
     }
 
+    // ── Plan gate: custom templates require advanced or pro ──────────────
+    const templatePlan = await getShopPlan(billing);
+    if (templatePlan === "free" || templatePlan === "basic") {
+      return json(
+        {
+          ok: false,
+          kind: "error",
+          error: "Custom writing styles require an Advanced or Pro plan. Upgrade to unlock this feature.",
+          code: "PLAN_UPGRADE_REQUIRED",
+          plan: templatePlan,
+        },
+        { status: 403 },
+      );
+    }
+
     const count = await db.customTemplate.count({ where: { shopDomain } });
+
     if (count >= 10) {
       return json(
         {
@@ -424,6 +440,21 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
       return json(
         { ok: false, kind: "error", error: "Missing templateId", code: "INVALID_INPUT" },
         { status: 400 },
+      );
+    }
+
+    // ── Plan gate: only advanced/pro can manage custom templates ─────────
+    const deletePlan = await getShopPlan(billing);
+    if (deletePlan === "free" || deletePlan === "basic") {
+      return json(
+        {
+          ok: false,
+          kind: "error",
+          error: "Custom writing styles require an Advanced or Pro plan.",
+          code: "PLAN_UPGRADE_REQUIRED",
+          plan: deletePlan,
+        },
+        { status: 403 },
       );
     }
 
