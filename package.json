@@ -9,7 +9,7 @@
     "deploy": "shopify app deploy",
     "config:use": "shopify app config use",
     "env": "shopify app env",
-    "start": "remix-serve ./build/server/index.js",
+    "start": "remix-serve ./build/server/index.js --port ${PORT:-3000} --host 0.0.0.0",
     "worker:generation": "tsx app/workers/start-generation-worker.ts",
     "check:redis": "tsx scripts/check-redis.ts",
     "docker-start": "npm run setup && npm run start",
