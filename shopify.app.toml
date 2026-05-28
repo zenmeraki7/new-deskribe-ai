@@ -2,7 +2,7 @@
 
 client_id = "a1f8f9a43fecfcab67dc4868a5ea2ee2"
 name = "desKribe-ai"
-application_url = "https://deskribe-ai-438778859601.herokuapp.com/"
+application_url = "https://new-deskribe-ai.onrender.com"
 embedded = true
 
 [webhooks]
@@ -21,7 +21,7 @@ api_version = "2026-01"
 scopes = "write_products"
 
 [auth]
-redirect_urls = [ "https://deskribe-ai-438778859601.herokuapp.com/api/auth" ]
+redirect_urls = [ "https://new-deskribe-ai.onrender.com/api/auth" ]
 
 [build]
 automatically_update_urls_on_dev = true
