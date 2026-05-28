@@ -18,7 +18,7 @@ import {
   UUID_V4_RE,
 } from "../../routes/app.products.$productId.constants";
 import type { LoaderData, ProductMeta, DraftResult } from "../../routes/app.products.$productId.types";
-import { checkAndIncrementRateLimit, checkAndIncrementKeywordLimit, KEYWORD_LIMITS } from "../../lib/rateLimiter.server";
+import { checkAndIncrementRateLimit, checkAndIncrementKeywordLimit, refundRateLimit,  KEYWORD_LIMITS } from "../../lib/rateLimiter.server";
 import { resolvePlan, type Plan } from "../../lib/rateLimiter.server";
 
 
@@ -278,7 +278,7 @@ export async function loader({ request, params }: LoaderFunctionArgs): Promise<R
       status: "COMPLETED",
     },
     orderBy: { createdAt: "desc" },
-    select: { id: true, result: true, createdAt: true },
+    select: { id: true, result: true, createdAt: true, isStale: true },
   });
 
   // Policy warnings (keyword cannibalization check)
@@ -309,6 +309,7 @@ export async function loader({ request, params }: LoaderFunctionArgs): Promise<R
     ? {
         id: latestDraft.id,
         createdAt: latestDraft.createdAt.toISOString(),
+         isStale: latestDraft.isStale,
         result: (() => {
           const parsed = parseDraftResultOrNull(latestDraft.result);
           if (!parsed) return null;
@@ -491,38 +492,39 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     }
 
     const rawVibe = String(form.get("vibe") ?? "casual").slice(0, 40);
-    const format = String(form.get("format") ?? "paragraph").slice(0, 40);
-    const includeSocials = form.get("includeSocials") === "true";
-    const keywordsCsv = keywordCsvFromInput(form.get("keywords"));
+  const format = String(form.get("format") ?? "paragraph").slice(0, 40);
+  const includeSocials = form.get("includeSocials") === "true";
+  const keywordsCsv = keywordCsvFromInput(form.get("keywords"));
 
     // ── Custom template instruction ──────────────────────────────────────
     // When vibe starts with "custom:", the client sends the instruction text.
     // We sanitize it server-side: plain text only, no HTML.
     const customInstruction = String(form.get("customInstruction") ?? "")
-      .trim()
-      .slice(0, 1000);
+    .trim()
+    .slice(0, 1000);
 
     // Normalize vibe: strip "custom:" prefix for storage, use "custom" as the vibe value
     const vibe = rawVibe.startsWith("custom:") ? "custom" : rawVibe;
 
     // Idempotency: if a matching active job exists within lookback, return it
-    const lookback = new Date(Date.now() - ACTIVE_JOB_LOOKBACK_MS);
-    const existing = await db.generationJob.findFirst({
-      where: {
-        shopDomain,
-        productId: productGid,
-        status: { in: [...ACTIVE_JOB_STATUSES] as any },
-        createdAt: { gte: lookback },
-        vibe,
-        format,
-        keywords: keywordsCsv,
-        includeSocials,
-      },
-      orderBy: { createdAt: "desc" },
-      select: { id: true, status: true },
-    });
+     const lookback = new Date(Date.now() - ACTIVE_JOB_LOOKBACK_MS);
+  const existing = await db.generationJob.findFirst({
+    where: {
+      shopDomain,
+      productId: productGid,
+      status: { in: [...ACTIVE_JOB_STATUSES] as any },
+      createdAt: { gte: lookback },
+      vibe,
+      format,
+      keywords: keywordsCsv,
+      includeSocials,
+    },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, status: true },
+  });
 
     if (existing) {
+       await refundRateLimit(shopDomain, plan);
       return json({
         ok: true,
         kind: "generate",
@@ -532,31 +534,38 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
       });
     }
 
-    try {
-      const { jobIds, skipped } = await enqueueGenerationJobs({
-        shopDomain,
-        productIds: [productGid],
-        vibe,
-        format,
-        keywords: keywordsCsv,
-        includeSocials,
-        customInstruction: customInstruction || undefined, // only pass if non-empty
-        adminGraphql: admin.graphql,
-      });
+     try {
+    const { jobIds, skipped } = await enqueueGenerationJobs({
+      shopDomain,
+      productIds: [productGid],
+      vibe,
+      format,
+      keywords: keywordsCsv,
+      includeSocials,
+      customInstruction: customInstruction || undefined,
+      adminGraphql: admin.graphql,
+    });
 
-      if (skipped.includes(productGid) || jobIds.length === 0) {
-        return json(
-          { ok: false, kind: "error", error: "Product not found or access denied", code: "NOT_FOUND_OR_DENIED" },
-          { status: 403 },
-        );
-      }
-
-      return json({ ok: true, kind: "generate", jobId: jobIds[0], status: "PENDING" });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown error";
-      return json({ ok: false, kind: "error", error: message, code: "GENERATE_FAILED" }, { status: 500 });
+    // Product wasn't found or access was denied — no job was created.
+    if (skipped.includes(productGid) || jobIds.length === 0) {
+      await refundRateLimit(shopDomain, plan);   // ← refund
+      return json(
+        { ok: false, kind: "error", error: "Product not found or access denied", code: "NOT_FOUND_OR_DENIED" },
+        { status: 403 },
+      );
     }
+
+    return json({ ok: true, kind: "generate", jobId: jobIds[0], status: "PENDING" });
+
+  } catch (err) {
+    await refundRateLimit(shopDomain, plan);     // ← refund
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return json(
+      { ok: false, kind: "error", error: message, code: "GENERATE_FAILED" },
+      { status: 500 },
+    );
   }
+}
 
   // ── Intent: apply ────────────────────────────────────────────────────────
   if (intent === "apply") {

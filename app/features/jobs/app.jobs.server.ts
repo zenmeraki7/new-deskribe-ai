@@ -317,6 +317,8 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
         keywords: jobRecord.keywords,
         includeSocials: jobRecord.includeSocials,
         customInstruction: jobRecord.customInstruction ?? undefined,
+        isStale: false
+
       };
 
       return { ok: true as const, status: 200, retried: jobRecord.id, jobData, newBullJobId };

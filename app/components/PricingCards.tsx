@@ -30,7 +30,7 @@ const plans: Plan[] = [
       { text: "SEO optimization", included: false },
       { text: "Keyword suggestions", included: false },
       { text: "Bulk generation", included: false },
-      { text: "Custom tone & style", included: false },
+      { text: "Custom writing style templates", included: false }, // ← updated label
     ],
   },
   {
@@ -49,7 +49,7 @@ const plans: Plan[] = [
       { text: "SEO optimization", included: true },
       { text: "5 keyword suggestions / day", included: true },
       { text: "Bulk generation (20/batch)", included: true },
-      { text: "Custom tone & style", included: false },
+      { text: "Custom writing style templates", included: false }, // ← updated label
     ],
   },
   {
@@ -70,7 +70,7 @@ const plans: Plan[] = [
       { text: "Advanced SEO optimization", included: true },
       { text: "15 keyword suggestions / day", included: true },
       { text: "Bulk generation (50/batch)", included: true },
-      { text: "Custom tone & style", included: false },
+      { text: "Custom writing style templates", included: true }, // ← was false, now true
     ],
   },
   {
@@ -89,10 +89,11 @@ const plans: Plan[] = [
       { text: "Advanced SEO + keywords", included: true },
       { text: "50 keyword suggestions / day", included: true },
       { text: "Unlimited bulk generation", included: true },
-      { text: "Custom tone & style", included: true },
+      { text: "Custom writing style templates", included: true }, // ← updated label
     ],
   },
 ];
+
 interface PricingCardsProps {
   billing: "monthly" | "yearly";
   currentPlanId?: string;

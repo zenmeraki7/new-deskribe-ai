@@ -299,6 +299,8 @@ const { billing } = await authenticate.admin(request); // already have this from
         format: job.format,
         keywords: job.keywords,
         includeSocials: job.includeSocials,
+        isStale: false
+
       },
       { jobId: job.id },
     );

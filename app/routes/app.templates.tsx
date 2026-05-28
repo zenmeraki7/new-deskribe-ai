@@ -3,29 +3,52 @@ import { json } from "@remix-run/node";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import { db } from "../lib/db.server";
+import { resolvePlan, canUseCustomTemplates } from "../lib/rateLimiter.server";
 
-// ── Loader: fetch templates for this shop ─────────────────────────────────
 export async function loader({ request }: LoaderFunctionArgs) {
-  const { session } = await authenticate.admin(request);
+  const { session, billing } = await authenticate.admin(request);
   const shopDomain = session.shop;
+
+  const { appSubscriptions } = await billing.check();
+  const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null); // ← null coalesce
+
+  if (!canUseCustomTemplates(plan)) {
+    return json({ forbidden: true, templates: [] }, { status: 403 });
+  }
 
   const templates = await db.customTemplate.findMany({
     where: { shopDomain },
     orderBy: { createdAt: "desc" },
-    take: 20, // show last 20
+    take: 20,
+    select: { id: true, name: true, instruction: true, createdAt: true },
   });
 
-  return json({ templates });
+  return json({
+    forbidden: false,
+    templates: templates.map((t) => ({
+      ...t,
+      createdAt: t.createdAt.toISOString(), // ← serialize date
+    })),
+  });
 }
 
-// ── Action: create or delete ───────────────────────────────────────────────
 export async function action({ request }: ActionFunctionArgs) {
-  const { session } = await authenticate.admin(request);
+  const { session, billing } = await authenticate.admin(request);
   const shopDomain = session.shop;
+
+  const { appSubscriptions } = await billing.check();
+  const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
+
+  if (!canUseCustomTemplates(plan)) {
+    return json(
+      { ok: false, error: "Custom templates require the Advanced or Pro plan." },
+      { status: 403 },
+    );
+  }
+
   const fd = await request.formData();
   const intent = String(fd.get("intent") ?? "");
 
-  // ── Create ──
   if (intent === "create_template") {
     const name = String(fd.get("name") ?? "").trim().slice(0, 80);
     const instruction = String(fd.get("instruction") ?? "").trim().slice(0, 1000);
@@ -34,7 +57,6 @@ export async function action({ request }: ActionFunctionArgs) {
       return json({ ok: false, error: "Name and instruction are required" }, { status: 400 });
     }
 
-    // Max 10 templates per shop
     const count = await db.customTemplate.count({ where: { shopDomain } });
     if (count >= 10) {
       return json({ ok: false, error: "Maximum 10 custom templates allowed" }, { status: 400 });
@@ -44,15 +66,19 @@ export async function action({ request }: ActionFunctionArgs) {
       data: { shopDomain, name, instruction },
     });
 
-    return json({ ok: true, template });
+    return json({
+      ok: true,
+      template: { ...template, createdAt: template.createdAt.toISOString() },
+    });
   }
 
-  // ── Delete ──
   if (intent === "delete_template") {
-    const id = String(fd.get("id") ?? "");
-    await db.customTemplate.deleteMany({
-      where: { id, shopDomain }, // shopDomain check prevents deleting others' templates
-    });
+    const id = String(fd.get("templateId") ?? "").trim(); // ← consistent key name
+    if (!id) {
+      return json({ ok: false, error: "Missing templateId" }, { status: 400 });
+    }
+
+    await db.customTemplate.deleteMany({ where: { id, shopDomain } });
     return json({ ok: true });
   }
 

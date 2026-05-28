@@ -150,6 +150,29 @@ export async function checkAndIncrementRateLimit(
   return { allowed: true, shopUsed: shopCount, shopLimit };
 }
 
+export async function refundRateLimit(
+  shopDomain: string,
+  plan: Plan,
+): Promise<void> {
+  try {
+    await db.shopUsage.updateMany({
+      where: {
+        shopDomain,
+        // Only decrement if above 0 — Prisma doesn't support MAX() directly,
+        // so we filter and do a raw decrement.
+        generationsUsedToday: { gt: 0 },
+      },
+      data: {
+        generationsUsedToday: { decrement: 1 },
+      },
+    });
+  } catch (err) {
+    // Non-fatal: log and continue. A leaked credit is better than
+    // a 500 swallowing the real error.
+    console.error(`[rateLimiter] refund failed for ${shopDomain}:`, err);
+  }
+}
+
 export async function checkAndIncrementKeywordLimit(
   shopDomain: string,
   plan: Plan,
@@ -205,4 +228,8 @@ export async function getShopUsageToday(shopDomain: string): Promise<number> {
   const key = shopRedisKey(shopDomain);
   const val = await getRedis().get(key);
   return val ? parseInt(val, 10) : 0;
+}
+
+export function canUseCustomTemplates(plan: Plan): boolean {
+  return plan === "advanced" || plan === "pro";
 }

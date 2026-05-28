@@ -129,6 +129,7 @@ export async function enqueueGenerationJobs({
         format,
         keywords,
         includeSocials,
+        isStale: false,
         // ← key addition: tag all jobs in this bulk run
         bulkId,
         customInstruction: customInstruction || null,

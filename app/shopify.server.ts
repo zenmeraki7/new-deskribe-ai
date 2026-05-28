@@ -4,6 +4,7 @@ import {
   AppDistribution,
   DeliveryMethod,
   shopifyApp,
+   BillingInterval,
 } from "@shopify/shopify-app-remix/server";
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 import { db } from "./lib/db.server";
@@ -16,7 +17,7 @@ const shopify = shopifyApp({
   appUrl: process.env.SHOPIFY_APP_URL || "",
   authPathPrefix: "/auth",
   sessionStorage: new PrismaSessionStorage(db),
-  distribution: AppDistribution.SingleMerchant,
+  distribution: AppDistribution.AppStore,
 
   future: {
     unstable_newEmbeddedAuthStrategy: true,
@@ -34,12 +35,40 @@ const shopify = shopifyApp({
     deliveryMethod: DeliveryMethod.Http,
     callbackUrl: "/webhooks/app-uninstalled",
   },
+   APP_SCOPES_UPDATE: {
+    deliveryMethod: DeliveryMethod.Http,
+    callbackUrl: "/webhooks/app/scopes_update",
+  },
+  PRODUCTS_UPDATE: {
+    deliveryMethod: DeliveryMethod.Http,
+    callbackUrl: "/webhooks/products/update",
+  },
   },
   hooks: {
     afterAuth: async ({ session }) => {
       shopify.registerWebhooks({ session });
     },
   },
+    billing: {
+  "Basic Plan": {
+    amount: 9.99,
+    currencyCode: "USD",
+    interval: BillingInterval.Every30Days,
+    test: true,
+  },
+  "Advanced Plan": {
+    amount: 17.99,
+    currencyCode: "USD",
+    interval: BillingInterval.Every30Days,
+    test: true,
+  },
+  "Pro Plan": {
+    amount: 24.99,
+    currencyCode: "USD",
+    interval: BillingInterval.Every30Days,
+    test: true,
+  },
+},
 });
 
 export default shopify;

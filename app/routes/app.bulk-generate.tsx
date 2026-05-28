@@ -9,6 +9,7 @@ import {
   checkAndIncrementKeywordLimit,
   checkAndIncrementRateLimit,
   resolvePlan,
+  refundRateLimit,
   KEYWORD_LIMITS,
   BULK_LIMITS,
 } from "../lib/rateLimiter.server";
@@ -33,7 +34,10 @@ async function adminGraphqlWithRetry<T>(
     try {
       const resp = await adminGraphql(query, { variables });
 
-      if ((resp.status === 429 || resp.status >= 500) && attempt < MAX_ATTEMPTS) {
+      if (
+        (resp.status === 429 || resp.status >= 500) &&
+        attempt < MAX_ATTEMPTS
+      ) {
         await sleep(delay);
         delay *= 2;
         continue;
@@ -41,10 +45,12 @@ async function adminGraphqlWithRetry<T>(
 
       if (!resp.ok) {
         const text = await resp.text().catch(() => "");
-        throw new Error(`Shopify GraphQL HTTP ${resp.status}: ${text.slice(0, 300)}`);
+        throw new Error(
+          `Shopify GraphQL HTTP ${resp.status}: ${text.slice(0, 300)}`,
+        );
       }
 
-      return await resp.json() as T;
+      return (await resp.json()) as T;
     } catch (err) {
       if (attempt >= MAX_ATTEMPTS) throw err;
       await sleep(delay);
@@ -135,7 +141,10 @@ export async function action({ request }: ActionFunctionArgs) {
       } | null>;
 
       const productMetas = nodes
-        .filter((n): n is NonNullable<typeof n> => n !== null && typeof n.title === "string")
+        .filter(
+          (n): n is NonNullable<typeof n> =>
+            n !== null && typeof n.title === "string",
+        )
         .map((n) => ({
           title: String(n.title ?? ""),
           vendor: String(n.vendor ?? ""),
@@ -177,7 +186,8 @@ export async function action({ request }: ActionFunctionArgs) {
       return json(
         {
           ok: false,
-          error: "Bulk generation is not available on the Free plan. Upgrade to Basic or higher.",
+          error:
+            "Bulk generation is not available on the Free plan. Upgrade to Basic or higher.",
           code: "PLAN_UPGRADE_REQUIRED",
         },
         { status: 403 },
@@ -194,7 +204,11 @@ export async function action({ request }: ActionFunctionArgs) {
         throw new Error("empty");
       if (productIds.length > MAX_BULK)
         throw new Error(`max ${MAX_BULK} products per bulk request`);
-      if (!productIds.every((id) => typeof id === "string" && id.startsWith("gid://")))
+      if (
+        !productIds.every(
+          (id) => typeof id === "string" && id.startsWith("gid://"),
+        )
+      )
         throw new Error("invalid product id format");
     } catch (e: any) {
       return json(
@@ -247,13 +261,22 @@ export async function action({ request }: ActionFunctionArgs) {
         adminGraphql: (query, opts) => admin.graphql(query, opts),
       });
 
+       if (jobIds.length === 0) {
+      await refundRateLimit(shopDomain, plan);   // ← refund
+      return json(
+        { ok: false, error: "No products could be enqueued", code: "ALL_SKIPPED" },
+        { status: 403 },
+      );
+    }
+
       return json({ ok: true, jobIds, skipped, bulkId });
     } catch (err: any) {
-      console.error("[bulk-generate] enqueue error:", err);
-      return json(
-        { ok: false, error: err?.message ?? "Failed to enqueue jobs" },
-        { status: 500 },
-      );
+    await refundRateLimit(shopDomain, plan);     // ← refund
+    console.error("[bulk-generate] enqueue error:", err);
+    return json(
+      { ok: false, error: err?.message ?? "Failed to enqueue jobs" },
+      { status: 500 },
+    );
     }
   }
 

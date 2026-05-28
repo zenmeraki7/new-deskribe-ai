@@ -43,6 +43,7 @@ model History {
 }
 
 model GenerationJob {
+  isStale Boolean @default(false)
   id                  String   @id @default(uuid())
   shopDomain          String
   productId           String

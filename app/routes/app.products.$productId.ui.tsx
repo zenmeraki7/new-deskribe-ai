@@ -220,7 +220,6 @@ function TemplateBuilderModal({
   const [name, setName] = useState("");
   const [instruction, setInstruction] = useState("");
 
-  // Reset form when modal opens
   useEffect(() => {
     if (open) {
       setName("");
@@ -236,7 +235,6 @@ function TemplateBuilderModal({
   };
 
   const canSave = name.trim().length > 0 && instruction.trim().length > 0 && !isSaving;
-
 
   return (
     <Modal
@@ -267,7 +265,6 @@ function TemplateBuilderModal({
             </Banner>
           )}
 
-          {/* Template name */}
           <TextField
             label="Template name"
             value={name}
@@ -278,7 +275,6 @@ function TemplateBuilderModal({
             showCharacterCount
           />
 
-          {/* Plain-English instruction box */}
           <TextField
             label="Describe your writing style to the AI"
             value={instruction}
@@ -291,7 +287,6 @@ function TemplateBuilderModal({
             helpText="Just describe what you want in plain English — the AI will follow your instructions exactly."
           />
 
-          {/* Hint chips */}
           <BlockStack gap="150">
             <Text as="p" variant="bodySm" tone="subdued">
               💡 Click to add a hint:
@@ -317,7 +312,6 @@ function TemplateBuilderModal({
             </InlineStack>
           </BlockStack>
 
-          {/* Existing templates list */}
           {existingTemplates.length > 0 && (
             <BlockStack gap="200">
               <Text as="h3" variant="headingSm">
@@ -375,7 +369,7 @@ export default function ProductEditorModalRoute() {
     policyWarnings,
     shopPlan,
     customTemplates,
-      shopDomain,
+    shopDomain,
   } = useLoaderData<LoaderData>();
 
   const navigate = useNavigate();
@@ -388,7 +382,6 @@ export default function ProductEditorModalRoute() {
 
   // ── Custom template state ─────────────────────────────────────────────────
   const [showTemplateBuilder, setShowTemplateBuilder] = useState(false);
-  // The instruction text of whichever custom template is currently selected
   const [activeCustomInstruction, setActiveCustomInstruction] = useState<string>("");
 
   // ── Fetchers ──────────────────────────────────────────────────────────────
@@ -408,7 +401,10 @@ export default function ProductEditorModalRoute() {
     isPolling,
   } = useJobPoll();
 
-  // ── Plan-gated vibe options (custom templates always at top, no divider) ──
+  // ── Plan gate (derived early so vibeOptions can use it) ───────────────────
+  const canUseCustomTemplates = shopPlan === "advanced" || shopPlan === "pro";
+
+  // ── Plan-gated vibe options ───────────────────────────────────────────────
   const vibeOptions = useMemo(() => {
     const builtIn = [
       { label: "Casual", value: "casual" },
@@ -424,21 +420,25 @@ export default function ProductEditorModalRoute() {
           ]
         : [];
 
-    const savedTemplates = customTemplates.map((t) => ({
-      label: `★ ${t.name}`,
-      value: `custom:${t.id}`,
-    }));
+    // ── FIXED: only show saved templates and "Create" option to advanced/pro ──
+    const savedTemplates = canUseCustomTemplates
+      ? customTemplates.map((t) => ({
+          label: `★ ${t.name}`,
+          value: `custom:${t.id}`,
+        }))
+      : [];
 
-    // "✦ Create custom style…" is always the LAST option so it doesn't
-    // accidentally become the default selected value on first render.
-    // We use a sentinel value and intercept it in handleVibeChange.
+    const createCustomOption = canUseCustomTemplates
+      ? [{ label: "✦ Create custom style", value: "custom_new" }]
+      : [];
+
     return [
       ...builtIn,
       ...paidVibes,
       ...savedTemplates,
-      { label: "Create custom style", value: "custom_new" },
+      ...createCustomOption,
     ];
-  }, [shopPlan, customTemplates]);
+  }, [shopPlan, customTemplates, canUseCustomTemplates]);
 
   const formatOptions = useMemo(() => {
     const all = [
@@ -453,10 +453,6 @@ export default function ProductEditorModalRoute() {
   }, [shopPlan]);
 
   // ── Handle vibe selection ─────────────────────────────────────────────────
-  // The key problem: native <select> won't fire onChange if you re-select
-  // the same value. We fix this by immediately resetting vibe back to the
-  // previous value after intercepting "custom_new", so the next click always
-  // fires onChange again.
   const prevVibeRef = useRef<string>("casual");
 
   const handleVibeChange = useCallback(
@@ -464,10 +460,7 @@ export default function ProductEditorModalRoute() {
       if (value === "__divider__") return;
 
       if (value === "custom_new") {
-        // Open the builder but don't change vibe — the select will show
-        // "custom_new" briefly; we reset it so next click fires onChange again.
         setShowTemplateBuilder(true);
-        // Use setTimeout to let React render first, then reset
         setTimeout(() => setVibe(prevVibeRef.current), 0);
         return;
       }
@@ -532,7 +525,6 @@ export default function ProductEditorModalRoute() {
       fd.set("intent", "delete_template");
       fd.set("templateId", id);
       templateFetcher.submit(fd, { method: "post" });
-      // If we just deleted the currently selected template, reset vibe
       if (vibe === `custom:${id}`) {
         setVibe("casual");
         setActiveCustomInstruction("");
@@ -553,7 +545,6 @@ export default function ProductEditorModalRoute() {
         setVibe(newVibe);
         setActiveCustomInstruction(savedInstruction);
 
-        // Auto-trigger generation if user clicked "Save & Generate"
         if (pendingGenerateRef.current) {
           pendingGenerateRef.current = false;
           const fd = new FormData();
@@ -679,7 +670,6 @@ export default function ProductEditorModalRoute() {
 
   const applyJobId = lastCompletedJobId ?? latestDraft?.id ?? null;
 
-  // Fix: use Array.from(terminal) instead of inline set comparison to avoid TS narrowing issue
   const terminalStatuses: PollStatus[] = ["COMPLETED", "FAILED", "CANCELLED"];
   const canApply = Boolean(
     draftResult &&
@@ -688,15 +678,12 @@ export default function ProductEditorModalRoute() {
       isUuidV4(applyJobId) &&
       !isApplying &&
       !isGenerating &&
-      terminalStatuses.includes(pollStatus) && // pollStatus is terminal or IDLE
+      terminalStatuses.includes(pollStatus) &&
       pollStatus !== "PENDING" &&
       pollStatus !== "PROCESSING",
   );
 
-  // Whether the currently selected vibe is a custom template
   const isCustomVibeSelected = vibe.startsWith("custom:");
-
-  const canUseCustomTemplates = shopPlan === "advanced" || shopPlan === "pro";
 
   return (
     <>
@@ -734,7 +721,6 @@ export default function ProductEditorModalRoute() {
             fd.set("format", clampTextInput(format, 40));
             fd.set("keywords", clampTextInput(keywords, 2000));
             fd.set("includeSocials", String(includeSocials));
-            // Pass custom instruction when a custom template is selected
             if (isCustomVibeSelected && activeCustomInstruction) {
               fd.set("customInstruction", clampTextInput(activeCustomInstruction, 1000));
             }
@@ -756,6 +742,14 @@ export default function ProductEditorModalRoute() {
                     <li key={w}>{w}</li>
                   ))}
                 </ul>
+              </Banner>
+            )}
+
+            {latestDraft?.isStale && (
+              <Banner tone="warning" title="Draft may be outdated">
+                <Text as="p" variant="bodySm">
+                  This draft was generated before the product was last updated.
+                </Text>
               </Banner>
             )}
 
@@ -813,7 +807,7 @@ export default function ProductEditorModalRoute() {
                   Generation Settings
                 </Text>
 
-                 {shopPlan === "free" && (
+                {shopPlan === "free" && (
                   <Text as="p" variant="bodySm" tone="subdued">
                     ✦ Upgrade to Basic or higher to unlock all writing styles and formats (Luxury, Technical, Playful, Hybrid).
                   </Text>
@@ -832,13 +826,12 @@ export default function ProductEditorModalRoute() {
                       <Select
                         label="Writing style"
                         options={vibeOptions}
-                        value={vibe.startsWith("custom:") ? vibe : vibe}
+                        value={vibe}
                         onChange={handleVibeChange}
                         disabled={isGenerating}
                       />
                     </div>
-                    {/* "+" button always visible to manage templates */}
-                      <div style={{ paddingBottom: 2 }}>
+                    <div style={{ paddingBottom: 2 }}>
                       <Tooltip
                         content={
                           canUseCustomTemplates
@@ -922,7 +915,6 @@ export default function ProductEditorModalRoute() {
                     </div>
                   </InlineStack>
 
-                  {/* Keyword limit error banner */}
                   {keywordLimitError && (
                     <Banner
                       tone={keywordFetcher.data?.plan === "free" ? "warning" : "info"}
@@ -937,7 +929,6 @@ export default function ProductEditorModalRoute() {
                     </Banner>
                   )}
 
-                  {/* Current keyword tags */}
                   {parseKeywords(keywords).length > 0 && (
                     <InlineStack gap="100" wrap>
                       {parseKeywords(keywords).map((kw) => (
@@ -979,7 +970,6 @@ export default function ProductEditorModalRoute() {
                     </InlineStack>
                   )}
 
-                  {/* Suggested keyword chips */}
                   {suggestedKeywords.length > 0 && (
                     <BlockStack gap="100">
                       <Text as="p" variant="bodySm" tone="subdued">
@@ -1058,9 +1048,9 @@ export default function ProductEditorModalRoute() {
                     >
                       {draftResult.meta_title ?? product.title}
                     </div>
-                  <div style={{ fontSize: 13, color: "#006621", marginBottom: 4 }}>
-  {shopDomain} › products
-</div>
+                    <div style={{ fontSize: 13, color: "#006621", marginBottom: 4 }}>
+                      {shopDomain} › products
+                    </div>
                     <div
                       style={{
                         fontSize: 14,

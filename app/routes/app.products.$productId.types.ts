@@ -42,8 +42,9 @@ export interface DraftResult {
 
 export interface LatestDraft {
   id: string; // UUID v4 (server-owned version id)
-  result: DraftResult | null; // null if generation failed or not ready
   createdAt: string; // ISO string
+  isStale: boolean;
+   result: DraftResult | null;
 }
 
 export interface CustomTemplate {
