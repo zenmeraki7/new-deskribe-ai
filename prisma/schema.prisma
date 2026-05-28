@@ -1,0 +1,113 @@
+// schema.prisma — full updated file
+
+generator client {
+  provider   = "prisma-client-js"
+  engineType = "library"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+}
+
+model History {
+  id             String   @id @default(cuid())
+  shopDomain     String   @default("")
+  productId      String
+  productTitle   String
+  description    String
+  vibe           String
+  format         String
+  keywords       String?
+  includeSocials Boolean
+  socials        Json?
+  createdAt      DateTime @default(now())
+}
+
+model GenerationJob {
+  id                  String   @id @default(uuid())
+  shopDomain          String
+  productId           String
+  status              String
+  inputHash           String
+  vibe                String
+  format              String
+  keywords            String
+  includeSocials      Boolean
+  result              Json?
+  errorMessage        String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  bulkId              String?
+  bullJobId           String?
+  costTokens          Int      @default(0)
+  productTitle        String
+  progress            Int      @default(0)
+  traceId             String?
+  customInstruction String? 
+  // Description snapshot fields — added for undo support
+  generatedDescription String?  // The AI-generated description written to Shopify
+  previousDescription  String?  // Snapshot of the product description BEFORE generation
+  productVendor   String?
+  productType     String?
+  productTags     String?
+
+  @@index([shopDomain])
+  @@index([productId])
+  @@index([status])
+}
+// Tracks per-shop daily usage — one row per shop per UTC day
+model ShopUsage {
+  id         String   @id @default(cuid())
+  shopDomain String
+  date       String   // UTC date string: "2025-03-27"
+  count      Int      @default(0)
+  plan       String   @default("free") // "free" | "pro"
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([shopDomain, date])
+  @@index([shopDomain])
+  @@index([date])
+}
+
+// Global daily usage — single row per UTC day, all shops combined
+model GlobalUsage {
+  id        String   @id @default(cuid())
+  date      String   // UTC date string: "2025-03-27"
+  count     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([date])
+  @@index([date])
+}
+
+model CustomTemplate {
+  id          String   @id @default(cuid())
+  shopDomain  String
+  name        String           // e.g. "My Beach Vibes"
+  instruction String           // e.g. "Write in a fun surfer tone, use emojis..."
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([shopDomain])
+}
