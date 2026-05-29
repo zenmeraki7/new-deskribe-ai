@@ -1,9 +1,17 @@
 import { useActionData, useLoaderData, useSubmit } from "@remix-run/react";
 import { Banner, Layout, Page, BlockStack } from "@shopify/polaris";
 import { authenticate } from "app/shopify.server";
-import { json, LoaderFunctionArgs, ActionFunctionArgs } from "@remix-run/node";
+import { json, redirect } from "@remix-run/node";
+import type { LoaderFunctionArgs, ActionFunctionArgs } from "@remix-run/node";
 import { useEffect, useState } from "react";
 import { PricingCards } from "../components/PricingCards";
+
+// Map planId + billing mode → the plan name key in shopify.server.ts
+const PLAN_NAME_MAP: Record<string, Record<string, string>> = {
+  basic:    { monthly: "Basic Plan",    yearly: "Basic Plan Yearly"    },
+  advanced: { monthly: "Advanced Plan", yearly: "Advanced Plan Yearly" },
+  pro:      { monthly: "Pro Plan",      yearly: "Pro Plan Yearly"      },
+};
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { billing } = await authenticate.admin(request);
@@ -13,11 +21,36 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { billing } = await authenticate.admin(request);
-  const { appSubscriptions } = await billing.check();
-  if (appSubscriptions?.[0]) {
-    await billing.cancel({ subscriptionId: appSubscriptions[0].id });
+  const formData = await request.formData();
+  const intent = formData.get("intent");
+
+  // ── Cancel ────────────────────────────────────────────────────────────────
+  if (intent === "cancel") {
+    const { appSubscriptions } = await billing.check();
+    if (appSubscriptions?.[0]) {
+      await billing.cancel({ subscriptionId: appSubscriptions[0].id });
+    }
+    return json({ success: true, intent: "cancel" });
   }
-  return json({ success: true });
+
+  // ── Subscribe ─────────────────────────────────────────────────────────────
+  if (intent === "subscribe") {
+    const planId      = formData.get("planId") as string;
+    const billingMode = formData.get("billingMode") as string;
+
+    const planName = PLAN_NAME_MAP[planId]?.[billingMode];
+    if (!planName) return json({ error: "Invalid plan" }, { status: 400 });
+
+    // billing.request() redirects the merchant to Shopify's confirmation page.
+    // It throws a redirect — no return value needed.
+    await billing.request({
+  plan: planName,
+  isTest: true,   // ✅ this is the right place for it
+  returnUrl: `${process.env.SHOPIFY_APP_URL}/app/billing`,
+});
+  }
+
+  return json({ success: false });
 };
 
 export default function Billing() {
@@ -26,14 +59,31 @@ export default function Billing() {
   const submit = useSubmit();
   const [billing, setBilling] = useState<"monthly" | "yearly">("monthly");
 
+  // Derive current planId from subscription name for the "Current Plan" badge
+  const currentPlanId = (() => {
+    const name = subscription?.name?.toLowerCase() ?? "";
+    if (name.includes("pro"))      return "pro";
+    if (name.includes("advanced")) return "advanced";
+    if (name.includes("basic"))    return "basic";
+    return "free";
+  })();
+
   useEffect(() => {
-    if (actionData?.success) {
+    if (actionData && "intent" in actionData && actionData.intent === "cancel") {
       shopify.toast.show("Plan Successfully Cancelled", {
         duration: 5000,
         isError: false,
       });
     }
   }, [actionData]);
+
+  function handleSelectPlan(planId: string) {
+    if (planId === "free") return; // free plan needs no billing
+    submit(
+      { intent: "subscribe", planId, billingMode: billing },
+      { method: "POST" }
+    );
+  }
 
   return (
     <Page title="Select a Plan">
@@ -44,14 +94,10 @@ export default function Billing() {
               <Banner
                 title={`Active subscription: ${subscription.name}`}
                 tone="success"
-                action={{
-                  content: "Change Plan",
-                  url: "https://admin.shopify.com/charges/zenmeraki-deskribe-ai/pricing_plans",
-                  target: "_top",
-                }}
                 secondaryAction={{
                   content: "Cancel Plan",
-                  onAction: () => submit({}, { method: "POST" }),
+                  onAction: () =>
+                    submit({ intent: "cancel" }, { method: "POST" }),
                 }}
               />
             ) : (
@@ -93,18 +139,13 @@ export default function Billing() {
             </div>
 
             {/* Pricing Cards */}
-           <div style={{marginBottom:"20px"}}>
-             <PricingCards
-              billing={billing}
-              currentPlanId={subscription?.name?.toLowerCase().replace(" plan", "")}
-              onSelectPlan={(planId) => {
-                window.open(
-                  "https://admin.shopify.com/charges/zenmeraki-deskribe-ai/pricing_plans",
-                  "_top"
-                );
-              }}
-            />
-           </div>
+            <div style={{ marginBottom: "20px" }}>
+              <PricingCards
+                billing={billing}
+                currentPlanId={currentPlanId}
+                onSelectPlan={handleSelectPlan}
+              />
+            </div>
           </BlockStack>
         </Layout.Section>
       </Layout>
