@@ -43,7 +43,7 @@ const plans: Plan[] = [
     description: "Perfect for growing stores",
     features: [
       { text: "200 AI descriptions / day", included: true },
-      { text: "2 stores connected", included: true },
+      // { text: "2 stores connected", included: true },
       { text: "All tones & formats (5 styles, 3 formats)", included: true },
       { text: "Email support", included: true },
       { text: "SEO optimization", included: true },
@@ -64,7 +64,7 @@ const plans: Plan[] = [
     badge: "Most Popular",
     features: [
       { text: "1,000 AI descriptions / day", included: true },
-      { text: "5 stores connected", included: true },
+      // { text: "5 stores connected", included: true },
       { text: "All tones & formats (5 styles, 3 formats)", included: true },
       { text: "Priority email support", included: true },
       { text: "Advanced SEO optimization", included: true },
@@ -83,7 +83,7 @@ const plans: Plan[] = [
     description: "Unlimited power for large catalogs",
     features: [
       { text: "Unlimited AI descriptions", included: true },
-      { text: "Unlimited stores", included: true },
+      // { text: "Unlimited stores", included: true },
       { text: "All templates + custom", included: true },
       { text: "24/7 priority support", included: true },
       { text: "Advanced SEO + keywords", included: true },
