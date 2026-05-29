@@ -27,23 +27,21 @@ const shopify = shopifyApp({
     ? { customShopDomains: [process.env.SHOP_CUSTOM_DOMAIN] }
     : {}),
      webhooks: {
-    APP_INSTALLED: {
-      deliveryMethod: DeliveryMethod.Http,
-      callbackUrl: "/webhooks/app-installed",
-    },
-     APP_UNINSTALLED: {
+  APP_UNINSTALLED: {
     deliveryMethod: DeliveryMethod.Http,
     callbackUrl: "/webhooks/app-uninstalled",
   },
-   APP_SCOPES_UPDATE: {
+
+  APP_SCOPES_UPDATE: {
     deliveryMethod: DeliveryMethod.Http,
     callbackUrl: "/webhooks/app/scopes_update",
   },
+
   PRODUCTS_UPDATE: {
     deliveryMethod: DeliveryMethod.Http,
     callbackUrl: "/webhooks/products/update",
   },
-  },
+},
   hooks: {
     afterAuth: async ({ session }) => {
       shopify.registerWebhooks({ session });
