@@ -35,20 +35,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   // ── Subscribe ─────────────────────────────────────────────────────────────
   if (intent === "subscribe") {
-    const planId      = formData.get("planId") as string;
-    const billingMode = formData.get("billingMode") as string;
+  const planId      = formData.get("planId") as string;
+  const billingMode = formData.get("billingMode") as string;
 
-    const planName = PLAN_NAME_MAP[planId]?.[billingMode];
-    if (!planName) return json({ error: "Invalid plan" }, { status: 400 });
+  const planName = PLAN_NAME_MAP[planId]?.[billingMode];
+  if (!planName) return json({ error: "Invalid plan" }, { status: 400 });
 
-    // billing.request() redirects the merchant to Shopify's confirmation page.
-    // It throws a redirect — no return value needed.
-    await billing.request({
-  plan: planName,
-  isTest: true,   // ✅ this is the right place for it
-  returnUrl: `${process.env.SHOPIFY_APP_URL}/app/billing`,
-});
+  // Cancel existing subscription before creating new one
+  const { appSubscriptions } = await billing.check();
+  if (appSubscriptions?.[0]) {
+    await billing.cancel({ subscriptionId: appSubscriptions[0].id });
   }
+
+  await billing.request({
+    plan: planName,
+    isTest: true,
+    returnUrl: `${process.env.SHOPIFY_APP_URL}/app/billing`,
+  });
+}
 
   return json({ success: false });
 };

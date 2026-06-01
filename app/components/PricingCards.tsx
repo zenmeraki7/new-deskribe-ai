@@ -177,6 +177,13 @@ function PlanCard({
           </div>
         )}
 
+        {/* ← Add this below the yearlyRow block */}
+{billing === "yearly" && !isFree && (
+  <div style={{ fontSize: "11px", color: "#9CA3AF", marginTop: "4px" }}>
+    Billed as ${yearlyTotal.toFixed(2)} once per year
+  </div>
+)}
+
         {billing === "monthly" && !isFree && (
           <div style={styles.yearlyHint}>
             ${(yearlyTotal / 12).toFixed(2)}/mo billed yearly
@@ -217,7 +224,13 @@ function PlanCard({
         onClick={() => !isActive && onSelect?.(plan.id)}
         disabled={isActive}
       >
-        {isActive ? "Current Plan" : isFree ? "Get Started" : "Select Plan"}
+        {isActive
+    ? "Current Plan"
+    : isFree
+    ? "Get Started"
+    : billing === "yearly"
+    ? `Subscribe yearly · $${yearlyTotal.toFixed(2)}/yr`
+    : "Select Plan"}
       </button>
     </div>
   );
