@@ -50,7 +50,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   await billing.request({
     plan: planName,
     isTest: true,
-    returnUrl: `${process.env.SHOPIFY_APP_URL}/app/billing`,
+    returnUrl: `${process.env.SHOPIFY_APP_URL.trim().replace(/\/$/, "")}/app/billing`,
   });
 }
 
