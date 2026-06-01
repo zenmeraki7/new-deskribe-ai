@@ -998,12 +998,12 @@ export default function ProductEditorModalRoute() {
                   )}
                 </BlockStack>
 
-                <Checkbox
+                {/* <Checkbox
                   label="Include Instagram caption"
                   checked={includeSocials}
                   onChange={setIncludeSocials}
                   disabled={isGenerating}
-                />
+                /> */}
               </BlockStack>
             </Card>
 

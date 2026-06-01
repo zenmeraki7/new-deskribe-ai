@@ -607,12 +607,12 @@ export default function IndexPage() {
                     )}
                   </BlockStack>
 
-                  <Checkbox
+                  {/* <Checkbox
                     label="Include Instagram caption"
                     checked={includeSocials}
                     onChange={setIncludeSocials}
                     disabled={isGenerating}
-                  />
+                  /> */}
 
                   <Button
                     variant="primary"

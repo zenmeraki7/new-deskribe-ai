@@ -495,12 +495,12 @@ const keywordLimitError =
                 )}
               </BlockStack>
 
-              <Checkbox
+              {/* <Checkbox
                 label="Include Instagram caption"
                 checked={includeSocials}
                 onChange={setIncludeSocials}
                 disabled={isSubmitting}
-              />
+              /> */}
             </BlockStack>
           </Card>
 
