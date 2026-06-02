@@ -280,7 +280,7 @@ export function ProductFilterModal({
           <hr style={{ margin: "20px 0" }} />
 
           {/* Price */}
-          <div>
+          {/* <div>
             <p style={{ fontSize: "13px", fontWeight: 600 }}>
               Price range
             </p>
@@ -300,7 +300,7 @@ export function ProductFilterModal({
                 }
               />
             </div>
-          </div>
+          </div> */}
         </div>
 
         <div
