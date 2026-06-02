@@ -371,7 +371,7 @@ function JobDetailModal({ job, open, onClose, shopDomain }: JobDetailModalProps)
                 variant="plain"
                 url={`/app/products/${job.productId.split("/").pop()}`}
               >
-                Open full editor with diff view ↗
+                Open full editor  ↗
               </Button>
             </InlineStack>
           )}
