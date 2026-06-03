@@ -6,6 +6,18 @@ import type { LoaderFunctionArgs, ActionFunctionArgs } from "@remix-run/node";
 import { useEffect, useState } from "react";
 import { PricingCards } from "../components/PricingCards";
 
+async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (i === attempts - 1) throw err;
+      await new Promise(r => setTimeout(r, 500 * (i + 1)));
+    }
+  }
+  throw new Error("unreachable");
+}
+
 // Map planId + billing mode → the plan name key in shopify.server.ts
 const PLAN_NAME_MAP: Record<string, Record<string, string>> = {
   basic:    { monthly: "Basic Plan",    yearly: "Basic Plan Yearly"    },
@@ -14,47 +26,47 @@ const PLAN_NAME_MAP: Record<string, Record<string, string>> = {
 };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { billing, session } = await authenticate.admin(request);
-  const { appSubscriptions } = await billing.check();
+  const { billing } = await authenticate.admin(request);
+  const { appSubscriptions } = await withRetry(() => billing.check());
   return json({ subscription: appSubscriptions?.[0] ?? null });
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { billing } = await authenticate.admin(request);
+  const { billing, session } = await authenticate.admin(request); // get both here, once
   const formData = await request.formData();
   const intent = formData.get("intent");
 
   // ── Cancel ────────────────────────────────────────────────────────────────
   if (intent === "cancel") {
-    const { appSubscriptions } = await billing.check();
+    const { appSubscriptions } = await withRetry(() => billing.check());
     if (appSubscriptions?.[0]) {
-      await billing.cancel({ subscriptionId: appSubscriptions[0].id });
+      await withRetry(() => billing.cancel({ subscriptionId: appSubscriptions[0].id }));
     }
     return json({ success: true, intent: "cancel" });
   }
 
   // ── Subscribe ─────────────────────────────────────────────────────────────
   if (intent === "subscribe") {
-  const planId      = formData.get("planId") as string;
-  const billingMode = formData.get("billingMode") as string;
+    const planId      = formData.get("planId") as string;
+    const billingMode = formData.get("billingMode") as string;
 
-  const planName = PLAN_NAME_MAP[planId]?.[billingMode];
-  if (!planName) return json({ error: "Invalid plan" }, { status: 400 });
+    const planName = PLAN_NAME_MAP[planId]?.[billingMode];
+    if (!planName) return json({ error: "Invalid plan" }, { status: 400 });
 
-  // Cancel existing subscription before creating new one
-  const { appSubscriptions } = await billing.check();
-  if (appSubscriptions?.[0]) {
-    await billing.cancel({ subscriptionId: appSubscriptions[0].id });
+    // Cancel existing subscription before creating new one
+    const { appSubscriptions } = await withRetry(() => billing.check());
+    if (appSubscriptions?.[0]) {
+      await withRetry(() => billing.cancel({ subscriptionId: appSubscriptions[0].id }));
+    }
+
+    const returnUrl = `https://${session.shop}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`;
+
+    await billing.request({
+      plan: planName,
+      isTest: true,
+      returnUrl,
+    });
   }
-const { session } = await authenticate.admin(request);
-const returnUrl = `https://${session.shop}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`;
-
-  await billing.request({
-    plan: planName,
-    isTest: true,
-    returnUrl,
-  });
-}
 
   return json({ success: false });
 };
@@ -67,17 +79,17 @@ export default function Billing() {
 
   // Derive current planId from subscription name for the "Current Plan" badge
   const currentPlanId = (() => {
-  const name = subscription?.name?.toLowerCase() ?? "";
-  if (name.includes("pro"))      return "pro";
-  if (name.includes("advanced")) return "advanced";
-  if (name.includes("basic"))    return "basic";
-  return "free";
-})();
+    const name = subscription?.name?.toLowerCase() ?? "";
+    if (name.includes("pro"))      return "pro";
+    if (name.includes("advanced")) return "advanced";
+    if (name.includes("basic"))    return "basic";
+    return "free";
+  })();
 
-const currentBillingInterval: "monthly" | "yearly" = (() => {
-  const name = subscription?.name?.toLowerCase() ?? "";
-  return name.includes("yearly") ? "yearly" : "monthly";
-})();
+  const currentBillingInterval: "monthly" | "yearly" = (() => {
+    const name = subscription?.name?.toLowerCase() ?? "";
+    return name.includes("yearly") ? "yearly" : "monthly";
+  })();
 
   useEffect(() => {
     if (actionData && "intent" in actionData && actionData.intent === "cancel") {

@@ -77,8 +77,11 @@ interface LoaderData {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const { admin } = await authenticate.admin(request);
-
+   const { admin, billing } = await authenticate.admin(request);
+   const { hasActivePayment } = await billing.check();
+  if (!hasActivePayment) {
+    throw redirect("/app/billing");
+  }
   try {
     const resp = await admin.graphql(`
       #graphql
