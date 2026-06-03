@@ -94,15 +94,18 @@ const plans: Plan[] = [
   },
 ];
 
+
 interface PricingCardsProps {
   billing: "monthly" | "yearly";
   currentPlanId?: string;
+  currentBillingInterval?: "monthly" | "yearly";  
   onSelectPlan?: (planId: string) => void;
 }
 
 export function PricingCards({
   billing,
   currentPlanId,
+  currentBillingInterval,
   onSelectPlan,
 }: PricingCardsProps) {
   return (
@@ -112,7 +115,7 @@ export function PricingCards({
           key={plan.id}
           plan={plan}
           billing={billing}
-          isActive={currentPlanId === plan.id}
+          isActive={currentPlanId === plan.id && billing === currentBillingInterval}
           onSelect={onSelectPlan}
         />
       ))}

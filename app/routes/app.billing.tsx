@@ -14,7 +14,7 @@ const PLAN_NAME_MAP: Record<string, Record<string, string>> = {
 };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { billing } = await authenticate.admin(request);
+  const { billing, session } = await authenticate.admin(request);
   const { appSubscriptions } = await billing.check();
   return json({ subscription: appSubscriptions?.[0] ?? null });
 };
@@ -46,11 +46,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (appSubscriptions?.[0]) {
     await billing.cancel({ subscriptionId: appSubscriptions[0].id });
   }
+const { session } = await authenticate.admin(request);
+const returnUrl = `https://${session.shop}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`;
 
   await billing.request({
     plan: planName,
     isTest: true,
-    returnUrl: `${process.env.SHOPIFY_APP_URL.trim().replace(/\/$/, "")}/app/billing`,
+    returnUrl,
   });
 }
 
@@ -65,12 +67,17 @@ export default function Billing() {
 
   // Derive current planId from subscription name for the "Current Plan" badge
   const currentPlanId = (() => {
-    const name = subscription?.name?.toLowerCase() ?? "";
-    if (name.includes("pro"))      return "pro";
-    if (name.includes("advanced")) return "advanced";
-    if (name.includes("basic"))    return "basic";
-    return "free";
-  })();
+  const name = subscription?.name?.toLowerCase() ?? "";
+  if (name.includes("pro"))      return "pro";
+  if (name.includes("advanced")) return "advanced";
+  if (name.includes("basic"))    return "basic";
+  return "free";
+})();
+
+const currentBillingInterval: "monthly" | "yearly" = (() => {
+  const name = subscription?.name?.toLowerCase() ?? "";
+  return name.includes("yearly") ? "yearly" : "monthly";
+})();
 
   useEffect(() => {
     if (actionData && "intent" in actionData && actionData.intent === "cancel") {
@@ -147,6 +154,7 @@ export default function Billing() {
               <PricingCards
                 billing={billing}
                 currentPlanId={currentPlanId}
+                currentBillingInterval={currentBillingInterval}
                 onSelectPlan={handleSelectPlan}
               />
             </div>
