@@ -27,7 +27,10 @@ const PLAN_NAME_MAP: Record<string, Record<string, string>> = {
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { billing } = await authenticate.admin(request);
-  const { appSubscriptions } = await withRetry(() => billing.check());
+  const { appSubscriptions } = await withRetry(() => billing.check({
+  plans: PLANS,
+  isTest: true,
+}));
   return json({ subscription: appSubscriptions?.[0] ?? null });
 };
 

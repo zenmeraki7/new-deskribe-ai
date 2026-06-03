@@ -31,6 +31,14 @@ import {
 import { authenticate } from "../shopify.server";
 
 
+const PLANS = [
+  "Basic Plan",
+  "Basic Plan Yearly",
+  "Advanced Plan",
+  "Advanced Plan Yearly",
+  "Pro Plan",
+  "Pro Plan Yearly",
+] as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -77,9 +85,15 @@ interface LoaderData {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function loader({ request }: LoaderFunctionArgs) {
-   const { admin, billing } = await authenticate.admin(request);
-   const { hasActivePayment } = await billing.check();
-  if (!hasActivePayment) {
+  const { admin, billing } = await authenticate.admin(request);
+
+  const { hasActivePayment } = await billing.check({
+    plans: PLANS,
+    isTest: true,
+  });
+
+
+ if (!hasActivePayment) {
     throw redirect("/app/billing");
   }
   try {
