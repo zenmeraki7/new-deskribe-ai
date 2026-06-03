@@ -17,6 +17,15 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
   }
   throw new Error("unreachable");
 }
+const PLANS = [
+  "Basic Plan",
+  "Basic Plan Yearly",
+  "Advanced Plan",
+  "Advanced Plan Yearly",
+  "Pro Plan",
+  "Pro Plan Yearly",
+] as const;
+
 
 // Map planId + billing mode → the plan name key in shopify.server.ts
 const PLAN_NAME_MAP: Record<string, Record<string, string>> = {

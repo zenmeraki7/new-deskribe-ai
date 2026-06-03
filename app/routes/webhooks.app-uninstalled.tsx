@@ -1,4 +1,4 @@
-// app/routes/webhooks.app.uninstalled.tsx
+// app/routes/webhooks.app-uninstalled.tsx
 import type { ActionFunctionArgs } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import { db } from "../lib/db.server";

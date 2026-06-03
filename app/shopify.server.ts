@@ -54,11 +54,11 @@ const shopify = shopifyApp({
     callbackUrl: "/webhooks/compliance",
   },
 },
-  hooks: {
-  afterAuth: async ({ session, admin }) => {
-    shopify.registerWebhooks({ session });
+ hooks: {
+  afterAuth: async ({ session }) => {
+    await shopify.registerWebhooks({ session });
   },
-  },
+},
     
   billing: {
     "Basic Plan": {
