@@ -87,14 +87,21 @@ interface LoaderData {
 export async function loader({ request }: LoaderFunctionArgs) {
   const { admin, billing } = await authenticate.admin(request);
 
-  const { hasActivePayment } = await billing.check({
-    plans: PLANS,
-    isTest: true,
-  });
+  // Safe billing check — don't crash if it fails
+  try {
+    const { hasActivePayment } = await billing.check({
+      plans: PLANS,
+      isTest: true,
+    });
 
-
- if (!hasActivePayment) {
-    throw redirect("/app/billing");
+    if (!hasActivePayment) {
+      throw redirect("/app/billing");
+    }
+  } catch (err) {
+    // If it's a redirect, let it through
+    if (err instanceof Response) throw err;
+    // Otherwise log and continue — don't crash the app
+    console.error("[billing.check error]", err);
   }
   try {
     const resp = await admin.graphql(`
