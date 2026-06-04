@@ -6,6 +6,7 @@ import type { LoaderFunctionArgs, ActionFunctionArgs } from "@remix-run/node";
 import { useEffect, useState } from "react";
 import { PricingCards } from "../components/PricingCards";
 
+// ── Retry helper ─────────────────────────────────────────────────────────────
 async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
   for (let i = 0; i < attempts; i++) {
     try {
@@ -18,6 +19,7 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
   throw new Error("unreachable");
 }
 
+// ── Plan names ───────────────────────────────────────────────────────────────
 const PLANS = [
   "Basic Plan",
   "Basic Plan Yearly",
@@ -27,55 +29,53 @@ const PLANS = [
   "Pro Plan Yearly",
 ] as const;
 
+// ── Plan ID map ──────────────────────────────────────────────────────────────
 const PLAN_NAME_MAP: Record<string, Record<string, string>> = {
   basic:    { monthly: "Basic Plan",    yearly: "Basic Plan Yearly"    },
   advanced: { monthly: "Advanced Plan", yearly: "Advanced Plan Yearly" },
   pro:      { monthly: "Pro Plan",      yearly: "Pro Plan Yearly"      },
 };
 
+// ── Loader ───────────────────────────────────────────────────────────────────
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { billing, session } = await authenticate.admin(request);
+  console.log("=== BILLING LOADER HIT ===");
+  console.log(request.url);
 
-  // ── Handle return from Shopify billing confirmation ──────────────────────
-  // When Shopify redirects back after the charge modal, it appends
-  // ?charge_id=... to the returnUrl. We use that to confirm the charge
-  // was accepted before cancelling the old subscription.
+  const { billing } = await authenticate.admin(request);
+
   const url = new URL(request.url);
   const chargeId = url.searchParams.get("charge_id");
 
+  // Shopify redirects here after merchant approves billing
   if (chargeId) {
-    // The user approved the new charge — now safe to cancel the old one.
-    // billing.check() will now return the newly accepted subscription,
-    // so we look for any subscription whose id does NOT match the new charge.
-    const { appSubscriptions } = await withRetry(() =>
-      billing.check({ plans: PLANS, isTest: true })
-    );
+    console.log("Billing approved");
+    console.log("URL:", request.url);
+    console.log("chargeId:", chargeId);
 
-    // Cancel all subscriptions except the one just activated (the new charge)
-    for (const sub of appSubscriptions ?? []) {
-      if (sub.id !== chargeId) {
-        await withRetry(() => billing.cancel({ subscriptionId: sub.id }));
-      }
-    }
-
-    // Redirect to clean URL (removes ?charge_id from the address bar)
-    const cleanUrl = `https://${session.shop}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`;
-    return redirect(cleanUrl);
+    // Remove charge_id from URL
+    return redirect("/app/billing");
   }
 
-  // ── Normal page load ─────────────────────────────────────────────────────
+  // Normal page load
   const { appSubscriptions } = await withRetry(() =>
-    billing.check({ plans: PLANS, isTest: true })
+    billing.check({
+      plans: PLANS,
+      isTest: true,
+    })
   );
-  return json({ subscription: appSubscriptions?.[0] ?? null });
+
+  return json({
+    subscription: appSubscriptions?.[0] ?? null,
+  });
 };
 
+// ── Action ───────────────────────────────────────────────────────────────────
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { billing, session } = await authenticate.admin(request);
   const formData = await request.formData();
   const intent = formData.get("intent");
 
-  // ── Cancel ────────────────────────────────────────────────────────────────
+  // ── Cancel ──────────────────────────────────────────────────────────────
   if (intent === "cancel") {
     const { appSubscriptions } = await withRetry(() =>
       billing.check({ plans: PLANS, isTest: true })
@@ -88,32 +88,45 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return json({ success: true, intent: "cancel" });
   }
 
-  // ── Subscribe ─────────────────────────────────────────────────────────────
+  // ── Subscribe ────────────────────────────────────────────────────────────
   if (intent === "subscribe") {
-    const planId      = formData.get("planId") as string;
-    const billingMode = formData.get("billingMode") as string;
+  const planId = formData.get("planId") as string;
+  const billingMode = formData.get("billingMode") as string;
 
-    const planName = PLAN_NAME_MAP[planId]?.[billingMode];
-    if (!planName) return json({ error: "Invalid plan" }, { status: 400 });
+  const planName = PLAN_NAME_MAP[planId]?.[billingMode];
 
-    // ✅ Do NOT cancel the existing subscription here.
-    // Cancellation happens in the loader only after the user
-    // approves the new charge (when Shopify redirects back with ?charge_id=).
-
-    const returnUrl = `https://${session.shop}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`;
-
-    await billing.request({
-      plan: planName,
-      isTest: true,
-      returnUrl,
-    });
+  if (!planName) {
+    return json(
+      { error: "Invalid plan" },
+      { status: 400 }
+    );
   }
+
+  const returnUrl = `${process.env.SHOPIFY_APP_URL}/app/billing`;
+
+  console.log("Creating subscription");
+  console.log("Plan:", planName);
+  console.log("Return URL:", returnUrl);
+
+  console.log({
+  shopifyAppUrl: process.env.SHOPIFY_APP_URL,
+  returnUrl,
+});
+
+  return billing.request({
+    plan: planName,
+    isTest: true,
+    returnUrl,
+  });
+}
 
   return json({ success: false });
 };
 
+// ── Component ─────────────────────────────────────────────────────────────────
 export default function Billing() {
-  const { subscription } = useLoaderData<typeof loader>();
+  const loaderData = useLoaderData<typeof loader>();
+  const subscription = "subscription" in loaderData ? loaderData.subscription : null;
   const actionData = useActionData<typeof action>();
   const submit = useSubmit();
   const [billing, setBilling] = useState<"monthly" | "yearly">("monthly");

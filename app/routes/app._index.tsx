@@ -23,7 +23,8 @@ import {
 
 import { useLoaderData, useFetcher, useNavigate } from "@remix-run/react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { json } from "@remix-run/node";
+// AFTER
+import { json, redirect } from "@remix-run/node";
 import {
   suggestKeywords,
   generateProductDescription,
