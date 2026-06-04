@@ -43,28 +43,36 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   const chargeId = url.searchParams.get("charge_id");
 
- if (chargeId) {
-  // Wait briefly for Shopify to activate the new subscription
-  await new Promise(r => setTimeout(r, 2000));
+  if (chargeId) {
+    // Wait briefly for Shopify to activate the new subscription
+    await new Promise(r => setTimeout(r, 2000));
 
+    const { appSubscriptions } = await withRetry(() =>
+      billing.check({ plans: PLANS, isTest: true })
+    );
+
+    // Cancel all subscriptions except the newly approved one
+    for (const sub of appSubscriptions ?? []) {
+      if (sub.id !== chargeId) {
+        await withRetry(() => billing.cancel({ subscriptionId: sub.id }));
+      }
+    }
+
+    // Re-fetch to get the clean state
+    const { appSubscriptions: updatedSubs } = await withRetry(() =>
+      billing.check({ plans: PLANS, isTest: true })
+    );
+
+    return json({ subscription: updatedSubs?.[0] ?? null });
+  }
+
+  // Normal page load
   const { appSubscriptions } = await withRetry(() =>
     billing.check({ plans: PLANS, isTest: true })
   );
 
-  // Cancel all subscriptions except the newly approved one
-  for (const sub of appSubscriptions ?? []) {
-    if (sub.id !== chargeId) {
-      await withRetry(() => billing.cancel({ subscriptionId: sub.id }));
-    }
-  }
-
-  // Re-fetch to get the clean state
-  const { appSubscriptions: updatedSubs } = await withRetry(() =>
-    billing.check({ plans: PLANS, isTest: true })
-  );
-
-  return json({ subscription: updatedSubs?.[0] ?? null });
-}
+  return json({ subscription: appSubscriptions?.[0] ?? null });
+};  // ← this closing brace was missing
 
 // ── Action ───────────────────────────────────────────────────────────────────
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -93,7 +101,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const planName = PLAN_NAME_MAP[planId]?.[billingMode];
     if (!planName) return json({ error: "Invalid plan" }, { status: 400 });
 
-    // returnUrl must go through Shopify admin so embedded session stays intact
     const returnUrl = `https://${session.shop}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`;
 
     try {
@@ -142,12 +149,12 @@ export default function Billing() {
   }, [actionData]);
 
   useEffect(() => {
-  const url = new URL(window.location.href);
-  if (url.searchParams.has("charge_id")) {
-    url.searchParams.delete("charge_id");
-    window.history.replaceState({}, "", url.toString());
-  }
-}, []);
+    const url = new URL(window.location.href);
+    if (url.searchParams.has("charge_id")) {
+      url.searchParams.delete("charge_id");
+      window.history.replaceState({}, "", url.toString());
+    }
+  }, []);
 
   function handleSelectPlan(planId: string) {
     if (planId === "free") return;
