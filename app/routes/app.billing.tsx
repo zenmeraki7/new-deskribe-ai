@@ -57,7 +57,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
 
     // Redirect to clean URL inside embedded app
-    return redirect("/app/billing");
+     return redirect(`https://${session.shop}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`);
   }
 
   // Normal page load

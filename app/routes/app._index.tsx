@@ -96,8 +96,9 @@ export async function loader({ request }: LoaderFunctionArgs) {
     });
 
     if (!hasActivePayment) {
-      throw redirect("/app/billing");
-    }
+       throw redirect(`https://${session.shop}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`);
+}
+  
   } catch (err) {
     // If it's a redirect, let it through
     if (err instanceof Response) throw err;
@@ -142,7 +143,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function action({ request }: ActionFunctionArgs) {
-  const { admin } = await authenticate.admin(request);
+  const { admin, billing, session } = await authenticate.admin(request);
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
 
