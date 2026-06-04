@@ -45,26 +45,28 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   if (chargeId) {
     // Wait briefly for Shopify to activate the new subscription
-    await new Promise(r => setTimeout(r, 2000));
+      await new Promise(r => setTimeout(r, 3000));
 
     const { appSubscriptions } = await withRetry(() =>
-      billing.check({ plans: PLANS, isTest: true })
-    );
+    billing.check({ plans: PLANS, isTest: true })
+  );
 
     // Cancel all subscriptions except the newly approved one
-    for (const sub of appSubscriptions ?? []) {
-      if (sub.id !== chargeId) {
-        await withRetry(() => billing.cancel({ subscriptionId: sub.id }));
-      }
-    }
+      const sorted = [...(appSubscriptions ?? [])].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
+
+  for (const sub of sorted.slice(1)) {
+    await withRetry(() => billing.cancel({ subscriptionId: sub.id }));
+  }
 
     // Re-fetch to get the clean state
-    const { appSubscriptions: updatedSubs } = await withRetry(() =>
-      billing.check({ plans: PLANS, isTest: true })
-    );
+     const { appSubscriptions: updatedSubs } = await withRetry(() =>
+    billing.check({ plans: PLANS, isTest: true })
+  );
 
-    return json({ subscription: updatedSubs?.[0] ?? null });
-  }
+  return json({ subscription: updatedSubs?.[0] ?? null });
+}
 
   // Normal page load
   const { appSubscriptions } = await withRetry(() =>
