@@ -38,35 +38,34 @@ const PLAN_NAME_MAP: Record<string, Record<string, string>> = {
 
 // ── Loader ───────────────────────────────────────────────────────────────────
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  console.log("=== BILLING LOADER HIT ===");
-  console.log(request.url);
-
-  const { billing } = await authenticate.admin(request);
+  const { billing, session } = await authenticate.admin(request);
 
   const url = new URL(request.url);
   const chargeId = url.searchParams.get("charge_id");
 
   // Shopify redirects here after merchant approves billing
   if (chargeId) {
-    console.log("Billing approved");
-    console.log("URL:", request.url);
-    console.log("chargeId:", chargeId);
+    // Cancel all other subscriptions except the newly approved one
+    const { appSubscriptions } = await withRetry(() =>
+      billing.check({ plans: PLANS, isTest: true })
+    );
 
-    // Remove charge_id from URL
+    for (const sub of appSubscriptions ?? []) {
+      if (sub.id !== chargeId) {
+        await withRetry(() => billing.cancel({ subscriptionId: sub.id }));
+      }
+    }
+
+    // Redirect to clean URL inside embedded app
     return redirect("/app/billing");
   }
 
   // Normal page load
   const { appSubscriptions } = await withRetry(() =>
-    billing.check({
-      plans: PLANS,
-      isTest: true,
-    })
+    billing.check({ plans: PLANS, isTest: true })
   );
 
-  return json({
-    subscription: appSubscriptions?.[0] ?? null,
-  });
+  return json({ subscription: appSubscriptions?.[0] ?? null });
 };
 
 // ── Action ───────────────────────────────────────────────────────────────────
@@ -90,35 +89,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   // ── Subscribe ────────────────────────────────────────────────────────────
   if (intent === "subscribe") {
-  const planId = formData.get("planId") as string;
-  const billingMode = formData.get("billingMode") as string;
+    const planId      = formData.get("planId") as string;
+    const billingMode = formData.get("billingMode") as string;
 
-  const planName = PLAN_NAME_MAP[planId]?.[billingMode];
+    const planName = PLAN_NAME_MAP[planId]?.[billingMode];
+    if (!planName) return json({ error: "Invalid plan" }, { status: 400 });
 
-  if (!planName) {
-    return json(
-      { error: "Invalid plan" },
-      { status: 400 }
-    );
+    // returnUrl must go through Shopify admin so embedded session stays intact
+    const returnUrl = `https://${session.shop}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`;
+
+    try {
+      await billing.request({
+        plan: planName,
+        isTest: true,
+        returnUrl,
+      });
+    } catch (err) {
+      if (err instanceof Response) throw err;
+      throw err;
+    }
   }
-
-  const returnUrl = `${process.env.SHOPIFY_APP_URL}/app/billing`;
-
-  console.log("Creating subscription");
-  console.log("Plan:", planName);
-  console.log("Return URL:", returnUrl);
-
-  console.log({
-  shopifyAppUrl: process.env.SHOPIFY_APP_URL,
-  returnUrl,
-});
-
-  return billing.request({
-    plan: planName,
-    isTest: true,
-    returnUrl,
-  });
-}
 
   return json({ success: false });
 };
