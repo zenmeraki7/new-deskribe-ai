@@ -44,21 +44,26 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const chargeId = url.searchParams.get("charge_id");
 
   // Shopify redirects here after merchant approves billing
-  if (chargeId) {
-    // Cancel all other subscriptions except the newly approved one
-    const { appSubscriptions } = await withRetry(() =>
-      billing.check({ plans: PLANS, isTest: true })
-    );
+  // REPLACE the chargeId block in your loader with this:
+if (chargeId) {
+  // Cancel old subscriptions
+  const { appSubscriptions } = await withRetry(() =>
+    billing.check({ plans: PLANS, isTest: true })
+  );
 
-    for (const sub of appSubscriptions ?? []) {
-      if (sub.id !== chargeId) {
-        await withRetry(() => billing.cancel({ subscriptionId: sub.id }));
-      }
+  for (const sub of appSubscriptions ?? []) {
+    if (sub.id !== chargeId) {
+      await withRetry(() => billing.cancel({ subscriptionId: sub.id }));
     }
-
-    // Redirect to clean URL inside embedded app
-     return redirect(`https://${session.shop}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`);
   }
+
+  // Don't redirect — just return the current subscription directly
+  const { appSubscriptions: updatedSubs } = await withRetry(() =>
+    billing.check({ plans: PLANS, isTest: true })
+  );
+
+  return json({ subscription: updatedSubs?.[0] ?? null });
+}
 
   // Normal page load
   const { appSubscriptions } = await withRetry(() =>
