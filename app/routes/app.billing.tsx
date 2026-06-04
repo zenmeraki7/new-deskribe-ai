@@ -17,6 +17,7 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
   }
   throw new Error("unreachable");
 }
+
 const PLANS = [
   "Basic Plan",
   "Basic Plan Yearly",
@@ -26,8 +27,6 @@ const PLANS = [
   "Pro Plan Yearly",
 ] as const;
 
-
-// Map planId + billing mode → the plan name key in shopify.server.ts
 const PLAN_NAME_MAP: Record<string, Record<string, string>> = {
   basic:    { monthly: "Basic Plan",    yearly: "Basic Plan Yearly"    },
   advanced: { monthly: "Advanced Plan", yearly: "Advanced Plan Yearly" },
@@ -35,24 +34,56 @@ const PLAN_NAME_MAP: Record<string, Record<string, string>> = {
 };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { billing } = await authenticate.admin(request);
-  const { appSubscriptions } = await withRetry(() => billing.check({
-  plans: PLANS,
-  isTest: true,
-}));
+  const { billing, session } = await authenticate.admin(request);
+
+  // ── Handle return from Shopify billing confirmation ──────────────────────
+  // When Shopify redirects back after the charge modal, it appends
+  // ?charge_id=... to the returnUrl. We use that to confirm the charge
+  // was accepted before cancelling the old subscription.
+  const url = new URL(request.url);
+  const chargeId = url.searchParams.get("charge_id");
+
+  if (chargeId) {
+    // The user approved the new charge — now safe to cancel the old one.
+    // billing.check() will now return the newly accepted subscription,
+    // so we look for any subscription whose id does NOT match the new charge.
+    const { appSubscriptions } = await withRetry(() =>
+      billing.check({ plans: PLANS, isTest: true })
+    );
+
+    // Cancel all subscriptions except the one just activated (the new charge)
+    for (const sub of appSubscriptions ?? []) {
+      if (sub.id !== chargeId) {
+        await withRetry(() => billing.cancel({ subscriptionId: sub.id }));
+      }
+    }
+
+    // Redirect to clean URL (removes ?charge_id from the address bar)
+    const cleanUrl = `https://${session.shop}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`;
+    return redirect(cleanUrl);
+  }
+
+  // ── Normal page load ─────────────────────────────────────────────────────
+  const { appSubscriptions } = await withRetry(() =>
+    billing.check({ plans: PLANS, isTest: true })
+  );
   return json({ subscription: appSubscriptions?.[0] ?? null });
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { billing, session } = await authenticate.admin(request); // get both here, once
+  const { billing, session } = await authenticate.admin(request);
   const formData = await request.formData();
   const intent = formData.get("intent");
 
   // ── Cancel ────────────────────────────────────────────────────────────────
   if (intent === "cancel") {
-    const { appSubscriptions } = await withRetry(() => billing.check());
+    const { appSubscriptions } = await withRetry(() =>
+      billing.check({ plans: PLANS, isTest: true })
+    );
     if (appSubscriptions?.[0]) {
-      await withRetry(() => billing.cancel({ subscriptionId: appSubscriptions[0].id }));
+      await withRetry(() =>
+        billing.cancel({ subscriptionId: appSubscriptions[0].id })
+      );
     }
     return json({ success: true, intent: "cancel" });
   }
@@ -65,11 +96,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const planName = PLAN_NAME_MAP[planId]?.[billingMode];
     if (!planName) return json({ error: "Invalid plan" }, { status: 400 });
 
-    // Cancel existing subscription before creating new one
-    const { appSubscriptions } = await withRetry(() => billing.check());
-    if (appSubscriptions?.[0]) {
-      await withRetry(() => billing.cancel({ subscriptionId: appSubscriptions[0].id }));
-    }
+    // ✅ Do NOT cancel the existing subscription here.
+    // Cancellation happens in the loader only after the user
+    // approves the new charge (when Shopify redirects back with ?charge_id=).
 
     const returnUrl = `https://${session.shop}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`;
 
@@ -89,7 +118,6 @@ export default function Billing() {
   const submit = useSubmit();
   const [billing, setBilling] = useState<"monthly" | "yearly">("monthly");
 
-  // Derive current planId from subscription name for the "Current Plan" badge
   const currentPlanId = (() => {
     const name = subscription?.name?.toLowerCase() ?? "";
     if (name.includes("pro"))      return "pro";
@@ -113,7 +141,7 @@ export default function Billing() {
   }, [actionData]);
 
   function handleSelectPlan(planId: string) {
-    if (planId === "free") return; // free plan needs no billing
+    if (planId === "free") return;
     submit(
       { intent: "subscribe", planId, billingMode: billing },
       { method: "POST" }
