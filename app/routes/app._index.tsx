@@ -92,10 +92,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
   // Safe billing check — don't crash if it fails
   try {
-    const { hasActivePayment } = await billing.check({
-      plans: PLANS,
-      isTest: isTestBilling,
-    });
+   const { hasActivePayment } = await billing.check();
 
     if (!hasActivePayment) {
        throw redirect(`https://${session.shop}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`);

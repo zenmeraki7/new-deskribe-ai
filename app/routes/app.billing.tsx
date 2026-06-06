@@ -49,9 +49,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // Wait briefly for Shopify to activate the new subscription
       await new Promise(r => setTimeout(r, 3000));
 
-    const { appSubscriptions } = await withRetry(() =>
-    billing.check({ plans: PLANS,  isTest: isTestBilling, })
-  );
+    const { appSubscriptions } = await billing.check();
 
     // Cancel all subscriptions except the newly approved one
       const sorted = [...(appSubscriptions ?? [])].sort(
@@ -71,9 +69,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 }
 
   // Normal page load
-  const { appSubscriptions } = await withRetry(() =>
-    billing.check({ plans: PLANS,  isTest: isTestBilling, })
-  );
+  const { appSubscriptions } = await billing.check();
 
   return json({ subscription: appSubscriptions?.[0] ?? null });
 };  // ← this closing brace was missing
@@ -86,9 +82,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   // ── Cancel ──────────────────────────────────────────────────────────────
   if (intent === "cancel") {
-    const { appSubscriptions } = await withRetry(() =>
-      billing.check({ plans: PLANS, isTest: isTestBilling })
-    );
+    const { appSubscriptions } = await billing.check();
     if (appSubscriptions?.[0]) {
       await withRetry(() =>
         billing.cancel({ subscriptionId: appSubscriptions[0].id })
@@ -110,7 +104,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     try {
       await billing.request({
         plan: planName,
-        isTest: true,
+        isTest: process.env.IS_TEST_BILLING === "true",
         returnUrl,
       });
     } catch (err) {
