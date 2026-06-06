@@ -86,13 +86,11 @@ interface LoaderData {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const { admin, billing } = await authenticate.admin(request);
-
+ const { admin, billing, session } = await authenticate.admin(request);
   // Safe billing check — don't crash if it fails
   try {
     const { hasActivePayment } = await billing.check({
-      plans: PLANS,
-      isTest: true,
+      plans: PLANS
     });
 
     if (!hasActivePayment) {
