@@ -36,6 +36,8 @@ const PLAN_NAME_MAP: Record<string, Record<string, string>> = {
   pro:      { monthly: "Pro Plan",      yearly: "Pro Plan Yearly"      },
 };
 
+const isTestBilling = process.env.IS_TEST_BILLING === "true";
+
 // ── Loader ───────────────────────────────────────────────────────────────────
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { billing, session } = await authenticate.admin(request);
@@ -48,7 +50,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       await new Promise(r => setTimeout(r, 3000));
 
     const { appSubscriptions } = await withRetry(() =>
-    billing.check({ plans: PLANS })
+    billing.check({ plans: PLANS,  isTest: isTestBilling, })
   );
 
     // Cancel all subscriptions except the newly approved one
@@ -62,7 +64,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     // Re-fetch to get the clean state
      const { appSubscriptions: updatedSubs } = await withRetry(() =>
-    billing.check({ plans: PLANS })
+    billing.check({ plans: PLANS, isTest: isTestBilling })
   );
 
   return json({ subscription: updatedSubs?.[0] ?? null });
@@ -70,7 +72,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   // Normal page load
   const { appSubscriptions } = await withRetry(() =>
-    billing.check({ plans: PLANS })
+    billing.check({ plans: PLANS,  isTest: isTestBilling, })
   );
 
   return json({ subscription: appSubscriptions?.[0] ?? null });
@@ -85,7 +87,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // ── Cancel ──────────────────────────────────────────────────────────────
   if (intent === "cancel") {
     const { appSubscriptions } = await withRetry(() =>
-      billing.check({ plans: PLANS })
+      billing.check({ plans: PLANS, isTest: isTestBilling })
     );
     if (appSubscriptions?.[0]) {
       await withRetry(() =>
@@ -108,6 +110,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     try {
       await billing.request({
         plan: planName,
+        isTest: true,
         returnUrl,
       });
     } catch (err) {

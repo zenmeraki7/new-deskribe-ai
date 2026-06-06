@@ -4,7 +4,10 @@ import { authenticate } from "../shopify.server";
 
 // AFTER
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { billing, session } = await authenticate.admin(request);
+  const { billing } = await authenticate.admin(request);
+
+  const isTestBilling = process.env.IS_TEST_BILLING === "true";
+
 
   const { hasActivePayment } = await billing.check({
     plans: [
@@ -15,11 +18,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       "Pro Plan",
       "Pro Plan Yearly",
     ],
-
+   isTest: isTestBilling
   });
 
   if (!hasActivePayment) {
-   return redirect(`https://${session.shop}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`);
+    return redirect("/app/billing");
   }
 
   return redirect("/app");

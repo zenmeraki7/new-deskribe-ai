@@ -41,6 +41,8 @@ const PLANS = [
   "Pro Plan Yearly",
 ] as const;
 
+const isTestBilling = process.env.IS_TEST_BILLING === "true";
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
 // ─────────────────────────────────────────────────────────────────────────────
@@ -86,11 +88,13 @@ interface LoaderData {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function loader({ request }: LoaderFunctionArgs) {
- const { admin, billing, session } = await authenticate.admin(request);
+  const { admin, billing } = await authenticate.admin(request);
+
   // Safe billing check — don't crash if it fails
   try {
     const { hasActivePayment } = await billing.check({
-      plans: PLANS
+      plans: PLANS,
+      isTest: isTestBilling,
     });
 
     if (!hasActivePayment) {
