@@ -2,6 +2,7 @@
 
 import { json } from "@remix-run/node";
 import type { ActionFunctionArgs } from "@remix-run/node";
+import crypto from "node:crypto";
 import { authenticate } from "../shopify.server";
 import { enqueueGenerationJobs } from "../lib/enqueue.server";
 import { suggestKeywordsBulk } from "../lib/ai.server";
@@ -10,9 +11,9 @@ import {
   checkAndIncrementRateLimit,
   resolvePlan,
   refundRateLimit,
-  KEYWORD_LIMITS,
   BULK_LIMITS,
 } from "../lib/rateLimiter.server";
+import { CREDIT_COSTS, deductCredits, refundCredits } from "../lib/creditService.server";
 
 const MAX_BULK = 50;
 
@@ -79,17 +80,17 @@ export async function action({ request }: ActionFunctionArgs) {
     const limitResult = await checkAndIncrementKeywordLimit(shopDomain, plan);
 
     if (!limitResult.allowed) {
-      const isNotAllowed = limitResult.reason === "not_allowed";
       return json(
         {
           ok: false,
-          code: "KEYWORD_LIMIT_EXCEEDED",
-          error: isNotAllowed
-            ? "Keyword suggestions are not available on the Free plan. Upgrade to Basic or higher."
-            : `Daily keyword suggestion limit reached (${limitResult.used}/${limitResult.limit}). Resets at midnight UTC.`,
+          code: limitResult.reason === "global_limit" ? "GLOBAL_LIMIT_REACHED" : "RATE_LIMIT_EXCEEDED",
+          error:
+            limitResult.reason === "global_limit"
+              ? "Service is temporarily at capacity. Please try again in a few hours."
+              : "Too many keyword requests. Please try again in a minute.",
           plan,
         },
-        { status: 403 },
+        { status: 429 },
       );
     }
 
@@ -112,6 +113,31 @@ export async function action({ request }: ActionFunctionArgs) {
 
     if (productIds.length === 0) {
       return json({ ok: true, kind: "suggest_keywords_bulk", keywords: [] });
+    }
+
+    const creditRequestId = crypto.randomUUID();
+    const credit = await deductCredits({
+      shopId: shopDomain,
+      plan,
+      amount: CREDIT_COSTS.keywordSuggestion,
+      requestId: creditRequestId,
+      metadata: { intent: "suggest_keywords_bulk", productCount: productIds.length },
+    });
+
+    if (!credit.allowed) {
+      await refundRateLimit(shopDomain, plan);
+      return json(
+        {
+          ok: false,
+          code: "INSUFFICIENT_CREDITS",
+          error: `Not enough monthly credits remaining (${credit.creditsRemaining}/${credit.creditsLimit}).`,
+          creditsRemaining: credit.creditsRemaining,
+          creditsLimit: credit.creditsLimit,
+          resetDate: credit.resetDate.toISOString(),
+          plan,
+        },
+        { status: 402 },
+      );
     }
 
     try {
@@ -155,21 +181,33 @@ export async function action({ request }: ActionFunctionArgs) {
         }));
 
       if (productMetas.length === 0) {
+        await refundCredits({
+          shopId: shopDomain,
+          plan,
+          amount: CREDIT_COSTS.keywordSuggestion,
+          requestId: `${creditRequestId}:no-products`,
+          metadata: { intent: "suggest_keywords_bulk", productCount: productIds.length },
+        });
         return json({ ok: true, kind: "suggest_keywords_bulk", keywords: [] });
       }
 
       const keywords = await suggestKeywordsBulk(productMetas);
 
-      const planLimit = KEYWORD_LIMITS[plan];
-      const capCount = planLimit === Infinity ? 20 : Number(planLimit);
-
       const safe = keywords
         .filter((k) => typeof k === "string" && k.trim())
         .map((k) => k.trim().slice(0, 50))
-        .slice(0, capCount);
+        .slice(0, 20);
 
       return json({ ok: true, kind: "suggest_keywords_bulk", keywords: safe });
     } catch (err) {
+      await refundRateLimit(shopDomain, plan);
+      await refundCredits({
+        shopId: shopDomain,
+        plan,
+        amount: CREDIT_COSTS.keywordSuggestion,
+        requestId: `${creditRequestId}:failed`,
+        metadata: { intent: "suggest_keywords_bulk", productCount: productIds.length },
+      });
       const message = err instanceof Error ? err.message : "Unknown error";
       return json(
         { ok: false, error: message, code: "SUGGEST_BULK_FAILED" },
@@ -239,7 +277,7 @@ export async function action({ request }: ActionFunctionArgs) {
           code: isGlobal ? "GLOBAL_LIMIT_REACHED" : "RATE_LIMIT_EXCEEDED",
           error: isGlobal
             ? "Service is temporarily at capacity. Please try again in a few hours."
-            : `Daily generation limit reached (${limitResult.shopUsed}/${limitResult.shopLimit}). Limit resets at midnight UTC.`,
+            : "Too many generation requests. Please try again in a minute.",
         },
         { status: 429 },
       );
@@ -249,6 +287,32 @@ export async function action({ request }: ActionFunctionArgs) {
     const format = String(fd.get("format") ?? "paragraph").slice(0, 40);
     const keywords = String(fd.get("keywords") ?? "").slice(0, 2000);
     const includeSocials = fd.get("includeSocials") === "true";
+    const creditAmount = productIds.length * CREDIT_COSTS.bulkProductGeneration;
+    const creditRequestId = crypto.randomUUID();
+
+    const credit = await deductCredits({
+      shopId: shopDomain,
+      plan,
+      amount: creditAmount,
+      requestId: creditRequestId,
+      metadata: { intent: "bulk_generate", productCount: productIds.length },
+    });
+
+    if (!credit.allowed) {
+      await refundRateLimit(shopDomain, plan);
+      return json(
+        {
+          ok: false,
+          code: "INSUFFICIENT_CREDITS",
+          error: `Not enough monthly credits remaining (${credit.creditsRemaining}/${credit.creditsLimit}).`,
+          creditsRemaining: credit.creditsRemaining,
+          creditsLimit: credit.creditsLimit,
+          resetDate: credit.resetDate.toISOString(),
+          plan,
+        },
+        { status: 402 },
+      );
+    }
 
     try {
       const { jobIds, skipped, bulkId } = await enqueueGenerationJobs({
@@ -258,10 +322,19 @@ export async function action({ request }: ActionFunctionArgs) {
         format,
         keywords,
         includeSocials,
+        creditRequestId,
+        creditCost: CREDIT_COSTS.bulkProductGeneration,
         adminGraphql: (query, opts) => admin.graphql(query, opts),
       });
 
        if (jobIds.length === 0) {
+      await refundCredits({
+        shopId: shopDomain,
+        plan,
+        amount: creditAmount,
+        requestId: `${creditRequestId}:enqueue-empty`,
+        metadata: { intent: "bulk_generate", productCount: productIds.length },
+      });
       await refundRateLimit(shopDomain, plan);   // ← refund
       return json(
         { ok: false, error: "No products could be enqueued", code: "ALL_SKIPPED" },
@@ -269,9 +342,26 @@ export async function action({ request }: ActionFunctionArgs) {
       );
     }
 
+      if (skipped.length > 0) {
+        await refundCredits({
+          shopId: shopDomain,
+          plan,
+          amount: skipped.length * CREDIT_COSTS.bulkProductGeneration,
+          requestId: `${creditRequestId}:skipped`,
+          metadata: { intent: "bulk_generate", skippedCount: skipped.length },
+        });
+      }
+
       return json({ ok: true, jobIds, skipped, bulkId });
     } catch (err: any) {
     await refundRateLimit(shopDomain, plan);     // ← refund
+    await refundCredits({
+      shopId: shopDomain,
+      plan,
+      amount: creditAmount,
+      requestId: `${creditRequestId}:enqueue-error`,
+      metadata: { intent: "bulk_generate", productCount: productIds.length },
+    });
     console.error("[bulk-generate] enqueue error:", err);
     return json(
       { ok: false, error: err?.message ?? "Failed to enqueue jobs" },

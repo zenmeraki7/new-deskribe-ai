@@ -6,6 +6,7 @@ import { db } from "../lib/db.server";
 import { getRedis  } from "../lib/redis.server";
 import { sanitiseHtml } from "../lib/html.server";
 import { generateProductDescription } from "../lib/ai.server";
+import { refundCredits } from "../lib/creditService.server";
 
 const DraftSchema = z
   .object({
@@ -31,6 +32,8 @@ type GenerationJobData = {
   format?: string;
   keywords?: string;
   includeSocials?: boolean;
+  creditRequestId?: string;
+  creditCost?: number;
 };
 
 const LIMITS = {
@@ -88,6 +91,8 @@ export const generationWorker = new Worker<GenerationJobData>(
         format: true,
         includeSocials: true,
          customInstruction: true,
+         creditRequestId: true,
+         creditCost: true,
       },
     });
 
@@ -161,6 +166,19 @@ export const generationWorker = new Worker<GenerationJobData>(
     } catch (err) {
       const msg = clampError(err);
       await markFailed(jobId, shopDomain, msg);
+      if (dbJob.creditRequestId && dbJob.creditCost) {
+        await refundCredits({
+          shopId: shopDomain,
+          amount: Number(dbJob.creditCost),
+          requestId: `${dbJob.creditRequestId}:${jobId}:generation-failed`,
+          metadata: {
+            intent: "generation_worker",
+            jobId,
+            productId,
+            creditRequestId: dbJob.creditRequestId,
+          },
+        });
+      }
       throw err;
     }
   },

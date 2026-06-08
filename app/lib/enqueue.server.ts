@@ -15,6 +15,8 @@ interface EnqueueParams {
   adminGraphql: (query: string, opts?: any) => Promise<Response>;
   /** Optional: group all jobs under one bulk run ID (uuid). Auto-generated if omitted and productIds.length > 1. */
   bulkId?: string;
+  creditRequestId?: string;
+  creditCost?: number;
 }
 
 export interface EnqueueResult {
@@ -75,6 +77,8 @@ export async function enqueueGenerationJobs({
   adminGraphql,
   bulkId: explicitBulkId,
   customInstruction = "", 
+  creditRequestId,
+  creditCost,
 }: EnqueueParams): Promise<EnqueueResult> {
   const jobIds: string[] = [];
   const skipped: string[] = [];
@@ -133,6 +137,8 @@ export async function enqueueGenerationJobs({
         // ← key addition: tag all jobs in this bulk run
         bulkId,
         customInstruction: customInstruction || null,
+        creditRequestId: creditRequestId ?? null,
+        creditCost: creditCost ?? null,
       },
     });
 
@@ -147,6 +153,8 @@ export async function enqueueGenerationJobs({
         keywords,
         includeSocials,
         customInstruction: customInstruction || undefined, 
+        creditRequestId: creditRequestId ?? undefined,
+        creditCost: creditCost ?? undefined,
       },
       { jobId: job.id },
     );

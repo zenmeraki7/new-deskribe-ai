@@ -5,12 +5,14 @@
 // POST /app/bulk/:bulkId  — intent: "apply_one" | "apply_all" | "retry_one"
 
 import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-run/node";
+import crypto from "node:crypto";
 import { authenticate } from "../shopify.server";
 import { db } from "../lib/db.server";
 import { sanitiseHtml } from "../lib/html.server";
 import { generationQueue } from "../lib/queue.server";
 import BulkReviewPage from "./app.bulk.$bulkId.ui";
-import { checkAndIncrementRateLimit, resolvePlan } from "app/lib/rateLimiter.server";
+import { checkAndIncrementRateLimit, refundRateLimit, resolvePlan } from "app/lib/rateLimiter.server";
+import { CREDIT_COSTS, deductCredits, refundCredits } from "app/lib/creditService.server";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -177,7 +179,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
 // ── Action ────────────────────────────────────────────────────────────────────
 
 export async function action({ request, params }: ActionFunctionArgs) {
-  const { admin, session } = await authenticate.admin(request);
+  const { admin, session, billing } = await authenticate.admin(request);
   const shopDomain = session.shop;
 
   const { bulkId } = params;
@@ -265,13 +267,12 @@ export async function action({ request, params }: ActionFunctionArgs) {
     if (!isUuid(jobId)) {
       return json({ ok: false, error: "Invalid jobId" }, { status: 400 });
     }
-const { billing } = await authenticate.admin(request); // already have this from top-level auth
   const { appSubscriptions } = await billing.check();
   const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
   const limitResult = await checkAndIncrementRateLimit(shopDomain, plan);
   
   if (!limitResult.allowed) {
-    return json({ ok: false, error: "Daily generation limit reached.", code: "RATE_LIMIT_EXCEEDED" }, { status: 429 });
+    return json({ ok: false, error: "Too many generation requests. Please try again in a minute.", code: "RATE_LIMIT_EXCEEDED" }, { status: 429 });
   }
 
 
@@ -281,29 +282,73 @@ const { billing } = await authenticate.admin(request); // already have this from
     });
 
     if (!job) {
+      await refundRateLimit(shopDomain, plan);
       return json({ ok: false, error: "Job not found or not failed" }, { status: 404 });
     }
 
-    await db.generationJob.update({
-      where: { id: jobId },
-      data: { status: "PENDING", errorMessage: null, progress: 0 },
+    const creditRequestId = `${job.id}:retry:${crypto.randomUUID()}`;
+    const credit = await deductCredits({
+      shopId: shopDomain,
+      plan,
+      amount: CREDIT_COSTS.standardGeneration,
+      requestId: creditRequestId,
+      metadata: { intent: "retry_one", jobId: job.id, productId: job.productId },
     });
 
-    await generationQueue.add(
-      `generate:${job.productId}`,
-      {
-        jobId: job.id,
-        shopDomain,
-        productId: job.productId,
-        vibe: job.vibe,
-        format: job.format,
-        keywords: job.keywords,
-        includeSocials: job.includeSocials,
-        isStale: false
+    if (!credit.allowed) {
+      await refundRateLimit(shopDomain, plan);
+      return json(
+        {
+          ok: false,
+          error: `Not enough monthly credits remaining (${credit.creditsRemaining}/${credit.creditsLimit}).`,
+          code: "INSUFFICIENT_CREDITS",
+          creditsRemaining: credit.creditsRemaining,
+          creditsLimit: credit.creditsLimit,
+          resetDate: credit.resetDate.toISOString(),
+        },
+        { status: 402 },
+      );
+    }
 
-      },
-      { jobId: job.id },
-    );
+    try {
+      await db.generationJob.update({
+        where: { id: jobId },
+        data: {
+          status: "PENDING",
+          errorMessage: null,
+          progress: 0,
+          creditRequestId,
+          creditCost: CREDIT_COSTS.standardGeneration,
+        },
+      });
+
+      await generationQueue.add(
+        `generate:${job.productId}`,
+        {
+          jobId: job.id,
+          shopDomain,
+          productId: job.productId,
+          vibe: job.vibe,
+          format: job.format,
+          keywords: job.keywords,
+          includeSocials: job.includeSocials,
+          creditRequestId,
+          creditCost: CREDIT_COSTS.standardGeneration,
+          isStale: false
+        },
+        { jobId: job.id },
+      );
+    } catch (err) {
+      await refundRateLimit(shopDomain, plan);
+      await refundCredits({
+        shopId: shopDomain,
+        plan,
+        amount: CREDIT_COSTS.standardGeneration,
+        requestId: `${creditRequestId}:retry-enqueue-error`,
+        metadata: { intent: "retry_one", jobId: job.id, productId: job.productId },
+      });
+      throw err;
+    }
 
     return json({ ok: true, intent: "retry_one", jobId });
   }

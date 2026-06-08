@@ -70,10 +70,42 @@ model GenerationJob {
   productVendor   String?
   productType     String?
   productTags     String?
+  creditRequestId String?
+  creditCost      Decimal? @db.Decimal(12, 1)
 
   @@index([shopDomain])
   @@index([productId])
   @@index([status])
+  @@index([creditRequestId])
+}
+
+model ShopCredit {
+  id           String   @id @default(cuid())
+  shopId       String   @unique
+  plan         String   @default("free")
+  creditsUsed  Decimal  @default(0) @db.Decimal(12, 1)
+  creditsLimit Decimal  @db.Decimal(12, 1)
+  resetDate    DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([shopId])
+  @@index([resetDate])
+}
+
+model CreditTransaction {
+  id        String   @id @default(cuid())
+  shopId    String
+  requestId String
+  kind      String
+  amount    Decimal  @db.Decimal(12, 1)
+  plan      String
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@unique([shopId, requestId, kind])
+  @@index([shopId])
+  @@index([requestId])
 }
 // Tracks per-shop daily usage — one row per shop per UTC day
 model ShopUsage {

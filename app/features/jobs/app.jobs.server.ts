@@ -14,6 +14,12 @@ import { authenticate } from "../../shopify.server";
 import { db } from "../../lib/db.server";
 import { generationQueue } from "../../lib/queue.server";
 import { sanitiseHtml } from "../../lib/html.server";
+import {
+  checkAndIncrementRateLimit,
+  refundRateLimit,
+  resolvePlan,
+} from "../../lib/rateLimiter.server";
+import { CREDIT_COSTS, deductCredits, refundCredits } from "../../lib/creditService.server";
 
 import {
   ACTIVE_STATUSES,
@@ -178,7 +184,7 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function action({ request }: ActionFunctionArgs): Promise<Response> {
-  const { session, admin } = await authenticate.admin(request);
+  const { session, admin, billing } = await authenticate.admin(request);
   const shopDomain = session.shop;
 
   const form = await request.formData();
@@ -329,6 +335,55 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
     if ((res as any).alreadyQueued) return json({ ok: true, retried: jobId, alreadyQueued: true });
 
     const { jobData, newBullJobId } = res as any;
+    const { appSubscriptions } = await billing.check();
+    const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
+    const rate = await checkAndIncrementRateLimit(shopDomain, plan);
+
+    if (!rate.allowed) {
+      await db.generationJob.update({
+        where: { id: jobId, shopDomain },
+        data: { status: "FAILED", errorMessage: "Retry throttled. Please try again.", progress: 0 },
+      });
+      return json(
+        { ok: false, error: "Too many generation requests. Please try again in a minute.", code: "RATE_LIMIT_EXCEEDED" },
+        { status: 429 },
+      );
+    }
+
+    const creditRequestId = `${jobId}:jobs-retry:${crypto.randomUUID()}`;
+    const credit = await deductCredits({
+      shopId: shopDomain,
+      plan,
+      amount: CREDIT_COSTS.standardGeneration,
+      requestId: creditRequestId,
+      metadata: { intent: "jobs_retry", jobId },
+    });
+
+    if (!credit.allowed) {
+      await refundRateLimit(shopDomain, plan);
+      await db.generationJob.update({
+        where: { id: jobId, shopDomain },
+        data: { status: "FAILED", errorMessage: "Insufficient monthly credits for retry.", progress: 0 },
+      });
+      return json(
+        {
+          ok: false,
+          error: `Not enough monthly credits remaining (${credit.creditsRemaining}/${credit.creditsLimit}).`,
+          code: "INSUFFICIENT_CREDITS",
+          creditsRemaining: credit.creditsRemaining,
+          creditsLimit: credit.creditsLimit,
+          resetDate: credit.resetDate.toISOString(),
+        },
+        { status: 402 },
+      );
+    }
+
+    jobData.creditRequestId = creditRequestId;
+    jobData.creditCost = CREDIT_COSTS.standardGeneration;
+    await db.generationJob.update({
+      where: { id: jobId, shopDomain },
+      data: { creditRequestId, creditCost: CREDIT_COSTS.standardGeneration },
+    });
 
     try {
       await generationQueue.add(`generate:${jobData.productId}`, jobData, {
@@ -342,6 +397,14 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
         return json({ ok: true, retried: jobId, alreadyQueued: true });
       }
       console.error("[retry] enqueue failed:", err);
+      await refundRateLimit(shopDomain, plan);
+      await refundCredits({
+        shopId: shopDomain,
+        plan,
+        amount: CREDIT_COSTS.standardGeneration,
+        requestId: `${creditRequestId}:enqueue-failed`,
+        metadata: { intent: "jobs_retry", jobId },
+      });
       await db.generationJob.update({
         where: { id: jobId, shopDomain },
         data: { status: "FAILED", errorMessage: "Retry enqueue failed. Please try again.", progress: 0 },
@@ -360,26 +423,83 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
     const vibe = String(form.get("vibe"));
     const format = String(form.get("format"));
     const keywords = String(form.get("keywords"));
+    const { appSubscriptions } = await billing.check();
+    const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
+    const rate = await checkAndIncrementRateLimit(shopDomain, plan);
 
-    const job = await db.generationJob.create({
-      data: {
-        shopDomain, productId, productTitle, vibe, format, keywords,
-        status: "PENDING", progress: 0,
-        traceId: crypto.randomUUID(),
-        inputHash: sha256Hex(`${shopDomain}:${productId}:${vibe}:${format}:${keywords}`),
-        includeSocials: false,
-      },
+    if (!rate.allowed) {
+      return json(
+        { ok: false, error: "Too many generation requests. Please try again in a minute.", code: "RATE_LIMIT_EXCEEDED" },
+        { status: 429 },
+      );
+    }
+
+    const creditRequestId = `jobs-create:${crypto.randomUUID()}`;
+    const credit = await deductCredits({
+      shopId: shopDomain,
+      plan,
+      amount: CREDIT_COSTS.standardGeneration,
+      requestId: creditRequestId,
+      metadata: { intent: "jobs_create", productId },
     });
 
-    const bullJobId = `${shopDomain}:${job.id}`;
-    await db.generationJob.update({ where: { id: job.id }, data: { bullJobId } });
-    await generationQueue.add(
-      `generate:${productId}`,
-      { jobId: job.id, shopDomain, productTitle, vibe, format, keywords },
-      { jobId: bullJobId },
-    );
+    if (!credit.allowed) {
+      await refundRateLimit(shopDomain, plan);
+      return json(
+        {
+          ok: false,
+          error: `Not enough monthly credits remaining (${credit.creditsRemaining}/${credit.creditsLimit}).`,
+          code: "INSUFFICIENT_CREDITS",
+          creditsRemaining: credit.creditsRemaining,
+          creditsLimit: credit.creditsLimit,
+          resetDate: credit.resetDate.toISOString(),
+        },
+        { status: 402 },
+      );
+    }
 
-    return json({ ok: true, jobId: job.id });
+    try {
+      const job = await db.generationJob.create({
+        data: {
+          shopDomain, productId, productTitle, vibe, format, keywords,
+          status: "PENDING", progress: 0,
+          traceId: crypto.randomUUID(),
+          inputHash: sha256Hex(`${shopDomain}:${productId}:${vibe}:${format}:${keywords}`),
+          includeSocials: false,
+          creditRequestId,
+          creditCost: CREDIT_COSTS.standardGeneration,
+        },
+      });
+
+      const bullJobId = `${shopDomain}:${job.id}`;
+      await db.generationJob.update({ where: { id: job.id }, data: { bullJobId } });
+      await generationQueue.add(
+        `generate:${productId}`,
+        {
+          jobId: job.id,
+          shopDomain,
+          productTitle,
+          vibe,
+          format,
+          keywords,
+          creditRequestId,
+          creditCost: CREDIT_COSTS.standardGeneration,
+        },
+        { jobId: bullJobId },
+      );
+
+      return json({ ok: true, jobId: job.id });
+    } catch (err) {
+      await refundRateLimit(shopDomain, plan);
+      await refundCredits({
+        shopId: shopDomain,
+        plan,
+        amount: CREDIT_COSTS.standardGeneration,
+        requestId: `${creditRequestId}:enqueue-failed`,
+        metadata: { intent: "jobs_create", productId },
+      });
+      throw err;
+    }
   }
 
   // ── undo ──────────────────────────────────────────────────────────────────

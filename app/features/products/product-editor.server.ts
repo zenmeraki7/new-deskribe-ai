@@ -1,5 +1,6 @@
 // FILE: app/features/products/product-editor.server.ts
 import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-run/node";
+import crypto from "node:crypto";
 import { z } from "zod";
 
 import { authenticate } from "../../shopify.server";
@@ -18,8 +19,9 @@ import {
   UUID_V4_RE,
 } from "../../routes/app.products.$productId.constants";
 import type { LoaderData, ProductMeta, DraftResult } from "../../routes/app.products.$productId.types";
-import { checkAndIncrementRateLimit, checkAndIncrementKeywordLimit, refundRateLimit,  KEYWORD_LIMITS } from "../../lib/rateLimiter.server";
+import { checkAndIncrementRateLimit, checkAndIncrementKeywordLimit, refundRateLimit } from "../../lib/rateLimiter.server";
 import { resolvePlan, type Plan } from "../../lib/rateLimiter.server";
+import { CREDIT_COSTS, deductCredits, refundCredits } from "../../lib/creditService.server";
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -478,11 +480,7 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
           code: isGlobal ? "GLOBAL_LIMIT_REACHED" : "RATE_LIMIT_EXCEEDED",
           error: isGlobal
             ? "Service is temporarily at capacity. Please try again in a few hours."
-            : `Daily generation limit reached (${limitResult.shopUsed}/${limitResult.shopLimit}). ${
-                plan === "free"
-                  ? "Upgrade to Pro for unlimited generations/day."
-                  : "Limit resets at midnight UTC."
-              }`,
+            : "Too many generation requests. Please try again in a minute.",
           shopUsed: limitResult.shopUsed,
           shopLimit: limitResult.shopLimit,
           plan,
@@ -534,6 +532,32 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
       });
     }
 
+    const creditRequestId = crypto.randomUUID();
+    const credit = await deductCredits({
+      shopId: shopDomain,
+      plan,
+      amount: CREDIT_COSTS.standardGeneration,
+      requestId: creditRequestId,
+      metadata: { intent: "generate", productId: productGid },
+    });
+
+    if (!credit.allowed) {
+      await refundRateLimit(shopDomain, plan);
+      return json(
+        {
+          ok: false,
+          kind: "error",
+          code: "INSUFFICIENT_CREDITS",
+          error: `Not enough monthly credits remaining (${credit.creditsRemaining}/${credit.creditsLimit}).`,
+          creditsRemaining: credit.creditsRemaining,
+          creditsLimit: credit.creditsLimit,
+          resetDate: credit.resetDate.toISOString(),
+          plan,
+        },
+        { status: 402 },
+      );
+    }
+
      try {
     const { jobIds, skipped } = await enqueueGenerationJobs({
       shopDomain,
@@ -543,11 +567,20 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
       keywords: keywordsCsv,
       includeSocials,
       customInstruction: customInstruction || undefined,
+      creditRequestId,
+      creditCost: CREDIT_COSTS.standardGeneration,
       adminGraphql: admin.graphql,
     });
 
     // Product wasn't found or access was denied — no job was created.
     if (skipped.includes(productGid) || jobIds.length === 0) {
+      await refundCredits({
+        shopId: shopDomain,
+        plan,
+        amount: CREDIT_COSTS.standardGeneration,
+        requestId: `${creditRequestId}:enqueue-empty`,
+        metadata: { intent: "generate", productId: productGid },
+      });
       await refundRateLimit(shopDomain, plan);   // ← refund
       return json(
         { ok: false, kind: "error", error: "Product not found or access denied", code: "NOT_FOUND_OR_DENIED" },
@@ -559,6 +592,13 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
 
   } catch (err) {
     await refundRateLimit(shopDomain, plan);     // ← refund
+    await refundCredits({
+      shopId: shopDomain,
+      plan,
+      amount: CREDIT_COSTS.standardGeneration,
+      requestId: `${creditRequestId}:enqueue-error`,
+      metadata: { intent: "generate", productId: productGid },
+    });
     const message = err instanceof Error ? err.message : "Unknown error";
     return json(
       { ok: false, kind: "error", error: message, code: "GENERATE_FAILED" },
@@ -613,25 +653,51 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
 
   // ── Intent: suggest_keywords ─────────────────────────────────────────────
   if (intent === "suggest_keywords") {
+    let keywordCreditRequestId: string | null = null;
+    let keywordPlan: Plan = "free";
     try {
-      const plan = await getShopPlan(billing);
-      const limitResult = await checkAndIncrementKeywordLimit(shopDomain, plan);
+      keywordPlan = await getShopPlan(billing);
+      const limitResult = await checkAndIncrementKeywordLimit(shopDomain, keywordPlan);
 
       if (!limitResult.allowed) {
-        const isNotAllowed = limitResult.reason === "not_allowed";
         return json(
           {
             ok: false,
             kind: "error",
-            code: "KEYWORD_LIMIT_EXCEEDED",
-            error: isNotAllowed
-              ? "Keyword suggestions are not available on the Free plan. Upgrade to Basic or higher."
-              : `Daily keyword suggestion limit reached (${limitResult.used}/${limitResult.limit}). Resets at midnight UTC.`,
-            plan,
-            keywordUsed: limitResult.used,
-            keywordLimit: limitResult.limit,
+            code: limitResult.reason === "global_limit" ? "GLOBAL_LIMIT_REACHED" : "RATE_LIMIT_EXCEEDED",
+            error:
+              limitResult.reason === "global_limit"
+                ? "Service is temporarily at capacity. Please try again in a few hours."
+                : "Too many keyword requests. Please try again in a minute.",
+            plan: keywordPlan,
           },
-          { status: 403 },
+          { status: 429 },
+        );
+      }
+
+      keywordCreditRequestId = crypto.randomUUID();
+      const credit = await deductCredits({
+        shopId: shopDomain,
+        plan: keywordPlan,
+        amount: CREDIT_COSTS.keywordSuggestion,
+        requestId: keywordCreditRequestId,
+        metadata: { intent: "suggest_keywords", productId: productGid },
+      });
+
+      if (!credit.allowed) {
+        await refundRateLimit(shopDomain, keywordPlan);
+        return json(
+          {
+            ok: false,
+            kind: "error",
+            code: "INSUFFICIENT_CREDITS",
+            error: `Not enough monthly credits remaining (${credit.creditsRemaining}/${credit.creditsLimit}).`,
+            creditsRemaining: credit.creditsRemaining,
+            creditsLimit: credit.creditsLimit,
+            resetDate: credit.resetDate.toISOString(),
+            plan: keywordPlan,
+          },
+          { status: 402 },
         );
       }
 
@@ -649,12 +715,20 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
           : [],
       );
 
-      const planLimit = KEYWORD_LIMITS[plan];
-      const capCount = planLimit === Infinity ? 20 : planLimit;
-      const safe = normalizeKeywordList(keywords).slice(0, capCount);
+      const safe = normalizeKeywordList(keywords).slice(0, 20);
 
       return json({ ok: true, kind: "suggest_keywords", keywords: safe });
     } catch (err) {
+      await refundRateLimit(shopDomain, keywordPlan);
+      if (keywordCreditRequestId) {
+        await refundCredits({
+          shopId: shopDomain,
+          plan: keywordPlan,
+          amount: CREDIT_COSTS.keywordSuggestion,
+          requestId: `${keywordCreditRequestId}:suggest-failed`,
+          metadata: { intent: "suggest_keywords", productId: productGid },
+        });
+      }
       const message = err instanceof Error ? err.message : "Unknown error";
       return json(
         { ok: false, kind: "error", error: message, code: "SUGGEST_FAILED" },

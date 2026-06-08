@@ -1,5 +1,6 @@
 // FILE: app/routes/app.index.tsx
 
+import crypto from "node:crypto";
 import { useState, useCallback, useEffect } from "react";
 import {
   Page,
@@ -15,7 +16,6 @@ import {
   Divider,
   Spinner,
   Box,
-  Checkbox,
   Banner,
   Tag,
   List,
@@ -30,18 +30,14 @@ import {
   generateProductDescription,
 } from "../lib/ai.server";
 import { authenticate } from "../shopify.server";
+import {
+  checkAndIncrementKeywordLimit,
+  checkAndIncrementRateLimit,
+  refundRateLimit,
+  resolvePlan,
+} from "../lib/rateLimiter.server";
+import { CREDIT_COSTS, deductCredits, refundCredits } from "../lib/creditService.server";
 
-
-const PLANS = [
-  "Basic Plan",
-  "Basic Plan Yearly",
-  "Advanced Plan",
-  "Advanced Plan Yearly",
-  "Pro Plan",
-  "Pro Plan Yearly",
-] as const;
-
-const isTestBilling = process.env.IS_TEST_BILLING === "true";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -156,10 +152,61 @@ export async function action({ request }: ActionFunctionArgs) {
       .map((t) => t.trim())
       .filter(Boolean);
 
+    const { appSubscriptions } = await billing.check();
+    const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
+    const rate = await checkAndIncrementKeywordLimit(session.shop, plan);
+    if (!rate.allowed) {
+      return json(
+        {
+          ok: false,
+          kind: "error",
+          code: rate.reason === "global_limit" ? "GLOBAL_LIMIT_REACHED" : "RATE_LIMIT_EXCEEDED",
+          error:
+            rate.reason === "global_limit"
+              ? "Service is temporarily at capacity. Please try again in a few hours."
+              : "Too many keyword requests. Please try again in a minute.",
+        },
+        { status: 429 },
+      );
+    }
+
+    const creditRequestId = crypto.randomUUID();
+    const credit = await deductCredits({
+      shopId: session.shop,
+      plan,
+      amount: CREDIT_COSTS.keywordSuggestion,
+      requestId: creditRequestId,
+      metadata: { intent: "index_suggest_keywords" },
+    });
+
+    if (!credit.allowed) {
+      await refundRateLimit(session.shop, plan);
+      return json(
+        {
+          ok: false,
+          kind: "error",
+          code: "INSUFFICIENT_CREDITS",
+          error: `Not enough monthly credits remaining (${credit.creditsRemaining}/${credit.creditsLimit}).`,
+          creditsRemaining: credit.creditsRemaining,
+          creditsLimit: credit.creditsLimit,
+          resetDate: credit.resetDate.toISOString(),
+        },
+        { status: 402 },
+      );
+    }
+
     try {
       const keywords = await suggestKeywords(title, vendor, productType, tags);
       return json({ ok: true, kind: "suggest_keywords", keywords });
     } catch (err) {
+      await refundRateLimit(session.shop, plan);
+      await refundCredits({
+        shopId: session.shop,
+        plan,
+        amount: CREDIT_COSTS.keywordSuggestion,
+        requestId: `${creditRequestId}:failed`,
+        metadata: { intent: "index_suggest_keywords" },
+      });
       console.error("Keyword generation error:", err);
       return json(
         {
@@ -174,7 +221,29 @@ export async function action({ request }: ActionFunctionArgs) {
 
   // ── generate ──────────────────────────────────────────────────────────────
   if (intent === "generate") {
+    let creditRequestId: string | null = null;
+    let plan = resolvePlan(null);
+    let rateApplied = false;
     try {
+      const { appSubscriptions } = await billing.check();
+      plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
+      const rate = await checkAndIncrementRateLimit(session.shop, plan);
+      if (!rate.allowed) {
+        return json(
+          {
+            ok: false,
+            kind: "error",
+            code: rate.reason === "global_limit" ? "GLOBAL_LIMIT_REACHED" : "RATE_LIMIT_EXCEEDED",
+            error:
+              rate.reason === "global_limit"
+                ? "Service is temporarily at capacity. Please try again in a few hours."
+                : "Too many generation requests. Please try again in a minute.",
+          },
+          { status: 429 },
+        );
+      }
+      rateApplied = true;
+
       const productId = String(form.get("productId") ?? "");
       const vibe = String(form.get("vibe") ?? "casual");
       const format = String(form.get("format") ?? "paragraph");
@@ -192,9 +261,35 @@ export async function action({ request }: ActionFunctionArgs) {
       const p = data?.data?.product;
 
       if (!p) {
+        if (rateApplied) await refundRateLimit(session.shop, plan);
         return json(
           { ok: false, kind: "error", error: "Product not found." },
           { status: 404 },
+        );
+      }
+
+      creditRequestId = crypto.randomUUID();
+      const credit = await deductCredits({
+        shopId: session.shop,
+        plan,
+        amount: CREDIT_COSTS.standardGeneration,
+        requestId: creditRequestId,
+        metadata: { intent: "index_generate", productId },
+      });
+
+      if (!credit.allowed) {
+        if (rateApplied) await refundRateLimit(session.shop, plan);
+        return json(
+          {
+            ok: false,
+            kind: "error",
+            code: "INSUFFICIENT_CREDITS",
+            error: `Not enough monthly credits remaining (${credit.creditsRemaining}/${credit.creditsLimit}).`,
+            creditsRemaining: credit.creditsRemaining,
+            creditsLimit: credit.creditsLimit,
+            resetDate: credit.resetDate.toISOString(),
+          },
+          { status: 402 },
         );
       }
 
@@ -227,6 +322,16 @@ export async function action({ request }: ActionFunctionArgs) {
         },
       });
     } catch (err) {
+      if (rateApplied) await refundRateLimit(session.shop, plan);
+      if (creditRequestId) {
+        await refundCredits({
+          shopId: session.shop,
+          plan,
+          amount: CREDIT_COSTS.standardGeneration,
+          requestId: `${creditRequestId}:failed`,
+          metadata: { intent: "index_generate" },
+        });
+      }
       console.error("Generation error:", err);
       return json(
         {
