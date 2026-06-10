@@ -1,13 +1,12 @@
 // app/routes/app.templates.tsx
 import { json } from "@remix-run/node";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { authenticate } from "../shopify.server";
 import { db } from "../lib/db.server";
 import { resolvePlan, canUseCustomTemplates } from "../lib/rateLimiter.server";
+import { requireAdminSession } from "../lib/auth.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const { session, billing } = await authenticate.admin(request);
-  const shopDomain = session.shop;
+  const { billing, shopDomain } = await requireAdminSession(request);
 
   const { appSubscriptions } = await billing.check();
   const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null); // ← null coalesce
@@ -33,8 +32,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 }
 
 export async function action({ request }: ActionFunctionArgs) {
-  const { session, billing } = await authenticate.admin(request);
-  const shopDomain = session.shop;
+  const { billing, shopDomain } = await requireAdminSession(request);
 
   const { appSubscriptions } = await billing.check();
   const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);

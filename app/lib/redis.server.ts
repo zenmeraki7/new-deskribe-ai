@@ -1,30 +1,42 @@
-// app/lib/redis.server.ts
 import IORedis from "ioredis";
 
-let redis: IORedis | null = null;
+declare global {
+  // eslint-disable-next-line no-var
+  var __redis__: IORedis | undefined;
+}
 
 export function getRedis() {
-  if (!redis) {
-    redis = new IORedis(process.env.REDIS_URL!, {
+  if (!global.__redis__) {
+    global.__redis__ = new IORedis(process.env.REDIS_URL!, {
       maxRetriesPerRequest: null,
-      enableReadyCheck: false,
+
+      // 🔥 IMPORTANT FIXES
+      enableReadyCheck: true,
+      connectTimeout: 10000,
+      lazyConnect: false,
+
       retryStrategy(times) {
-        return Math.min(times * 50, 2000);
+        if (times > 10) return null; // stop infinite retry loops
+        return Math.min(times * 100, 3000);
       },
     });
 
-    redis.on("connect", () => {
+    global.__redis__.on("connect", () => {
       console.log("[redis] connected");
     });
 
-    redis.on("ready", () => {
+    global.__redis__.on("ready", () => {
       console.log("[redis] ready");
     });
 
-    redis.on("error", (err) => {
+    global.__redis__.on("error", (err) => {
       console.error("[redis] error:", err);
+    });
+
+    global.__redis__.on("close", () => {
+      console.warn("[redis] connection closed");
     });
   }
 
-  return redis;
+  return global.__redis__;
 }

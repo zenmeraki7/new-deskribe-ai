@@ -1,6 +1,5 @@
 // FILE: scripts/check-redis.ts
 import { getRedis } from "./app/lib/redis.server";
-
 async function main() {
   const keys = await getRedis().keys("bull:generation:*");
   console.log("Total Redis keys:", keys.length);

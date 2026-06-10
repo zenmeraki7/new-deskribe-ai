@@ -6,12 +6,12 @@
 
 import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-run/node";
 import crypto from "node:crypto";
-import { authenticate } from "../shopify.server";
 import { db } from "../lib/db.server";
+import { requireAdminSession } from "../lib/auth.server";
 import { sanitiseHtml } from "../lib/html.server";
 import { generationQueue } from "../lib/queue.server";
 import BulkReviewPage from "./app.bulk.$bulkId.ui";
-import { checkAndIncrementRateLimit, refundRateLimit, resolvePlan } from "app/lib/rateLimiter.server";
+import { checkAndIncrementRateLimit, resolvePlan } from "app/lib/rateLimiter.server";
 import { CREDIT_COSTS, deductCredits, refundCredits } from "app/lib/creditService.server";
 
 const UUID_RE =
@@ -103,8 +103,7 @@ export interface BulkLoaderData {
 // ── Loader ────────────────────────────────────────────────────────────────────
 
 export async function loader({ request, params }: LoaderFunctionArgs) {
-  const { session } = await authenticate.admin(request);
-  const shopDomain = session.shop;
+  const { shopDomain } = await requireAdminSession(request);
 
   const { bulkId } = params;
   if (!bulkId || !isUuid(bulkId)) {
@@ -179,8 +178,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
 // ── Action ────────────────────────────────────────────────────────────────────
 
 export async function action({ request, params }: ActionFunctionArgs) {
-  const { admin, session, billing } = await authenticate.admin(request);
-  const shopDomain = session.shop;
+  const { admin, billing, shopDomain } = await requireAdminSession(request);
 
   const { bulkId } = params;
   if (!bulkId || !isUuid(bulkId)) {
@@ -282,7 +280,6 @@ export async function action({ request, params }: ActionFunctionArgs) {
     });
 
     if (!job) {
-      await refundRateLimit(shopDomain, plan);
       return json({ ok: false, error: "Job not found or not failed" }, { status: 404 });
     }
 
@@ -292,15 +289,15 @@ export async function action({ request, params }: ActionFunctionArgs) {
       plan,
       amount: CREDIT_COSTS.standardGeneration,
       requestId: creditRequestId,
+      kind: "regeneration",
       metadata: { intent: "retry_one", jobId: job.id, productId: job.productId },
     });
 
     if (!credit.allowed) {
-      await refundRateLimit(shopDomain, plan);
       return json(
         {
           ok: false,
-          error: `Not enough monthly credits remaining (${credit.creditsRemaining}/${credit.creditsLimit}).`,
+          error: "Not enough credits",
           code: "INSUFFICIENT_CREDITS",
           creditsRemaining: credit.creditsRemaining,
           creditsLimit: credit.creditsLimit,
@@ -339,7 +336,6 @@ export async function action({ request, params }: ActionFunctionArgs) {
         { jobId: job.id },
       );
     } catch (err) {
-      await refundRateLimit(shopDomain, plan);
       await refundCredits({
         shopId: shopDomain,
         plan,

@@ -1,7 +1,7 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "20f31d269398d5f23df95d0450e772e9"
-application_url = "https://wagner-jewel-provision-atlas.trycloudflare.com"
+application_url = "https://name-islands-chan-admitted.trycloudflare.com"
 embedded = true
 name = "test-app"
 handle = "test-app-11537"
@@ -41,9 +41,9 @@ use_legacy_install_flow = false
 
 [auth]
 redirect_urls = [
-  "https://wagner-jewel-provision-atlas.trycloudflare.com/auth/callback",
-  "https://wagner-jewel-provision-atlas.trycloudflare.com/auth/shopify/callback",
-  "https://wagner-jewel-provision-atlas.trycloudflare.com/api/auth/callback"
+  "https://name-islands-chan-admitted.trycloudflare.com/auth/callback",
+  "https://name-islands-chan-admitted.trycloudflare.com/auth/shopify/callback",
+  "https://name-islands-chan-admitted.trycloudflare.com/api/auth/callback"
 ]
 
 [app_proxy]

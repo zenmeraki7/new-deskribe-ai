@@ -1,10 +1,10 @@
 import { redirect } from "@remix-run/node";
 import type { LoaderFunctionArgs } from "@remix-run/node";
-import { authenticate } from "../shopify.server";
+import { requireAdminSession } from "../lib/auth.server";
 
 // AFTER
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { billing } = await authenticate.admin(request);
+  const { billing } = await requireAdminSession(request);
 
   const isTestBilling = process.env.IS_TEST_BILLING === "true";
 

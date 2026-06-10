@@ -12,7 +12,7 @@
 import { json, type LoaderFunctionArgs } from "@remix-run/node";
 import { z } from "zod";
 
-import { authenticate } from "../shopify.server";
+import { requireAdminSession } from "../lib/auth.server";
 import { db } from "../lib/db.server";
 import { sanitiseHtml } from "../lib/html.server";
 
@@ -137,8 +137,7 @@ function shapeResult(raw: unknown): { result: Record<string, unknown> | null; co
 
 export async function loader({ request, params }: LoaderFunctionArgs) {
   // Hard requirement: every request authenticated and shop-scoped
-  const { session } = await authenticate.admin(request);
-  const shopDomain = session.shop;
+  const { shopDomain } = await requireAdminSession(request);
 
   const jobId = params.jobId;
 

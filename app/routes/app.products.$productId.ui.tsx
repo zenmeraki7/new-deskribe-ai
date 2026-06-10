@@ -33,6 +33,8 @@ import {
 } from "./app.products.$productId.constants";
 
 import { DiffViewer } from "../components/DiffViewer";
+import { CreditUsageCard } from "../components/CreditUsageCard";
+import { CREDIT_COSTS, formatCredits, hasCredits } from "../lib/credits";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -94,6 +96,7 @@ interface PollPayload {
 function useJobPoll() {
   const fetcher = useFetcher<PollPayload>();
   const timerRef = useRef<number | null>(null);
+  const startedAtRef = useRef<number | null>(null);
 
   const [jobId, setJobId] = useState<string | null>(null);
   const [status, setStatus] = useState<PollStatus>("IDLE");
@@ -108,6 +111,7 @@ function useJobPoll() {
 
   const stop = useCallback(() => {
     setJobId(null);
+    startedAtRef.current = null;
   }, []);
 
   const clearTimer = useCallback(() => {
@@ -131,6 +135,14 @@ function useJobPoll() {
 
     const tick = () => {
       if (stopped) return;
+      if (startedAtRef.current && Date.now() - startedAtRef.current > 5 * 60 * 1000) {
+        setStatus("FAILED");
+        setErrorMessage(
+          "Generation did not finish. Make sure the generation worker is running and try again.",
+        );
+        stop();
+        return;
+      }
       if (typeof document !== "undefined" && document.hidden) {
         timerRef.current = window.setTimeout(tick, scheduleMs());
         return;
@@ -168,6 +180,7 @@ function useJobPoll() {
     setResult(null);
     setErrorMessage(null);
     setStatus("PENDING");
+    startedAtRef.current = Date.now();
     setJobId(id);
   }, []);
 
@@ -368,8 +381,8 @@ export default function ProductEditorModalRoute() {
     latestDraft,
     policyWarnings,
     shopPlan,
+    credits,
     customTemplates,
-    shopDomain,
   } = useLoaderData<LoaderData>();
 
   const navigate = useNavigate();
@@ -379,6 +392,7 @@ export default function ProductEditorModalRoute() {
   const [format, setFormat] = useState<string>("paragraph");
   const [keywords, setKeywords] = useState<string>("");
   const [includeSocials, setIncludeSocials] = useState<boolean>(false);
+  const [localCreditError, setLocalCreditError] = useState<string>("");
 
   // ── Custom template state ─────────────────────────────────────────────────
   const [showTemplateBuilder, setShowTemplateBuilder] = useState(false);
@@ -546,6 +560,10 @@ export default function ProductEditorModalRoute() {
         setActiveCustomInstruction(savedInstruction);
 
         if (pendingGenerateRef.current) {
+          if (!hasCredits(credits.creditsRemaining, CREDIT_COSTS.standardGeneration)) {
+            setLocalCreditError("Not enough credits");
+            return;
+          }
           pendingGenerateRef.current = false;
           const fd = new FormData();
           fd.set("intent", "generate");
@@ -558,7 +576,7 @@ export default function ProductEditorModalRoute() {
         }
       }
     }
-  }, [templateFetcher.data]);
+  }, [templateFetcher.data, credits.creditsRemaining, format, generateFetcher, includeSocials, keywords]);
 
   // ── Other effects ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -588,10 +606,15 @@ export default function ProductEditorModalRoute() {
 
   const handleSuggestKeywords = useCallback(() => {
     if (keywordFetcher.state !== "idle") return;
+    if (!hasCredits(credits.creditsRemaining, CREDIT_COSTS.keywordSuggestion)) {
+      setLocalCreditError("Not enough credits");
+      return;
+    }
+    setLocalCreditError("");
     const fd = new FormData();
     fd.set("intent", "suggest_keywords");
     keywordFetcher.submit(fd, { method: "post" });
-  }, [keywordFetcher]);
+  }, [keywordFetcher, credits.creditsRemaining]);
 
   const suggestedKeywords: string[] =
     keywordFetcher.data?.ok && Array.isArray(keywordFetcher.data?.keywords)
@@ -628,24 +651,17 @@ export default function ProductEditorModalRoute() {
   const highlightKeywords = useMemo(() => parseKeywords(keywords), [keywords]);
 
   const generateError =
-    generateFetcher.data?.ok === false
-      ? String(generateFetcher.data.error ?? "")
-      : "";
+    localCreditError ||
+    (generateFetcher.data?.ok === false
+      ? generateFetcher.data.code === "INSUFFICIENT_CREDITS"
+        ? "Not enough credits"
+        : String(generateFetcher.data.error ?? "")
+      : "");
 
   const isRateLimited =
     generateFetcher.data?.ok === false &&
     (generateFetcher.data?.code === "RATE_LIMIT_EXCEEDED" ||
       generateFetcher.data?.code === "GLOBAL_LIMIT_REACHED");
-
-  const isFreePlanLimit =
-    generateFetcher.data?.code === "RATE_LIMIT_EXCEEDED" &&
-    generateFetcher.data?.plan === "free";
-
-  const keywordSuggestBlocked = shopPlan === "free";
-
-  const keywordLimitError =
-    keywordFetcher.data?.ok === false &&
-    keywordFetcher.data?.code === "KEYWORD_LIMIT_EXCEEDED";
 
   const applyError =
     applyFetcher.data && applyFetcher.data.ok === false
@@ -684,6 +700,14 @@ export default function ProductEditorModalRoute() {
   );
 
   const isCustomVibeSelected = vibe.startsWith("custom:");
+  const canGenerateWithCredits = hasCredits(
+    credits.creditsRemaining,
+    CREDIT_COSTS.standardGeneration,
+  );
+  const canSuggestWithCredits = hasCredits(
+    credits.creditsRemaining,
+    CREDIT_COSTS.keywordSuggestion,
+  );
 
   return (
     <>
@@ -715,6 +739,11 @@ export default function ProductEditorModalRoute() {
         primaryAction={{
           content: isGenerating ? "Generating…" : "Generate Draft",
           onAction: () => {
+            if (!canGenerateWithCredits) {
+              setLocalCreditError("Not enough credits");
+              return;
+            }
+            setLocalCreditError("");
             const fd = new FormData();
             fd.set("intent", "generate");
             fd.set("vibe", clampTextInput(vibe, 40));
@@ -727,12 +756,40 @@ export default function ProductEditorModalRoute() {
             generateFetcher.submit(fd, { method: "post" });
           },
           loading: isGenerating,
-          disabled: isGenerating,
+          disabled: isGenerating || !canGenerateWithCredits,
         }}
         secondaryActions={[{ content: "Close", onAction: handleClose }]}
       >
         <Modal.Section>
           <BlockStack gap="400">
+            <CreditUsageCard
+              compact
+              title="Credits remaining"
+              creditsUsed={credits.creditsUsed}
+              creditsLimit={credits.creditsLimit}
+              creditsRemaining={credits.creditsRemaining}
+            />
+
+            <Card>
+              <BlockStack gap="200">
+                <InlineStack align="space-between">
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    Credit cost before generation
+                  </Text>
+                  <Text as="p" variant="bodySm" fontWeight="semibold">
+                    {formatCredits(CREDIT_COSTS.standardGeneration)} credit
+                  </Text>
+                </InlineStack>
+                <InlineStack align="space-between">
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    Remaining credits before action
+                  </Text>
+                  <Text as="p" variant="bodySm" fontWeight="semibold">
+                    {formatCredits(credits.creditsRemaining)}
+                  </Text>
+                </InlineStack>
+              </BlockStack>
+            </Card>
 
             {/* ── Policy warnings ── */}
             {policyWarnings.length > 0 && (
@@ -757,21 +814,10 @@ export default function ProductEditorModalRoute() {
             {generateError && (
               <Banner
                 tone={isRateLimited ? "warning" : "critical"}
-                title={isRateLimited ? "Generation limit reached" : "Generation failed"}
-                action={
-                  isFreePlanLimit
-                    ? { content: "Upgrade plan", url: "/app/billing", target: "_self" }
-                    : undefined
-                }
+                title={isRateLimited ? "Generation unavailable" : "Generation failed"}
               >
                 <BlockStack gap="100">
                   <Text as="p" variant="bodySm">{generateError}</Text>
-                  {generateFetcher.data?.shopUsed !== undefined && (
-                    <Text as="p" variant="bodySm" tone="subdued">
-                      Usage today: {generateFetcher.data.shopUsed} /{" "}
-                      {generateFetcher.data.shopLimit}
-                    </Text>
-                  )}
                 </BlockStack>
               </Banner>
             )}
@@ -896,38 +942,16 @@ export default function ProductEditorModalRoute() {
                       />
                     </div>
                     <div style={{ paddingTop: 22 }}>
-                      {keywordSuggestBlocked ? (
-                        <Tooltip content="Upgrade to Basic or higher to use keyword suggestions">
-                          <Button size="slim" disabled>
-                            ✨ Suggest
-                          </Button>
-                        </Tooltip>
-                      ) : (
                         <Button
                           onClick={handleSuggestKeywords}
                           loading={keywordFetcher.state !== "idle"}
-                          disabled={isGenerating}
+                          disabled={isGenerating || !canSuggestWithCredits}
                           size="slim"
                         >
                           ✨ Suggest
                         </Button>
-                      )}
                     </div>
                   </InlineStack>
-
-                  {keywordLimitError && (
-                    <Banner
-                      tone={keywordFetcher.data?.plan === "free" ? "warning" : "info"}
-                      title="Keyword suggestion limit reached"
-                      action={
-                        keywordFetcher.data?.plan !== "pro"
-                          ? { content: "Upgrade plan", url: "/app/billing", target: "_self" }
-                          : undefined
-                      }
-                    >
-                      {keywordFetcher.data?.error}
-                    </Banner>
-                  )}
 
                   {parseKeywords(keywords).length > 0 && (
                     <InlineStack gap="100" wrap>
@@ -1049,7 +1073,7 @@ export default function ProductEditorModalRoute() {
                       {draftResult.meta_title ?? product.title}
                     </div>
                     <div style={{ fontSize: 13, color: "#006621", marginBottom: 4 }}>
-                      {shopDomain} › products
+                      {product.vendor || "Shopify"} › products
                     </div>
                     <div
                       style={{

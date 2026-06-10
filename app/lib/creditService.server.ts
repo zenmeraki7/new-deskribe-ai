@@ -3,22 +3,12 @@ import { Prisma } from "@prisma/client";
 
 import { db } from "./db.server";
 import type { Plan } from "./rateLimiter.server";
+import { CREDIT_COSTS, PLAN_CREDITS } from "./credits";
 
-export const PLAN_CREDITS: Record<Plan, number> = {
-  free: 100,
-  basic: 6000,
-  advanced: 20000,
-  pro: 50000,
-};
+export { CREDIT_COSTS, PLAN_CREDITS };
 
-export const CREDIT_COSTS = {
-  standardGeneration: 1,
-  enhancedSeoGeneration: 2,
-  bulkProductGeneration: 1,
-  keywordSuggestion: 0.5,
-} as const;
-
-type CreditKind = "DEBIT" | "REFUND";
+export type CreditDebitKind = "generation" | "bulk_generation" | "regeneration";
+type CreditKind = "grant" | CreditDebitKind | "refund";
 
 export interface CreditResult {
   allowed: boolean;
@@ -59,6 +49,39 @@ function stableTransactionId(requestId: string, kind: CreditKind) {
   return crypto.createHash("sha256").update(`${kind}:${requestId}`).digest("hex");
 }
 
+function grantRequestId(shopId: string, plan: Plan, resetDate: Date, creditsLimit: Prisma.Decimal) {
+  return `grant:${shopId}:${plan}:${resetDate.toISOString()}:${creditsLimit.toString()}`;
+}
+
+async function recordGrant(
+  tx: Prisma.TransactionClient,
+  row: { shopId: string; plan: string; resetDate: Date; creditsLimit: Prisma.Decimal },
+) {
+  const requestId = grantRequestId(row.shopId, row.plan as Plan, row.resetDate, row.creditsLimit);
+  await tx.creditTransaction.upsert({
+    where: {
+      shopId_requestId_kind: {
+        shopId: row.shopId,
+        requestId,
+        kind: "grant",
+      },
+    },
+    create: {
+      id: stableTransactionId(requestId, "grant"),
+      shopId: row.shopId,
+      requestId,
+      kind: "grant",
+      amount: row.creditsLimit,
+      plan: row.plan,
+      metadata: {
+        resetDate: row.resetDate.toISOString(),
+        creditsLimit: row.creditsLimit.toString(),
+      },
+    },
+    update: {},
+  });
+}
+
 async function ensureCycle(tx: Prisma.TransactionClient, shopId: string, plan: Plan) {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${shopId}))`;
 
@@ -67,7 +90,7 @@ async function ensureCycle(tx: Prisma.TransactionClient, shopId: string, plan: P
 
   const existing = await tx.shopCredit.findUnique({ where: { shopId } });
   if (!existing) {
-    return tx.shopCredit.create({
+    const created = await tx.shopCredit.create({
       data: {
         shopId,
         plan,
@@ -76,10 +99,12 @@ async function ensureCycle(tx: Prisma.TransactionClient, shopId: string, plan: P
         resetDate: nextMonthlyResetDate(now),
       },
     });
+    await recordGrant(tx, created);
+    return created;
   }
 
   if (existing.resetDate <= now) {
-    return tx.shopCredit.update({
+    const reset = await tx.shopCredit.update({
       where: { shopId },
       data: {
         plan,
@@ -88,19 +113,28 @@ async function ensureCycle(tx: Prisma.TransactionClient, shopId: string, plan: P
         resetDate: nextMonthlyResetDate(now),
       },
     });
+    await recordGrant(tx, reset);
+    return reset;
   }
 
   if (existing.plan !== plan || !existing.creditsLimit.equals(creditsLimit)) {
-    return tx.shopCredit.update({
+    const updated = await tx.shopCredit.update({
       where: { shopId },
       data: { plan, creditsLimit },
     });
+    await recordGrant(tx, updated);
+    return updated;
   }
 
+  await recordGrant(tx, existing);
   return existing;
 }
 
 export async function getCreditBalance(shopId: string, plan: Plan) {
+  if (!shopId) {
+    throw new Error("Missing shop context");
+  }
+
   return db.$transaction(async (tx) => {
     const row = await ensureCycle(tx, shopId, plan);
     const creditsUsed = asNumber(row.creditsUsed);
@@ -121,14 +155,24 @@ export async function deductCredits({
   plan,
   amount,
   requestId,
+  kind = "generation",
   metadata,
 }: {
   shopId: string;
   plan: Plan;
   amount: number;
   requestId?: string;
+  kind?: CreditDebitKind;
   metadata?: Prisma.InputJsonValue;
 }): Promise<CreditResult | CreditFailure> {
+  if (!shopId) {
+    throw new Error("Missing shop context");
+  }
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error("Credit deduction amount must be greater than zero");
+  }
+
   const resolvedRequestId = requestId ?? crypto.randomUUID();
 
   return db.$transaction(async (tx) => {
@@ -138,7 +182,7 @@ export async function deductCredits({
         shopId_requestId_kind: {
           shopId,
           requestId: resolvedRequestId,
-          kind: "DEBIT",
+          kind,
         },
       },
     });
@@ -190,10 +234,10 @@ export async function deductCredits({
 
     await tx.creditTransaction.create({
       data: {
-        id: stableTransactionId(resolvedRequestId, "DEBIT"),
+        id: stableTransactionId(resolvedRequestId, kind),
         shopId,
         requestId: resolvedRequestId,
-        kind: "DEBIT",
+        kind,
         amount: toDecimal(amount),
         plan,
         metadata,
@@ -228,6 +272,14 @@ export async function refundCredits({
   requestId: string;
   metadata?: Prisma.InputJsonValue;
 }) {
+  if (!shopId) {
+    throw new Error("Missing shop context");
+  }
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error("Credit refund amount must be greater than zero");
+  }
+
   return db.$transaction(async (tx) => {
     const existingCredit = await tx.shopCredit.findUnique({ where: { shopId } });
     const effectivePlan = plan ?? ((existingCredit?.plan as Plan | undefined) ?? "free");
@@ -237,7 +289,7 @@ export async function refundCredits({
         shopId_requestId_kind: {
           shopId,
           requestId,
-          kind: "REFUND",
+          kind: "refund",
         },
       },
     });
@@ -269,10 +321,10 @@ export async function refundCredits({
 
     await tx.creditTransaction.create({
       data: {
-        id: stableTransactionId(requestId, "REFUND"),
+        id: stableTransactionId(requestId, "refund"),
         shopId,
         requestId,
-        kind: "REFUND",
+        kind: "refund",
         amount: toDecimal(amount),
         plan: effectivePlan,
         metadata,

@@ -80,6 +80,10 @@ export async function enqueueGenerationJobs({
   creditRequestId,
   creditCost,
 }: EnqueueParams): Promise<EnqueueResult> {
+  if (!shopDomain) {
+    throw new Error("Missing shop context");
+  }
+
   const jobIds: string[] = [];
   const skipped: string[] = [];
 

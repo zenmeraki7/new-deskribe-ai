@@ -108,6 +108,8 @@ model CreditTransaction {
   @@index([requestId])
 }
 // Tracks per-shop daily usage — one row per shop per UTC day
+// DEPRECATED: legacy usage counter retained for migration/history only.
+// Do not read from or write to this model for billing enforcement.
 model ShopUsage {
   id         String   @id @default(cuid())
   shopDomain String
@@ -123,6 +125,8 @@ model ShopUsage {
 }
 
 // Global daily usage — single row per UTC day, all shops combined
+// DEPRECATED: legacy usage counter retained for migration/history only.
+// Do not read from or write to this model for billing enforcement.
 model GlobalUsage {
   id        String   @id @default(cuid())
   date      String   // UTC date string: "2025-03-27"

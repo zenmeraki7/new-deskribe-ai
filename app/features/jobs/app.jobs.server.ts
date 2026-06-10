@@ -10,13 +10,12 @@
 import crypto from "node:crypto";
 import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-run/node";
 
-import { authenticate } from "../../shopify.server";
 import { db } from "../../lib/db.server";
+import { requireAdminSession } from "../../lib/auth.server";
 import { generationQueue } from "../../lib/queue.server";
 import { sanitiseHtml } from "../../lib/html.server";
 import {
   checkAndIncrementRateLimit,
-  refundRateLimit,
   resolvePlan,
 } from "../../lib/rateLimiter.server";
 import { CREDIT_COSTS, deductCredits, refundCredits } from "../../lib/creditService.server";
@@ -101,8 +100,7 @@ function extractMetaDescription(result: unknown): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function loader({ request }: LoaderFunctionArgs): Promise<Response> {
-  const { session } = await authenticate.admin(request);
-  const shopDomain = session.shop;
+  const { shopDomain } = await requireAdminSession(request);
 
   const url = new URL(request.url);
   const cursorParam = url.searchParams.get("cursor");
@@ -184,8 +182,7 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function action({ request }: ActionFunctionArgs): Promise<Response> {
-  const { session, admin, billing } = await authenticate.admin(request);
-  const shopDomain = session.shop;
+  const { admin, billing, shopDomain } = await requireAdminSession(request);
 
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
@@ -356,11 +353,11 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
       plan,
       amount: CREDIT_COSTS.standardGeneration,
       requestId: creditRequestId,
+      kind: "regeneration",
       metadata: { intent: "jobs_retry", jobId },
     });
 
     if (!credit.allowed) {
-      await refundRateLimit(shopDomain, plan);
       await db.generationJob.update({
         where: { id: jobId, shopDomain },
         data: { status: "FAILED", errorMessage: "Insufficient monthly credits for retry.", progress: 0 },
@@ -368,7 +365,7 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
       return json(
         {
           ok: false,
-          error: `Not enough monthly credits remaining (${credit.creditsRemaining}/${credit.creditsLimit}).`,
+          error: "Not enough credits",
           code: "INSUFFICIENT_CREDITS",
           creditsRemaining: credit.creditsRemaining,
           creditsLimit: credit.creditsLimit,
@@ -397,7 +394,6 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
         return json({ ok: true, retried: jobId, alreadyQueued: true });
       }
       console.error("[retry] enqueue failed:", err);
-      await refundRateLimit(shopDomain, plan);
       await refundCredits({
         shopId: shopDomain,
         plan,
@@ -440,15 +436,15 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
       plan,
       amount: CREDIT_COSTS.standardGeneration,
       requestId: creditRequestId,
+      kind: "generation",
       metadata: { intent: "jobs_create", productId },
     });
 
     if (!credit.allowed) {
-      await refundRateLimit(shopDomain, plan);
       return json(
         {
           ok: false,
-          error: `Not enough monthly credits remaining (${credit.creditsRemaining}/${credit.creditsLimit}).`,
+          error: "Not enough credits",
           code: "INSUFFICIENT_CREDITS",
           creditsRemaining: credit.creditsRemaining,
           creditsLimit: credit.creditsLimit,
@@ -490,7 +486,6 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
 
       return json({ ok: true, jobId: job.id });
     } catch (err) {
-      await refundRateLimit(shopDomain, plan);
       await refundCredits({
         shopId: shopDomain,
         plan,

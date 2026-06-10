@@ -15,9 +15,9 @@ import {
   Card,
   Spinner,
   Button,
-  Tooltip,
 } from "@shopify/polaris";
 import { useFetcher } from "@remix-run/react";
+import { CREDIT_COSTS, formatCredits, hasCredits } from "../../lib/credits";
 
 const VIBE_OPTIONS = [
   { label: "Casual", value: "casual" },
@@ -50,14 +50,15 @@ interface BulkGenerateModalProps {
   selectedProductIds: string[];
   onClose: () => void;
   onSuccess: (jobIds: string[], bulkId: string | null) => void;
-  bulkLimit: number;
-  shopPlan: string;
+  creditsRemaining: number;
 }
 
 interface BulkKeywordResult {
   ok: boolean;
   keywords?: string[];
   error?: string;
+  code?: string;
+  plan?: string;
 }
 
 interface BulkResult {
@@ -68,8 +69,6 @@ interface BulkResult {
   error?: string;
   code?: string;
   plan?: string;
-  shopUsed?: number;
-  shopLimit?: number;
 }
 
 export function BulkGenerateModal({
@@ -77,8 +76,7 @@ export function BulkGenerateModal({
   selectedProductIds,
   onClose,
   onSuccess,
-  bulkLimit,
-  shopPlan,
+  creditsRemaining,
 }: BulkGenerateModalProps) {
   const fetcher = useFetcher<BulkResult>();
   const keywordFetcher = useFetcher<BulkKeywordResult>();
@@ -97,11 +95,9 @@ export function BulkGenerateModal({
       ? keywordFetcher.data.keywords
       : [];
 
-      // Add these derived values inside the component:
-const keywordSuggestBlocked = shopPlan === "free";
-const keywordLimitError =
-  keywordFetcher.data?.ok === false &&
-  keywordFetcher.data?.code === "KEYWORD_LIMIT_EXCEEDED";
+  const creditCost = selectedProductIds.length * CREDIT_COSTS.bulkProductGeneration;
+  const canGenerateWithCredits = hasCredits(creditsRemaining, creditCost);
+  const canSuggestWithCredits = hasCredits(creditsRemaining, CREDIT_COSTS.keywordSuggestion);
 
   // Notify parent on success
   useEffect(() => {
@@ -122,6 +118,7 @@ const keywordLimitError =
 
   const handleSubmit = useCallback(() => {
     if (selectedProductIds.length === 0 || isSubmitting) return;
+    if (!canGenerateWithCredits) return;
     const fd = new FormData();
     fd.set("intent", "bulk_generate");
     fd.set("productIds", JSON.stringify(selectedProductIds));
@@ -130,7 +127,7 @@ const keywordLimitError =
     fd.set("keywords", clamp(keywords, 2000));
     fd.set("includeSocials", String(includeSocials));
     fetcher.submit(fd, { method: "post", action: "/app/bulk-generate" });
-  }, [selectedProductIds, vibe, format, keywords, includeSocials, isSubmitting, fetcher]);
+  }, [selectedProductIds, vibe, format, keywords, includeSocials, isSubmitting, canGenerateWithCredits, fetcher]);
 
   // ── Keyword suggestion ──────────────────────────────────────────────────────
   const handleSuggestKeywords = useCallback(() => {
@@ -161,38 +158,19 @@ const keywordLimitError =
           <Text as="span" variant="headingMd">
             Bulk Generate AI Descriptions
           </Text>
-          <Badge tone="info">{count} product{count !== 1 ? "s" : ""}</Badge>
+          <Badge tone="info">{`${count} product${count !== 1 ? "s" : ""}`}</Badge>
         </InlineStack>
       }
       primaryAction={{
         content: isSubmitting ? "Queuing…" : `✨ Generate for ${count} product${count !== 1 ? "s" : ""}`,
         onAction: handleSubmit,
         loading: isSubmitting,
-        disabled: isSubmitting || count === 0 || (count > bulkLimit && bulkLimit !== 999999),
+        disabled: isSubmitting || count === 0 || !canGenerateWithCredits,
       }}
       secondaryActions={[{ content: "Cancel", onAction: onClose }]}
-      large
     >
       <Modal.Section>
         <BlockStack gap="400">
-
-          {/* Plan limit guard */}
-          {count > bulkLimit && bulkLimit !== 999999 && (
-            <Banner
-              tone="critical"
-              title="Selection exceeds your plan limit"
-              action={
-                shopPlan !== "pro"
-                  ? { content: "Upgrade plan", url: "/app/billing", target: "_self" }
-                  : undefined
-              }
-            >
-              Your {shopPlan} plan supports up to {bulkLimit} products per bulk run.
-              Please go back and deselect {count - bulkLimit} product
-              {count - bulkLimit !== 1 ? "s" : ""} before generating.
-            </Banner>
-          )}
-
           {/* Success banner */}
           {result?.ok && (
             <Banner
@@ -218,31 +196,51 @@ const keywordLimitError =
             const isRateLimit =
               result.code === "RATE_LIMIT_EXCEEDED" ||
               result.code === "GLOBAL_LIMIT_REACHED";
-            const isFreePlan =
-              result.code === "RATE_LIMIT_EXCEEDED" && result.plan === "free";
             return (
               <Banner
                 tone={isRateLimit ? "warning" : "critical"}
-                title={isRateLimit ? "Generation limit reached" : "Failed to queue jobs"}
-                action={
-                  isFreePlan
-                    ? { content: "Upgrade plan", url: "/app/billing", target: "_self" }
-                    : undefined
+                title={
+                  result.code === "INSUFFICIENT_CREDITS"
+                    ? "Not enough credits"
+                    : isRateLimit
+                    ? "Generation unavailable"
+                    : "Failed to queue jobs"
                 }
               >
                 <BlockStack gap="100">
                   <Text as="p" variant="bodySm">
                     {result.error ?? "An unexpected error occurred. Please try again."}
                   </Text>
-                  {result.shopUsed !== undefined && (
-                    <Text as="p" variant="bodySm" tone="subdued">
-                      Usage today: {result.shopUsed} / {result.shopLimit}
-                    </Text>
-                  )}
                 </BlockStack>
               </Banner>
             );
           })()}
+
+          <Card>
+            <BlockStack gap="200">
+              <InlineStack align="space-between">
+                <Text as="p" variant="bodySm" tone="subdued">
+                  Credit cost before generation
+                </Text>
+                <Text as="p" variant="bodySm" fontWeight="semibold">
+                  {formatCredits(creditCost)} credits
+                </Text>
+              </InlineStack>
+              <InlineStack align="space-between">
+                <Text as="p" variant="bodySm" tone="subdued">
+                  Remaining credits before action
+                </Text>
+                <Text as="p" variant="bodySm" fontWeight="semibold">
+                  {formatCredits(creditsRemaining)}
+                </Text>
+              </InlineStack>
+              {!canGenerateWithCredits && (
+                <Banner tone="critical" title="Not enough credits">
+                  This selection needs {formatCredits(creditCost)} credits.
+                </Banner>
+              )}
+            </BlockStack>
+          </Card>
 
           {/* Info card */}
           <Card>
@@ -260,22 +258,14 @@ const keywordLimitError =
       />
     </div>
     <div style={{ paddingTop: 22 }}>
-  {keywordSuggestBlocked ? (
-    <Tooltip content="Upgrade to Basic or higher to use keyword suggestions">
-      <Button size="slim" disabled>
-        ✨ Suggest
-      </Button>
-    </Tooltip>
-  ) : (
-    <Button
+      <Button
       onClick={handleSuggestKeywords}
       loading={isSuggestingKeywords}
-      disabled={isSubmitting || count === 0}
+      disabled={isSubmitting || count === 0 || !canSuggestWithCredits}
       size="slim"
     >
       ✨ Suggest
     </Button>
-  )}
 </div>
   </InlineStack>
 
@@ -324,7 +314,7 @@ const keywordLimitError =
   {/* Suggested keyword chips */}
   {suggestedKeywords.length > 0 && (
     <BlockStack gap="100">
-      <Text variant="bodySm" tone="subdued">
+      <Text as="p" variant="bodySm" tone="subdued">
         Suggested for your selection — click to add:
       </Text>
       <InlineStack gap="100" wrap>
@@ -348,21 +338,6 @@ const keywordLimitError =
       </InlineStack>
     </BlockStack>
   )}
-
-  {/* Keyword limit error */}
-{keywordLimitError && (
-  <Banner
-    tone={keywordFetcher.data?.plan === "free" ? "warning" : "info"}
-    title="Keyword suggestion limit reached"
-    action={
-      keywordFetcher.data?.plan !== "pro"
-        ? { content: "Upgrade plan", url: "/app/billing", target: "_self" }
-        : undefined
-    }
-  >
-    {keywordFetcher.data?.error}
-  </Banner>
-)}
 </BlockStack>
           </Card>
 
@@ -462,7 +437,7 @@ const keywordLimitError =
                 {/* Suggested keyword chips */}
                 {suggestedKeywords.length > 0 && (
                   <BlockStack gap="100">
-                    <Text variant="bodySm" tone="subdued">
+                    <Text as="p" variant="bodySm" tone="subdued">
                       Suggested for your selection — click to add:
                     </Text>
                     <InlineStack gap="100" wrap>

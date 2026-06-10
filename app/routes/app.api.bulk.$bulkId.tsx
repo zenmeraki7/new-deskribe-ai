@@ -6,8 +6,8 @@
 
 import { json } from "@remix-run/node";
 import type { LoaderFunctionArgs } from "@remix-run/node";
-import { authenticate } from "../shopify.server";
 import { db } from "../lib/db.server";
+import { requireAdminSession } from "../lib/auth.server";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -26,19 +26,17 @@ export interface BulkStatusPayload {
 }
 
 export async function loader({ request, params }: LoaderFunctionArgs) {
-  await authenticate.admin(request);
+  const { shopDomain } = await requireAdminSession(request);
 
   const { bulkId } = params;
   if (!bulkId || !UUID_RE.test(bulkId)) {
     return json({ error: "Invalid bulkId" }, { status: 400 });
   }
 
- const { session } = await authenticate.admin(request);
-
-const jobs = await db.generationJob.findMany({
-  where: { bulkId, shopDomain: session.shop }, // ← scope to shop
-  select: { status: true },
-});
+  const jobs = await db.generationJob.findMany({
+    where: { bulkId, shopDomain },
+    select: { status: true },
+  });
 
   if (jobs.length === 0) {
     return json({ error: "Bulk run not found" }, { status: 404 });

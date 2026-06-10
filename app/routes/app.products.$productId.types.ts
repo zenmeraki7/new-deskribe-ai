@@ -62,6 +62,12 @@ export interface LoaderData {
   latestDraft: LatestDraft | null;
   policyWarnings: string[]; // server-produced warnings (safe strings)
    shopPlan: "free" | "basic" | "advanced" | "pro";
+   credits: {
+    creditsUsed: number;
+    creditsLimit: number;
+    creditsRemaining: number;
+    resetDate: string;
+   };
    customTemplates: CustomTemplate[];
 }
 

@@ -10,7 +10,7 @@
 
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { useLoaderData, useNavigate } from "@remix-run/react";
-import { authenticate } from "../shopify.server";
+import { requireAdminSession } from "../lib/auth.server";
 import { useCallback, useState } from "react";
 import {
   Page,
@@ -39,24 +39,23 @@ import {
 } from "../components/producttable/Productfiltermodal";
 import { BulkGenerateModal } from "../components/BulkComponents/BulkGenerateModal";
 import { BulkProgressBar } from "../components/BulkComponents/BulkProgressBar";
-import { resolvePlan, BULK_LIMITS, type Plan } from "../lib/rateLimiter.server";
+import { resolvePlan, type Plan } from "../lib/rateLimiter.server";
+import { CreditUsageCard } from "../components/CreditUsageCard";
+import { formatCredits, hasCredits } from "../lib/credits";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin, billing } = await authenticate.admin(request);
+  const { getCreditBalance } = await import("../lib/creditService.server");
+  const { admin, billing, shopDomain } = await requireAdminSession(request);
 
-  // Resolve plan for bulk limit enforcement
   let shopPlan: Plan = "free";
-  let bulkLimit: number = BULK_LIMITS.free;
   try {
     const { appSubscriptions } = await billing.check();
     shopPlan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
-    bulkLimit =
-      BULK_LIMITS[shopPlan] === Infinity
-        ? 999999 // serialize Infinity as large number for JSON
-        : BULK_LIMITS[shopPlan];
   } catch {
     // fail open — treat as free
   }
+
+  const credits = await getCreditBalance(shopDomain, shopPlan);
 
   const url = new URL(request.url);
   const search = url.searchParams.get("search") || "";
@@ -157,8 +156,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     draftProducts,
     totalInventory,
     generatedDescriptions,
-    shopPlan,
-    bulkLimit,
+    credits: {
+      creditsUsed: credits.creditsUsed,
+      creditsLimit: credits.creditsLimit,
+      creditsRemaining: credits.creditsRemaining,
+      resetDate: credits.resetDate.toISOString(),
+    },
   };
 };
 
@@ -269,8 +272,7 @@ export default function ProductsDashboard() {
     draftProducts,
     totalInventory,
     generatedDescriptions,
-    shopPlan,
-    bulkLimit,
+    credits,
   } = useLoaderData<typeof loader>();
 
   const navigate = useNavigate();
@@ -415,18 +417,15 @@ export default function ProductsDashboard() {
 
   // ── Promoted bulk actions (shown in IndexTable toolbar when rows selected) ──
   // ── Bulk selection cap warning ─────────────────────────────────────────────
-  const UNLIMITED = 999999;
-  const atBulkLimit =
-    bulkLimit !== UNLIMITED && selectedResources.length >= bulkLimit;
-
-  const overBulkLimit = selectedResources.length > bulkLimit;
+  const bulkCreditCost = selectedResources.length;
+  const hasEnoughBulkCredits = hasCredits(credits.creditsRemaining, bulkCreditCost);
 
   // ── Promoted bulk actions ──────────────────────────────────────────────────
   const promotedBulkActions =
-    shopPlan === "free"
+    false
       ? [
           {
-            content: "✨ Bulk Generate (Pro feature)",
+            content: "Generate AI Descriptions",
             onAction: () => setBulkModalOpen(true),
             disabled: true,
           },
@@ -435,10 +434,10 @@ export default function ProductsDashboard() {
           {
             content: `✨ Generate AI Descriptions (${selectedResources.length})`,
             onAction: () => {
-              if (overBulkLimit) return; // safety guard — button should be disabled
+              if (!hasEnoughBulkCredits) return;
               setBulkModalOpen(true);
             },
-            disabled: overBulkLimit,
+            disabled: !hasEnoughBulkCredits,
           },
         ];
 
@@ -540,6 +539,14 @@ export default function ProductsDashboard() {
         )}
 
         {/* ── Stat Cards ────────────────────────────────────────────────── */}
+        <CreditUsageCard
+          compact
+          title="Credits remaining"
+          creditsUsed={credits.creditsUsed}
+          creditsLimit={credits.creditsLimit}
+          creditsRemaining={credits.creditsRemaining}
+        />
+
         <div style={{ display: "flex", gap: "14px", flexWrap: "wrap" }}>
           <StatCard
             label="Total Products"
@@ -637,39 +644,26 @@ export default function ProductsDashboard() {
 
             <Divider />
 
-            {/* Bulk limit warning — shown when selection is at/over limit */}
-            {selectedResources.length > 0 && bulkLimit !== 999999 && (
+            {/* Credit availability warning */}
+            {selectedResources.length > 0 && (
               <Box paddingInline="400" paddingBlockStart="200">
-                {overBulkLimit ? (
+                {!hasEnoughBulkCredits ? (
                   <Banner
                     tone="critical"
-                    title="Bulk generation not available"
+                    title="Not enough credits"
                     action={{
-                      content: "Upgrade plan",
-                      url: "/app/billing",
+                      content: "View credits",
+                      url: "/app/credits",
                       target: "_self",
                     }}
                   >
-                    Bulk generation is only available on paid plans. Upgrade to
-                    generate descriptions for multiple products at once.
-                  </Banner>
-                ) : atBulkLimit ? (
-                  <Banner
-                    tone="warning"
-                    title={`Selection limit reached (${bulkLimit}/${bulkLimit})`}
-                  >
-                    You've reached the maximum for your {shopPlan} plan.{" "}
-                    {shopPlan !== "pro" && (
-                      <a href="/app/billing" style={{ color: "#2c6ecb" }}>
-                        Upgrade for a higher limit.
-                      </a>
-                    )}
+                    This action costs {formatCredits(bulkCreditCost)} credits. You have{" "}
+                    {formatCredits(credits.creditsRemaining)} remaining.
                   </Banner>
                 ) : (
                   <Text as="p" variant="bodySm" tone="subdued">
-                    {selectedResources.length} selected ·{" "}
-                    {bulkLimit - selectedResources.length} remaining ({shopPlan}{" "}
-                    plan limit: {bulkLimit})
+                    Credit cost before generation: {formatCredits(bulkCreditCost)}.{" "}
+                    Remaining credits before action: {formatCredits(credits.creditsRemaining)}.
                   </Text>
                 )}
               </Box>
@@ -723,8 +717,8 @@ export default function ProductsDashboard() {
         onFiltersChange={setPendingFilters}
         onApply={() => setAppliedFilters({ ...pendingFilters })}
         onClear={() => setPendingFilters(EMPTY_FILTERS)}
-        productTypeOptions={productTypes}
-        collectionOptions={collections}
+        productTypeOptions={productTypes as string[]}
+        collectionOptions={collections as string[]}
       />
 
       {/* ── Bulk Generate modal ───────────────────────────────────────────── */}
@@ -733,8 +727,7 @@ export default function ProductsDashboard() {
         selectedProductIds={selectedResources}
         onClose={() => setBulkModalOpen(false)}
         onSuccess={handleBulkSuccess}
-        bulkLimit={bulkLimit}
-        shopPlan={shopPlan}
+        creditsRemaining={credits.creditsRemaining}
       />
     </Page>
   );

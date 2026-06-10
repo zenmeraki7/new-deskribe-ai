@@ -3,8 +3,8 @@ import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-r
 import crypto from "node:crypto";
 import { z } from "zod";
 
-import { authenticate } from "../../shopify.server";
 import { db } from "../../lib/db.server";
+import { requireAdminSession, type AdminAuthContext } from "../../lib/auth.server";
 import { enqueueGenerationJobs } from "../../lib/enqueue.server";
 import { suggestKeywords } from "../../lib/ai.server";
 import { sanitiseHtml, stripHtml } from "../../lib/html.server";
@@ -19,9 +19,9 @@ import {
   UUID_V4_RE,
 } from "../../routes/app.products.$productId.constants";
 import type { LoaderData, ProductMeta, DraftResult } from "../../routes/app.products.$productId.types";
-import { checkAndIncrementRateLimit, checkAndIncrementKeywordLimit, refundRateLimit } from "../../lib/rateLimiter.server";
+import { checkAndIncrementRateLimit, checkAndIncrementKeywordLimit } from "../../lib/rateLimiter.server";
 import { resolvePlan, type Plan } from "../../lib/rateLimiter.server";
-import { CREDIT_COSTS, deductCredits, refundCredits } from "../../lib/creditService.server";
+import { CREDIT_COSTS, deductCredits, getCreditBalance, refundCredits } from "../../lib/creditService.server";
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -29,7 +29,7 @@ import { CREDIT_COSTS, deductCredits, refundCredits } from "../../lib/creditServ
 // Supports route param being either numeric ID or full GID.
 // ─────────────────────────────────────────────────────────────────────────────
 async function getShopPlan(
-  billing: Awaited<ReturnType<typeof authenticate.admin>>["billing"],
+  billing: AdminAuthContext["billing"],
 ): Promise<Plan> {
   try {
     const { appSubscriptions } = await billing.check();
@@ -246,8 +246,7 @@ async function fetchProductMeta(adminGraphql: (query: string, opts?: any) => Pro
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function loader({ request, params }: LoaderFunctionArgs): Promise<Response> {
-  const { admin, session, billing } = await authenticate.admin(request);
-  const shopDomain = session.shop;
+  const { admin, billing, shopDomain } = await requireAdminSession(request);
 
   const rawId = params.productId ?? "";
   const productGid = normalizeProductGid(rawId);
@@ -330,6 +329,7 @@ export async function loader({ request, params }: LoaderFunctionArgs): Promise<R
 
   // ── Fetch shop plan ─────────────────────────────────────────────────────
   const shopPlan = await getShopPlan(billing);
+  const credits = await getCreditBalance(shopDomain, shopPlan);
 
   // ── Fetch custom templates for this shop ────────────────────────────────
   const customTemplates = await db.customTemplate.findMany({
@@ -355,6 +355,12 @@ export async function loader({ request, params }: LoaderFunctionArgs): Promise<R
     latestDraft: sanitizedLatestDraft,
     policyWarnings,
     shopPlan,
+    credits: {
+      creditsUsed: credits.creditsUsed,
+      creditsLimit: credits.creditsLimit,
+      creditsRemaining: credits.creditsRemaining,
+      resetDate: credits.resetDate.toISOString(),
+    },
     customTemplates: customTemplates.map((t) => ({
       ...t,
       createdAt: t.createdAt.toISOString(),
@@ -367,8 +373,7 @@ export async function loader({ request, params }: LoaderFunctionArgs): Promise<R
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function action({ request, params }: ActionFunctionArgs): Promise<Response> {
-  const { admin, session, billing } = await authenticate.admin(request);
-  const shopDomain = session.shop;
+  const { admin, billing, shopDomain } = await requireAdminSession(request);
 
   const rawId = params.productId ?? "";
   const productGid = normalizeProductGid(rawId);
@@ -481,8 +486,6 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
           error: isGlobal
             ? "Service is temporarily at capacity. Please try again in a few hours."
             : "Too many generation requests. Please try again in a minute.",
-          shopUsed: limitResult.shopUsed,
-          shopLimit: limitResult.shopLimit,
           plan,
         },
         { status: 429 },
@@ -522,7 +525,6 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
   });
 
     if (existing) {
-       await refundRateLimit(shopDomain, plan);
       return json({
         ok: true,
         kind: "generate",
@@ -538,17 +540,17 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
       plan,
       amount: CREDIT_COSTS.standardGeneration,
       requestId: creditRequestId,
+      kind: "generation",
       metadata: { intent: "generate", productId: productGid },
     });
 
     if (!credit.allowed) {
-      await refundRateLimit(shopDomain, plan);
       return json(
         {
           ok: false,
           kind: "error",
           code: "INSUFFICIENT_CREDITS",
-          error: `Not enough monthly credits remaining (${credit.creditsRemaining}/${credit.creditsLimit}).`,
+          error: "Not enough credits",
           creditsRemaining: credit.creditsRemaining,
           creditsLimit: credit.creditsLimit,
           resetDate: credit.resetDate.toISOString(),
@@ -581,7 +583,6 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
         requestId: `${creditRequestId}:enqueue-empty`,
         metadata: { intent: "generate", productId: productGid },
       });
-      await refundRateLimit(shopDomain, plan);   // ← refund
       return json(
         { ok: false, kind: "error", error: "Product not found or access denied", code: "NOT_FOUND_OR_DENIED" },
         { status: 403 },
@@ -591,7 +592,6 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     return json({ ok: true, kind: "generate", jobId: jobIds[0], status: "PENDING" });
 
   } catch (err) {
-    await refundRateLimit(shopDomain, plan);     // ← refund
     await refundCredits({
       shopId: shopDomain,
       plan,
@@ -681,17 +681,17 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
         plan: keywordPlan,
         amount: CREDIT_COSTS.keywordSuggestion,
         requestId: keywordCreditRequestId,
+        kind: "generation",
         metadata: { intent: "suggest_keywords", productId: productGid },
       });
 
       if (!credit.allowed) {
-        await refundRateLimit(shopDomain, keywordPlan);
         return json(
           {
             ok: false,
             kind: "error",
             code: "INSUFFICIENT_CREDITS",
-            error: `Not enough monthly credits remaining (${credit.creditsRemaining}/${credit.creditsLimit}).`,
+            error: "Not enough credits",
             creditsRemaining: credit.creditsRemaining,
             creditsLimit: credit.creditsLimit,
             resetDate: credit.resetDate.toISOString(),
@@ -719,7 +719,6 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
 
       return json({ ok: true, kind: "suggest_keywords", keywords: safe });
     } catch (err) {
-      await refundRateLimit(shopDomain, keywordPlan);
       if (keywordCreditRequestId) {
         await refundCredits({
           shopId: shopDomain,

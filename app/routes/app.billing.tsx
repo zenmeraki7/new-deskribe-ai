@@ -1,6 +1,6 @@
 import { useActionData, useLoaderData, useSubmit } from "@remix-run/react";
-import { Banner, Layout, Page, BlockStack } from "@shopify/polaris";
-import { authenticate } from "app/shopify.server";
+import { Banner, Layout, Page, BlockStack, Button, InlineStack } from "@shopify/polaris";
+import { requireAdminSession } from "../lib/auth.server";
 import { json, redirect } from "@remix-run/node";
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "@remix-run/node";
 import { useEffect, useState } from "react";
@@ -40,7 +40,7 @@ const isTestBilling = process.env.IS_TEST_BILLING === "true";
 
 // ── Loader ───────────────────────────────────────────────────────────────────
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { billing, session } = await authenticate.admin(request);
+  const { billing } = await requireAdminSession(request);
 
   const url = new URL(request.url);
   const chargeId = url.searchParams.get("charge_id");
@@ -76,7 +76,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 // ── Action ───────────────────────────────────────────────────────────────────
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { billing, session } = await authenticate.admin(request);
+  const { billing, shopDomain } = await requireAdminSession(request);
   const formData = await request.formData();
   const intent = formData.get("intent");
 
@@ -99,7 +99,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const planName = PLAN_NAME_MAP[planId]?.[billingMode];
     if (!planName) return json({ error: "Invalid plan" }, { status: 400 });
 
-    const returnUrl = `https://${session.shop}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`;
+    const returnUrl = `https://${shopDomain}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`;
 
     try {
       await billing.request({
@@ -184,46 +184,24 @@ export default function Billing() {
               />
             )}
 
-            {/* Billing toggle */}
-            <div style={{ display: "flex", justifyContent: "center", gap: "8px", margin: "8px 0 4px" }}>
+            <InlineStack align="center" gap="200">
               {(["monthly", "yearly"] as const).map((mode) => (
-                <button
+                <Button
                   key={mode}
                   onClick={() => setBilling(mode)}
-                  style={{
-                    padding: "7px 20px",
-                    borderRadius: "8px",
-                    border: "1px solid #E5E7EB",
-                    background: billing === mode ? "#ffffff" : "transparent",
-                    fontWeight: billing === mode ? 600 : 400,
-                    fontSize: "13px",
-                    cursor: "pointer",
-                    color: billing === mode ? "#111827" : "#6B7280",
-                    boxShadow: billing === mode ? "0 1px 4px rgba(0,0,0,0.08)" : "none",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "6px",
-                  }}
+                  variant={billing === mode ? "primary" : "secondary"}
                 >
                   {mode === "monthly" ? "Pay monthly" : "Pay yearly"}
-                  {mode === "yearly" && (
-                    <span style={{ background: "#F0FDF4", color: "#15803D", fontSize: "11px", fontWeight: 600, padding: "2px 7px", borderRadius: "20px" }}>
-                      Save 30%
-                    </span>
-                  )}
-                </button>
+                </Button>
               ))}
-            </div>
+            </InlineStack>
 
-            {/* Pricing Cards */}
-            <div style={{ marginBottom: "20px" }}>
-              <PricingCards
-                billing={billing}
-                currentPlanId={currentPlanId}
-                currentBillingInterval={currentBillingInterval}
-                onSelectPlan={handleSelectPlan}
-              />
-            </div>
+            <PricingCards
+              billing={billing}
+              currentPlanId={currentPlanId}
+              currentBillingInterval={currentBillingInterval}
+              onSelectPlan={handleSelectPlan}
+            />
           </BlockStack>
         </Layout.Section>
       </Layout>

@@ -1,7 +1,7 @@
 // FILE: app/routes/app.index.tsx
 
 import crypto from "node:crypto";
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import {
   Page,
   Layout,
@@ -29,14 +29,15 @@ import {
   suggestKeywords,
   generateProductDescription,
 } from "../lib/ai.server";
-import { authenticate } from "../shopify.server";
+import { requireAdminSession } from "../lib/auth.server";
 import {
   checkAndIncrementKeywordLimit,
   checkAndIncrementRateLimit,
-  refundRateLimit,
   resolvePlan,
 } from "../lib/rateLimiter.server";
-import { CREDIT_COSTS, deductCredits, refundCredits } from "../lib/creditService.server";
+import { CREDIT_COSTS } from "../lib/credits";
+import { CreditUsageCard } from "../components/CreditUsageCard";
+import { formatCredits, hasCredits } from "../lib/credits";
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -76,6 +77,12 @@ interface ShopifyProduct {
 
 interface LoaderData {
   product: ShopifyProduct | null;
+  credits: {
+    creditsUsed: number;
+    creditsLimit: number;
+    creditsRemaining: number;
+    resetDate: string;
+  };
   error?: string;
 }
 
@@ -84,14 +91,17 @@ interface LoaderData {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const { admin, billing } = await authenticate.admin(request);
+  const { getCreditBalance } = await import("../lib/creditService.server");
+  const { admin, billing, shopDomain } = await requireAdminSession(request);
+  let plan = resolvePlan(null);
 
   // Safe billing check — don't crash if it fails
   try {
-   const { hasActivePayment } = await billing.check();
+   const { hasActivePayment, appSubscriptions } = await billing.check();
+   plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
 
     if (!hasActivePayment) {
-       throw redirect(`https://${session.shop}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`);
+       throw redirect(`https://${shopDomain}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`);
 }
   
   } catch (err) {
@@ -100,6 +110,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
     // Otherwise log and continue — don't crash the app
     console.error("[billing.check error]", err);
   }
+  const credits = await getCreditBalance(shopDomain, plan);
+
   try {
     const resp = await admin.graphql(`
       #graphql
@@ -124,10 +136,24 @@ export async function loader({ request }: LoaderFunctionArgs) {
     const product: ShopifyProduct | null =
       data?.data?.products?.nodes?.[0] ?? null;
 
-    return json<LoaderData>({ product });
+    return json<LoaderData>({
+      product,
+      credits: {
+        creditsUsed: credits.creditsUsed,
+        creditsLimit: credits.creditsLimit,
+        creditsRemaining: credits.creditsRemaining,
+        resetDate: credits.resetDate.toISOString(),
+      },
+    });
   } catch (err) {
     return json<LoaderData>({
       product: null,
+      credits: {
+        creditsUsed: credits.creditsUsed,
+        creditsLimit: credits.creditsLimit,
+        creditsRemaining: credits.creditsRemaining,
+        resetDate: credits.resetDate.toISOString(),
+      },
       error: "Failed to load product.",
     });
   }
@@ -138,7 +164,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function action({ request }: ActionFunctionArgs) {
-  const { admin, billing, session } = await authenticate.admin(request);
+  const { deductCredits, refundCredits } = await import("../lib/creditService.server");
+  const { admin, billing, shopDomain } = await requireAdminSession(request);
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
 
@@ -154,7 +181,7 @@ export async function action({ request }: ActionFunctionArgs) {
 
     const { appSubscriptions } = await billing.check();
     const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
-    const rate = await checkAndIncrementKeywordLimit(session.shop, plan);
+    const rate = await checkAndIncrementKeywordLimit(shopDomain, plan);
     if (!rate.allowed) {
       return json(
         {
@@ -172,21 +199,21 @@ export async function action({ request }: ActionFunctionArgs) {
 
     const creditRequestId = crypto.randomUUID();
     const credit = await deductCredits({
-      shopId: session.shop,
+      shopId: shopDomain,
       plan,
       amount: CREDIT_COSTS.keywordSuggestion,
       requestId: creditRequestId,
+      kind: "generation",
       metadata: { intent: "index_suggest_keywords" },
     });
 
     if (!credit.allowed) {
-      await refundRateLimit(session.shop, plan);
       return json(
         {
           ok: false,
           kind: "error",
           code: "INSUFFICIENT_CREDITS",
-          error: `Not enough monthly credits remaining (${credit.creditsRemaining}/${credit.creditsLimit}).`,
+          error: "Not enough credits",
           creditsRemaining: credit.creditsRemaining,
           creditsLimit: credit.creditsLimit,
           resetDate: credit.resetDate.toISOString(),
@@ -199,9 +226,8 @@ export async function action({ request }: ActionFunctionArgs) {
       const keywords = await suggestKeywords(title, vendor, productType, tags);
       return json({ ok: true, kind: "suggest_keywords", keywords });
     } catch (err) {
-      await refundRateLimit(session.shop, plan);
       await refundCredits({
-        shopId: session.shop,
+        shopId: shopDomain,
         plan,
         amount: CREDIT_COSTS.keywordSuggestion,
         requestId: `${creditRequestId}:failed`,
@@ -223,11 +249,10 @@ export async function action({ request }: ActionFunctionArgs) {
   if (intent === "generate") {
     let creditRequestId: string | null = null;
     let plan = resolvePlan(null);
-    let rateApplied = false;
     try {
       const { appSubscriptions } = await billing.check();
       plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
-      const rate = await checkAndIncrementRateLimit(session.shop, plan);
+      const rate = await checkAndIncrementRateLimit(shopDomain, plan);
       if (!rate.allowed) {
         return json(
           {
@@ -242,7 +267,6 @@ export async function action({ request }: ActionFunctionArgs) {
           { status: 429 },
         );
       }
-      rateApplied = true;
 
       const productId = String(form.get("productId") ?? "");
       const vibe = String(form.get("vibe") ?? "casual");
@@ -261,7 +285,6 @@ export async function action({ request }: ActionFunctionArgs) {
       const p = data?.data?.product;
 
       if (!p) {
-        if (rateApplied) await refundRateLimit(session.shop, plan);
         return json(
           { ok: false, kind: "error", error: "Product not found." },
           { status: 404 },
@@ -270,21 +293,21 @@ export async function action({ request }: ActionFunctionArgs) {
 
       creditRequestId = crypto.randomUUID();
       const credit = await deductCredits({
-        shopId: session.shop,
+        shopId: shopDomain,
         plan,
         amount: CREDIT_COSTS.standardGeneration,
         requestId: creditRequestId,
+        kind: "generation",
         metadata: { intent: "index_generate", productId },
       });
 
       if (!credit.allowed) {
-        if (rateApplied) await refundRateLimit(session.shop, plan);
         return json(
           {
             ok: false,
             kind: "error",
             code: "INSUFFICIENT_CREDITS",
-            error: `Not enough monthly credits remaining (${credit.creditsRemaining}/${credit.creditsLimit}).`,
+            error: "Not enough credits",
             creditsRemaining: credit.creditsRemaining,
             creditsLimit: credit.creditsLimit,
             resetDate: credit.resetDate.toISOString(),
@@ -322,10 +345,9 @@ export async function action({ request }: ActionFunctionArgs) {
         },
       });
     } catch (err) {
-      if (rateApplied) await refundRateLimit(session.shop, plan);
       if (creditRequestId) {
         await refundCredits({
-          shopId: session.shop,
+          shopId: shopDomain,
           plan,
           amount: CREDIT_COSTS.standardGeneration,
           requestId: `${creditRequestId}:failed`,
@@ -399,7 +421,7 @@ export async function action({ request }: ActionFunctionArgs) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function IndexPage() {
-  const { product, error } = useLoaderData<typeof loader>();
+  const { product, error, credits } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
 
   // FIX: Separate fetchers for suggest and generate to avoid state conflicts
@@ -412,6 +434,7 @@ export default function IndexPage() {
   const [format, setFormat] = useState("paragraph");
   const [keywords, setKeywords] = useState("");
   const [includeSocials, setIncludeSocials] = useState(false);
+  const [localCreditError, setLocalCreditError] = useState<string | null>(null);
 
   // FIX: showSuccessBanner is now properly wired
   const [showSuccessBanner, setShowSuccessBanner] = useState(false);
@@ -426,8 +449,37 @@ export default function IndexPage() {
 
   // Show errors from either fetcher
   const actionError =
-    (generateFetcher.data?.ok === false ? generateFetcher.data.error : null) ??
-    (suggestFetcher.data?.ok === false ? suggestFetcher.data.error : null);
+    localCreditError ??
+    (generateFetcher.data?.ok === false
+      ? generateFetcher.data.code === "INSUFFICIENT_CREDITS"
+        ? "Not enough credits"
+        : generateFetcher.data.error
+      : null) ??
+    (suggestFetcher.data?.ok === false
+      ? suggestFetcher.data.code === "INSUFFICIENT_CREDITS"
+        ? "Not enough credits"
+        : suggestFetcher.data.error
+      : null);
+
+  const creditCosts = useMemo(
+    () => ({
+      generation: CREDIT_COSTS.standardGeneration,
+      keywordSuggestion: CREDIT_COSTS.keywordSuggestion,
+    }),
+    [],
+  );
+
+  const remainingCredits = useMemo(() => {
+    const spent =
+      (generateFetcher.data?.ok === true && generateFetcher.data?.kind === "generate"
+        ? creditCosts.generation
+        : 0) +
+      (suggestFetcher.data?.ok === true && suggestFetcher.data?.kind === "suggest_keywords"
+        ? creditCosts.keywordSuggestion
+        : 0);
+
+    return Math.max(0, credits.creditsRemaining - spent);
+  }, [credits.creditsRemaining, creditCosts, generateFetcher.data, suggestFetcher.data]);
 
   const isApplying = applyFetcher.state !== "idle";
 
@@ -441,6 +493,11 @@ export default function IndexPage() {
 
   const handleGenerate = useCallback(() => {
     if (!product) return;
+    if (!hasCredits(remainingCredits, creditCosts.generation)) {
+      setLocalCreditError("Not enough credits");
+      return;
+    }
+    setLocalCreditError(null);
     const fd = new FormData();
     fd.append("intent", "generate");
     fd.append("productId", product.id);
@@ -449,10 +506,15 @@ export default function IndexPage() {
     fd.append("keywords", keywords);
     fd.append("includeSocials", String(includeSocials));
     generateFetcher.submit(fd, { method: "POST" });
-  }, [product, vibe, format, keywords, includeSocials, generateFetcher]);
+  }, [product, remainingCredits, creditCosts.generation, vibe, format, keywords, includeSocials, generateFetcher]);
 
   const handleSuggestKeywords = useCallback(() => {
     if (!product) return;
+    if (!hasCredits(remainingCredits, creditCosts.keywordSuggestion)) {
+      setLocalCreditError("Not enough credits");
+      return;
+    }
+    setLocalCreditError(null);
     const fd = new FormData();
     fd.append("intent", "suggest_keywords");
     fd.append("title", product.title);
@@ -460,7 +522,7 @@ export default function IndexPage() {
     fd.append("productType", product.productType);
     fd.append("tags", product.tags.join(","));
     suggestFetcher.submit(fd, { method: "POST" });
-  }, [product, suggestFetcher]);
+  }, [product, remainingCredits, creditCosts.keywordSuggestion, suggestFetcher]);
 
   const handleKeywordTagRemove = useCallback((kw: string) => {
     setKeywords((prev) =>
@@ -576,6 +638,14 @@ export default function IndexPage() {
             </Banner>
           )}
 
+          <CreditUsageCard
+            compact
+            title="Credits remaining"
+            creditsUsed={credits.creditsLimit - remainingCredits}
+            creditsLimit={credits.creditsLimit}
+            creditsRemaining={remainingCredits}
+          />
+
           <div
             style={{
               display: "grid",
@@ -686,7 +756,11 @@ export default function IndexPage() {
                           <Button
                             onClick={handleSuggestKeywords}
                             loading={isSuggestingKeywords}
-                            disabled={isGenerating || isSuggestingKeywords}
+                            disabled={
+                              isGenerating ||
+                              isSuggestingKeywords ||
+                              !hasCredits(remainingCredits, creditCosts.keywordSuggestion)
+                            }
                           >
                             Suggest
                           </Button>
@@ -749,10 +823,30 @@ export default function IndexPage() {
                     tone="success"
                     onClick={handleGenerate}
                     loading={isGenerating}
-                    disabled={isGenerating || isSuggestingKeywords}
+                    disabled={
+                      isGenerating ||
+                      isSuggestingKeywords ||
+                      !hasCredits(remainingCredits, creditCosts.generation)
+                    }
                   >
                     Generate Description
                   </Button>
+                  <InlineStack align="space-between">
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      Credit cost before generation
+                    </Text>
+                    <Text as="p" variant="bodySm" fontWeight="semibold">
+                      {formatCredits(creditCosts.generation)} credit
+                    </Text>
+                  </InlineStack>
+                  <InlineStack align="space-between">
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      Remaining credits before action
+                    </Text>
+                    <Text as="p" variant="bodySm" fontWeight="semibold">
+                      {formatCredits(remainingCredits)}
+                    </Text>
+                  </InlineStack>
                 </BlockStack>
               </Card>
 
