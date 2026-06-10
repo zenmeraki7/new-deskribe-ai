@@ -94,6 +94,7 @@ interface PollPayload {
 function useJobPoll() {
   const fetcher = useFetcher<PollPayload>();
   const timerRef = useRef<number | null>(null);
+  const activeJobIdRef = useRef<string | null>(null);
 
   const [jobId, setJobId] = useState<string | null>(null);
   const [status, setStatus] = useState<PollStatus>("IDLE");
@@ -106,16 +107,19 @@ function useJobPoll() {
     [],
   );
 
-  const stop = useCallback(() => {
-    setJobId(null);
-  }, []);
-
   const clearTimer = useCallback(() => {
     if (timerRef.current) {
       window.clearTimeout(timerRef.current);
       timerRef.current = null;
     }
   }, []);
+
+  const stop = useCallback((reason = "manual") => {
+    console.log("[poll] stop", { jobId: activeJobIdRef.current, reason });
+    clearTimer();
+    activeJobIdRef.current = null;
+    setJobId(null);
+  }, [clearTimer]);
 
   const scheduleMs = useCallback(() => {
     const base = JOB_POLL_INTERVAL_MS;
@@ -128,15 +132,17 @@ function useJobPoll() {
     if (!jobId) return;
 
     let stopped = false;
+    activeJobIdRef.current = jobId;
 
     const tick = () => {
       if (stopped) return;
+      if (activeJobIdRef.current !== jobId) return;
       if (typeof document !== "undefined" && document.hidden) {
         timerRef.current = window.setTimeout(tick, scheduleMs());
         return;
       }
+      console.log("[poll] request", { jobId });
       fetcher.load(`/app/api/job/${jobId}`);
-      timerRef.current = window.setTimeout(tick, scheduleMs());
     };
 
     tick();
@@ -149,27 +155,49 @@ function useJobPoll() {
   }, [jobId, clearTimer, scheduleMs]);
 
   useEffect(() => {
+    if (fetcher.state !== "idle") return;
     if (!fetcher.data) return;
 
     const nextStatus: PollStatus = fetcher.data.status ?? "IDLE";
+    const currentJobId = activeJobIdRef.current;
+    console.log("[poll] response", {
+      jobId: currentJobId,
+      status: nextStatus,
+      hasResult: Boolean(fetcher.data.result),
+      errorMessage: fetcher.data.errorMessage ?? null,
+    });
+
     setStatus(nextStatus);
     setErrorMessage(fetcher.data.errorMessage ?? null);
 
     if (fetcher.data.result) setResult(fetcher.data.result);
 
     if (terminal.has(nextStatus)) {
-      if (nextStatus === "COMPLETED" && jobId) setLastCompletedJobId(jobId);
-      stop();
+      if (nextStatus === "COMPLETED" && currentJobId) setLastCompletedJobId(currentJobId);
+      stop(`terminal:${nextStatus}`);
+      return;
     }
-  }, [fetcher.data, stop, terminal, jobId]);
+
+    if (currentJobId && fetcher.state === "idle") {
+      clearTimer();
+      timerRef.current = window.setTimeout(() => {
+        if (activeJobIdRef.current !== currentJobId) return;
+        console.log("[poll] request", { jobId: currentJobId });
+        fetcher.load(`/app/api/job/${currentJobId}`);
+      }, scheduleMs());
+    }
+  }, [fetcher.data, fetcher.state, stop, terminal, clearTimer, scheduleMs, fetcher]);
 
   const startPolling = useCallback((id: string) => {
     if (!isUuidV4(id)) return;
+    console.log("[poll] start", { jobId: id });
+    clearTimer();
+    activeJobIdRef.current = id;
     setResult(null);
     setErrorMessage(null);
     setStatus("PENDING");
     setJobId(id);
-  }, []);
+  }, [clearTimer]);
 
   return {
     startPolling,
@@ -766,12 +794,6 @@ export default function ProductEditorModalRoute() {
               >
                 <BlockStack gap="100">
                   <Text as="p" variant="bodySm">{generateError}</Text>
-                  {generateFetcher.data?.shopUsed !== undefined && (
-                    <Text as="p" variant="bodySm" tone="subdued">
-                      Usage today: {generateFetcher.data.shopUsed} /{" "}
-                      {generateFetcher.data.shopLimit}
-                    </Text>
-                  )}
                 </BlockStack>
               </Banner>
             )}

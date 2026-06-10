@@ -19,7 +19,7 @@ import {
   UUID_V4_RE,
 } from "../../routes/app.products.$productId.constants";
 import type { LoaderData, ProductMeta, DraftResult } from "../../routes/app.products.$productId.types";
-import { checkAndIncrementRateLimit, checkAndIncrementKeywordLimit, refundRateLimit } from "../../lib/rateLimiter.server";
+import { checkAndIncrementRateLimit, checkAndIncrementKeywordLimit } from "../../lib/rateLimiter.server";
 import { resolvePlan, type Plan } from "../../lib/rateLimiter.server";
 import { CREDIT_COSTS, deductCredits, refundCredits } from "../../lib/creditService.server";
 
@@ -355,6 +355,7 @@ export async function loader({ request, params }: LoaderFunctionArgs): Promise<R
     latestDraft: sanitizedLatestDraft,
     policyWarnings,
     shopPlan,
+    shopDomain,
     customTemplates: customTemplates.map((t) => ({
       ...t,
       createdAt: t.createdAt.toISOString(),
@@ -481,8 +482,6 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
           error: isGlobal
             ? "Service is temporarily at capacity. Please try again in a few hours."
             : "Too many generation requests. Please try again in a minute.",
-          shopUsed: limitResult.shopUsed,
-          shopLimit: limitResult.shopLimit,
           plan,
         },
         { status: 429 },
@@ -522,7 +521,6 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
   });
 
     if (existing) {
-       await refundRateLimit(shopDomain, plan);
       return json({
         ok: true,
         kind: "generate",
@@ -538,17 +536,17 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
       plan,
       amount: CREDIT_COSTS.standardGeneration,
       requestId: creditRequestId,
+      kind: "generation",
       metadata: { intent: "generate", productId: productGid },
     });
 
     if (!credit.allowed) {
-      await refundRateLimit(shopDomain, plan);
       return json(
         {
           ok: false,
           kind: "error",
           code: "INSUFFICIENT_CREDITS",
-          error: `Not enough monthly credits remaining (${credit.creditsRemaining}/${credit.creditsLimit}).`,
+          error: "Not enough credits",
           creditsRemaining: credit.creditsRemaining,
           creditsLimit: credit.creditsLimit,
           resetDate: credit.resetDate.toISOString(),
@@ -581,7 +579,6 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
         requestId: `${creditRequestId}:enqueue-empty`,
         metadata: { intent: "generate", productId: productGid },
       });
-      await refundRateLimit(shopDomain, plan);   // ← refund
       return json(
         { ok: false, kind: "error", error: "Product not found or access denied", code: "NOT_FOUND_OR_DENIED" },
         { status: 403 },
@@ -591,7 +588,6 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     return json({ ok: true, kind: "generate", jobId: jobIds[0], status: "PENDING" });
 
   } catch (err) {
-    await refundRateLimit(shopDomain, plan);     // ← refund
     await refundCredits({
       shopId: shopDomain,
       plan,
@@ -681,17 +677,17 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
         plan: keywordPlan,
         amount: CREDIT_COSTS.keywordSuggestion,
         requestId: keywordCreditRequestId,
+        kind: "keyword_suggestion",
         metadata: { intent: "suggest_keywords", productId: productGid },
       });
 
       if (!credit.allowed) {
-        await refundRateLimit(shopDomain, keywordPlan);
         return json(
           {
             ok: false,
             kind: "error",
             code: "INSUFFICIENT_CREDITS",
-            error: `Not enough monthly credits remaining (${credit.creditsRemaining}/${credit.creditsLimit}).`,
+            error: "Not enough credits",
             creditsRemaining: credit.creditsRemaining,
             creditsLimit: credit.creditsLimit,
             resetDate: credit.resetDate.toISOString(),
@@ -719,7 +715,6 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
 
       return json({ ok: true, kind: "suggest_keywords", keywords: safe });
     } catch (err) {
-      await refundRateLimit(shopDomain, keywordPlan);
       if (keywordCreditRequestId) {
         await refundCredits({
           shopId: shopDomain,

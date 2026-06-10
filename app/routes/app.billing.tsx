@@ -1,25 +1,25 @@
+import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-run/node";
 import { useActionData, useLoaderData, useSubmit } from "@remix-run/react";
-import { Banner, Layout, Page, BlockStack } from "@shopify/polaris";
-import { authenticate } from "app/shopify.server";
-import { json, redirect } from "@remix-run/node";
-import type { LoaderFunctionArgs, ActionFunctionArgs } from "@remix-run/node";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  Banner,
+  BlockStack,
+  Button,
+  Card,
+  Divider,
+  InlineGrid,
+  InlineStack,
+  Layout,
+  Page,
+  ProgressBar,
+  Text,
+} from "@shopify/polaris";
+
 import { PricingCards } from "../components/PricingCards";
+import { authenticate } from "../shopify.server";
+import { CREDIT_COSTS, getCreditBalance, PLAN_CREDITS, PLAN_LABELS } from "../lib/creditService.server";
+import { resolvePlan } from "../lib/rateLimiter.server";
 
-// ── Retry helper ─────────────────────────────────────────────────────────────
-async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
-  for (let i = 0; i < attempts; i++) {
-    try {
-      return await fn();
-    } catch (err) {
-      if (i === attempts - 1) throw err;
-      await new Promise(r => setTimeout(r, 500 * (i + 1)));
-    }
-  }
-  throw new Error("unreachable");
-}
-
-// ── Plan names ───────────────────────────────────────────────────────────────
 const PLANS = [
   "Basic Plan",
   "Basic Plan Yearly",
@@ -29,120 +29,108 @@ const PLANS = [
   "Pro Plan Yearly",
 ] as const;
 
-// ── Plan ID map ──────────────────────────────────────────────────────────────
 const PLAN_NAME_MAP: Record<string, Record<string, string>> = {
-  basic:    { monthly: "Basic Plan",    yearly: "Basic Plan Yearly"    },
+  basic: { monthly: "Basic Plan", yearly: "Basic Plan Yearly" },
   advanced: { monthly: "Advanced Plan", yearly: "Advanced Plan Yearly" },
-  pro:      { monthly: "Pro Plan",      yearly: "Pro Plan Yearly"      },
+  pro: { monthly: "Pro Plan", yearly: "Pro Plan Yearly" },
 };
 
 const isTestBilling = process.env.IS_TEST_BILLING === "true";
 
-// ── Loader ───────────────────────────────────────────────────────────────────
+async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (i === attempts - 1) throw err;
+      await new Promise((resolve) => setTimeout(resolve, 500 * (i + 1)));
+    }
+  }
+  throw new Error("unreachable");
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { billing, session } = await authenticate.admin(request);
-
   const url = new URL(request.url);
   const chargeId = url.searchParams.get("charge_id");
 
   if (chargeId) {
-    // Wait briefly for Shopify to activate the new subscription
-      await new Promise(r => setTimeout(r, 3000));
-
+    await new Promise((resolve) => setTimeout(resolve, 3000));
     const { appSubscriptions } = await billing.check();
+    const sorted = [...(appSubscriptions ?? [])].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
 
-    // Cancel all subscriptions except the newly approved one
-      const sorted = [...(appSubscriptions ?? [])].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-  );
-
-  for (const sub of sorted.slice(1)) {
-    await withRetry(() => billing.cancel({ subscriptionId: sub.id }));
+    for (const sub of sorted.slice(1)) {
+      await withRetry(() => billing.cancel({ subscriptionId: sub.id }));
+    }
   }
 
-    // Re-fetch to get the clean state
-     const { appSubscriptions: updatedSubs } = await withRetry(() =>
-    billing.check({ plans: PLANS, isTest: isTestBilling })
-  );
+  const { appSubscriptions } = await billing.check({ plans: [...PLANS] as any, isTest: isTestBilling });
+  const subscription = appSubscriptions?.[0] ?? null;
+  const plan = resolvePlan(subscription?.name ?? null);
+  const credits = await getCreditBalance(session.shop, plan);
 
-  return json({ subscription: updatedSubs?.[0] ?? null });
-}
+  return json({
+    subscription,
+    plan,
+    credits: {
+      ...credits,
+      resetDate: credits.resetDate.toISOString(),
+    },
+  });
+};
 
-  // Normal page load
-  const { appSubscriptions } = await billing.check();
-
-  return json({ subscription: appSubscriptions?.[0] ?? null });
-};  // ← this closing brace was missing
-
-// ── Action ───────────────────────────────────────────────────────────────────
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { billing, session } = await authenticate.admin(request);
   const formData = await request.formData();
   const intent = formData.get("intent");
 
-  // ── Cancel ──────────────────────────────────────────────────────────────
   if (intent === "cancel") {
     const { appSubscriptions } = await billing.check();
     if (appSubscriptions?.[0]) {
-      await withRetry(() =>
-        billing.cancel({ subscriptionId: appSubscriptions[0].id })
-      );
+      await withRetry(() => billing.cancel({ subscriptionId: appSubscriptions[0].id }));
     }
     return json({ success: true, intent: "cancel" });
   }
 
-  // ── Subscribe ────────────────────────────────────────────────────────────
   if (intent === "subscribe") {
-    const planId      = formData.get("planId") as string;
-    const billingMode = formData.get("billingMode") as string;
-
+    const planId = String(formData.get("planId") ?? "");
+    const billingMode = String(formData.get("billingMode") ?? "");
     const planName = PLAN_NAME_MAP[planId]?.[billingMode];
     if (!planName) return json({ error: "Invalid plan" }, { status: 400 });
 
-    const returnUrl = `https://${session.shop}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`;
-
-    try {
-      await billing.request({
-        plan: planName,
-        isTest: process.env.IS_TEST_BILLING === "true",
-        returnUrl,
-      });
-    } catch (err) {
-      if (err instanceof Response) throw err;
-      throw err;
-    }
+    await (billing as any).request({
+      plan: planName,
+      isTest: isTestBilling,
+      returnUrl: `https://${session.shop}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`,
+    });
   }
 
   return json({ success: false });
 };
 
-// ── Component ─────────────────────────────────────────────────────────────────
 export default function Billing() {
-  const loaderData = useLoaderData<typeof loader>();
-  const subscription = "subscription" in loaderData ? loaderData.subscription : null;
+  const { subscription, plan, credits } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const submit = useSubmit();
   const [billing, setBilling] = useState<"monthly" | "yearly">("monthly");
 
-  const currentPlanId = (() => {
-    const name = subscription?.name?.toLowerCase() ?? "";
-    if (name.includes("pro"))      return "pro";
-    if (name.includes("advanced")) return "advanced";
-    if (name.includes("basic"))    return "basic";
-    return "free";
-  })();
-
-  const currentBillingInterval: "monthly" | "yearly" = (() => {
+  const currentBillingInterval: "monthly" | "yearly" = useMemo(() => {
     const name = subscription?.name?.toLowerCase() ?? "";
     return name.includes("yearly") ? "yearly" : "monthly";
-  })();
+  }, [subscription?.name]);
+
+  const usagePercent = Math.min(100, Math.max(0, (credits.creditsUsed / credits.creditsLimit) * 100));
+  const resetDate = new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(credits.resetDate));
 
   useEffect(() => {
     if (actionData && "intent" in actionData && actionData.intent === "cancel") {
-      shopify.toast.show("Plan Successfully Cancelled", {
-        duration: 5000,
-        isError: false,
-      });
+      shopify.toast.show("Plan cancelled", { duration: 5000, isError: false });
     }
   }, [actionData]);
 
@@ -156,74 +144,123 @@ export default function Billing() {
 
   function handleSelectPlan(planId: string) {
     if (planId === "free") return;
-    submit(
-      { intent: "subscribe", planId, billingMode: billing },
-      { method: "POST" }
-    );
+    submit({ intent: "subscribe", planId, billingMode: billing }, { method: "POST" });
   }
 
   return (
-    <Page title="Select a Plan">
+    <Page title="Billing">
       <Layout>
         <Layout.Section>
-          <BlockStack gap="400">
+          <BlockStack gap="500">
             {subscription ? (
               <Banner
-                title={`Active subscription: ${subscription.name}`}
+                title={`Active plan: ${subscription.name}`}
                 tone="success"
                 secondaryAction={{
-                  content: "Cancel Plan",
-                  onAction: () =>
-                    submit({ intent: "cancel" }, { method: "POST" }),
+                  content: "Cancel plan",
+                  onAction: () => submit({ intent: "cancel" }, { method: "POST" }),
                 }}
               />
             ) : (
-              <Banner
-                title="You do not have an active subscription."
-                tone="critical"
-              />
+              <Banner title="Active plan: Free" tone="info" />
             )}
 
-            {/* Billing toggle */}
-            <div style={{ display: "flex", justifyContent: "center", gap: "8px", margin: "8px 0 4px" }}>
-              {(["monthly", "yearly"] as const).map((mode) => (
-                <button
-                  key={mode}
-                  onClick={() => setBilling(mode)}
-                  style={{
-                    padding: "7px 20px",
-                    borderRadius: "8px",
-                    border: "1px solid #E5E7EB",
-                    background: billing === mode ? "#ffffff" : "transparent",
-                    fontWeight: billing === mode ? 600 : 400,
-                    fontSize: "13px",
-                    cursor: "pointer",
-                    color: billing === mode ? "#111827" : "#6B7280",
-                    boxShadow: billing === mode ? "0 1px 4px rgba(0,0,0,0.08)" : "none",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "6px",
-                  }}
-                >
-                  {mode === "monthly" ? "Pay monthly" : "Pay yearly"}
-                  {mode === "yearly" && (
-                    <span style={{ background: "#F0FDF4", color: "#15803D", fontSize: "11px", fontWeight: 600, padding: "2px 7px", borderRadius: "20px" }}>
-                      Save 30%
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
+            <Card>
+              <BlockStack gap="400">
+                <InlineStack align="space-between" blockAlign="center">
+                  <BlockStack gap="100">
+                    <Text as="h2" variant="headingMd">
+                      Monthly Credits
+                    </Text>
+                    <Text as="p" tone="subdued">
+                      {PLAN_LABELS[plan]} plan renews on {resetDate}
+                    </Text>
+                  </BlockStack>
+                  <Text as="p" variant="headingLg">
+                    {credits.creditsRemaining.toLocaleString()} remaining
+                  </Text>
+                </InlineStack>
 
-            {/* Pricing Cards */}
-            <div style={{ marginBottom: "20px" }}>
-              <PricingCards
-                billing={billing}
-                currentPlanId={currentPlanId}
-                currentBillingInterval={currentBillingInterval}
-                onSelectPlan={handleSelectPlan}
-              />
-            </div>
+                <ProgressBar progress={usagePercent} tone="primary" />
+
+                <InlineGrid columns={{ xs: 1, sm: 3 }} gap="300">
+                  <BlockStack gap="100">
+                    <Text as="p" tone="subdued">
+                      Credits Used
+                    </Text>
+                    <Text as="p" variant="headingMd">
+                      {credits.creditsUsed.toLocaleString()}
+                    </Text>
+                  </BlockStack>
+                  <BlockStack gap="100">
+                    <Text as="p" tone="subdued">
+                      Credits Remaining
+                    </Text>
+                    <Text as="p" variant="headingMd">
+                      {credits.creditsRemaining.toLocaleString()}
+                    </Text>
+                  </BlockStack>
+                  <BlockStack gap="100">
+                    <Text as="p" tone="subdued">
+                      Credits Reset Date
+                    </Text>
+                    <Text as="p" variant="headingMd">
+                      {resetDate}
+                    </Text>
+                  </BlockStack>
+                </InlineGrid>
+              </BlockStack>
+            </Card>
+
+            <Card>
+              <BlockStack gap="300">
+                <Text as="h2" variant="headingMd">
+                  Operation Costs
+                </Text>
+                <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="300">
+                  <Text as="p">Description Generation: {CREDIT_COSTS.descriptionGeneration} credit</Text>
+                  <Text as="p">SEO Optimization: {CREDIT_COSTS.seoOptimization} credits</Text>
+                  <Text as="p">Keyword Suggestions: {CREDIT_COSTS.keywordSuggestion} credit</Text>
+                  <Text as="p">Bulk Generation: {CREDIT_COSTS.bulkGenerationPerProduct} credit/product</Text>
+                </InlineGrid>
+              </BlockStack>
+            </Card>
+
+            <Card>
+              <BlockStack gap="300">
+                <Text as="h2" variant="headingMd">
+                  Plan Credits
+                </Text>
+                <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="300">
+                  {Object.entries(PLAN_CREDITS).map(([key, value]) => (
+                    <BlockStack key={key} gap="100">
+                      <Text as="p" variant="headingSm">
+                        {PLAN_LABELS[key as keyof typeof PLAN_LABELS]}
+                      </Text>
+                      <Text as="p">{value.toLocaleString()} credits/month</Text>
+                    </BlockStack>
+                  ))}
+                </InlineGrid>
+              </BlockStack>
+            </Card>
+
+            <InlineStack gap="200">
+              <Button pressed={billing === "monthly"} onClick={() => setBilling("monthly")}>
+                Pay monthly
+              </Button>
+              <Button pressed={billing === "yearly"} onClick={() => setBilling("yearly")}>
+                Pay yearly
+              </Button>
+            </InlineStack>
+
+            <Divider />
+
+            <PricingCards
+              billing={billing}
+              currentPlanId={plan}
+              currentBillingInterval={currentBillingInterval}
+              onSelectPlan={handleSelectPlan}
+            />
           </BlockStack>
         </Layout.Section>
       </Layout>

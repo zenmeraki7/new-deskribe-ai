@@ -10,8 +10,6 @@ import {
   checkAndIncrementKeywordLimit,
   checkAndIncrementRateLimit,
   resolvePlan,
-  refundRateLimit,
-  BULK_LIMITS,
 } from "../lib/rateLimiter.server";
 import { CREDIT_COSTS, deductCredits, refundCredits } from "../lib/creditService.server";
 
@@ -121,16 +119,16 @@ export async function action({ request }: ActionFunctionArgs) {
       plan,
       amount: CREDIT_COSTS.keywordSuggestion,
       requestId: creditRequestId,
+      kind: "keyword_suggestion",
       metadata: { intent: "suggest_keywords_bulk", productCount: productIds.length },
     });
 
     if (!credit.allowed) {
-      await refundRateLimit(shopDomain, plan);
       return json(
         {
           ok: false,
           code: "INSUFFICIENT_CREDITS",
-          error: `Not enough monthly credits remaining (${credit.creditsRemaining}/${credit.creditsLimit}).`,
+          error: "Not enough credits",
           creditsRemaining: credit.creditsRemaining,
           creditsLimit: credit.creditsLimit,
           resetDate: credit.resetDate.toISOString(),
@@ -200,7 +198,6 @@ export async function action({ request }: ActionFunctionArgs) {
 
       return json({ ok: true, kind: "suggest_keywords_bulk", keywords: safe });
     } catch (err) {
-      await refundRateLimit(shopDomain, plan);
       await refundCredits({
         shopId: shopDomain,
         plan,
@@ -218,20 +215,6 @@ export async function action({ request }: ActionFunctionArgs) {
 
   // ── Intent: bulk_generate ─────────────────────────────────────────────────
   if (intent === "bulk_generate") {
-    // ── Plan gate: free plan blocked entirely ────────────────────────────
-    const bulkLimit = BULK_LIMITS[plan];
-    if (bulkLimit === 0) {
-      return json(
-        {
-          ok: false,
-          error:
-            "Bulk generation is not available on the Free plan. Upgrade to Basic or higher.",
-          code: "PLAN_UPGRADE_REQUIRED",
-        },
-        { status: 403 },
-      );
-    }
-
     // ── Parse and validate productIds ────────────────────────────────────
     let productIds: string[];
     try {
@@ -252,18 +235,6 @@ export async function action({ request }: ActionFunctionArgs) {
       return json(
         { ok: false, error: `Invalid productIds: ${e.message}` },
         { status: 400 },
-      );
-    }
-
-    // ── Plan-specific bulk size cap ──────────────────────────────────────
-    if (bulkLimit !== Infinity && productIds.length > bulkLimit) {
-      return json(
-        {
-          ok: false,
-          error: `Your plan allows up to ${bulkLimit} products per bulk run.`,
-          code: "BULK_LIMIT_EXCEEDED",
-        },
-        { status: 403 },
       );
     }
 
@@ -295,16 +266,16 @@ export async function action({ request }: ActionFunctionArgs) {
       plan,
       amount: creditAmount,
       requestId: creditRequestId,
+      kind: "bulk_generation",
       metadata: { intent: "bulk_generate", productCount: productIds.length },
     });
 
     if (!credit.allowed) {
-      await refundRateLimit(shopDomain, plan);
       return json(
         {
           ok: false,
           code: "INSUFFICIENT_CREDITS",
-          error: `Not enough monthly credits remaining (${credit.creditsRemaining}/${credit.creditsLimit}).`,
+          error: "Not enough credits",
           creditsRemaining: credit.creditsRemaining,
           creditsLimit: credit.creditsLimit,
           resetDate: credit.resetDate.toISOString(),
@@ -335,7 +306,6 @@ export async function action({ request }: ActionFunctionArgs) {
         requestId: `${creditRequestId}:enqueue-empty`,
         metadata: { intent: "bulk_generate", productCount: productIds.length },
       });
-      await refundRateLimit(shopDomain, plan);   // ← refund
       return json(
         { ok: false, error: "No products could be enqueued", code: "ALL_SKIPPED" },
         { status: 403 },
@@ -354,7 +324,6 @@ export async function action({ request }: ActionFunctionArgs) {
 
       return json({ ok: true, jobIds, skipped, bulkId });
     } catch (err: any) {
-    await refundRateLimit(shopDomain, plan);     // ← refund
     await refundCredits({
       shopId: shopDomain,
       plan,

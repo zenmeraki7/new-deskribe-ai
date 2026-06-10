@@ -15,7 +15,6 @@ import {
   Card,
   Spinner,
   Button,
-  Tooltip,
 } from "@shopify/polaris";
 import { useFetcher } from "@remix-run/react";
 
@@ -50,14 +49,13 @@ interface BulkGenerateModalProps {
   selectedProductIds: string[];
   onClose: () => void;
   onSuccess: (jobIds: string[], bulkId: string | null) => void;
-  bulkLimit: number;
-  shopPlan: string;
 }
 
 interface BulkKeywordResult {
   ok: boolean;
   keywords?: string[];
   error?: string;
+  code?: string;
 }
 
 interface BulkResult {
@@ -68,8 +66,6 @@ interface BulkResult {
   error?: string;
   code?: string;
   plan?: string;
-  shopUsed?: number;
-  shopLimit?: number;
 }
 
 export function BulkGenerateModal({
@@ -77,8 +73,6 @@ export function BulkGenerateModal({
   selectedProductIds,
   onClose,
   onSuccess,
-  bulkLimit,
-  shopPlan,
 }: BulkGenerateModalProps) {
   const fetcher = useFetcher<BulkResult>();
   const keywordFetcher = useFetcher<BulkKeywordResult>();
@@ -96,12 +90,6 @@ export function BulkGenerateModal({
     keywordFetcher.data?.ok && Array.isArray(keywordFetcher.data?.keywords)
       ? keywordFetcher.data.keywords
       : [];
-
-      // Add these derived values inside the component:
-const keywordSuggestBlocked = shopPlan === "free";
-const keywordLimitError =
-  keywordFetcher.data?.ok === false &&
-  keywordFetcher.data?.code === "KEYWORD_LIMIT_EXCEEDED";
 
   // Notify parent on success
   useEffect(() => {
@@ -150,6 +138,7 @@ const keywordLimitError =
   }, []);
 
   const count = selectedProductIds.length;
+  const creditCost = count;
   const kwList = parseKeywords(keywords);
 
   return (
@@ -161,37 +150,19 @@ const keywordLimitError =
           <Text as="span" variant="headingMd">
             Bulk Generate AI Descriptions
           </Text>
-          <Badge tone="info">{count} product{count !== 1 ? "s" : ""}</Badge>
+          <Badge tone="info">{`${count} product${count !== 1 ? "s" : ""}`}</Badge>
         </InlineStack>
       }
       primaryAction={{
         content: isSubmitting ? "Queuing…" : `✨ Generate for ${count} product${count !== 1 ? "s" : ""}`,
         onAction: handleSubmit,
         loading: isSubmitting,
-        disabled: isSubmitting || count === 0 || (count > bulkLimit && bulkLimit !== 999999),
+        disabled: isSubmitting || count === 0,
       }}
       secondaryActions={[{ content: "Cancel", onAction: onClose }]}
-      large
     >
       <Modal.Section>
         <BlockStack gap="400">
-
-          {/* Plan limit guard */}
-          {count > bulkLimit && bulkLimit !== 999999 && (
-            <Banner
-              tone="critical"
-              title="Selection exceeds your plan limit"
-              action={
-                shopPlan !== "pro"
-                  ? { content: "Upgrade plan", url: "/app/billing", target: "_self" }
-                  : undefined
-              }
-            >
-              Your {shopPlan} plan supports up to {bulkLimit} products per bulk run.
-              Please go back and deselect {count - bulkLimit} product
-              {count - bulkLimit !== 1 ? "s" : ""} before generating.
-            </Banner>
-          )}
 
           {/* Success banner */}
           {result?.ok && (
@@ -218,27 +189,15 @@ const keywordLimitError =
             const isRateLimit =
               result.code === "RATE_LIMIT_EXCEEDED" ||
               result.code === "GLOBAL_LIMIT_REACHED";
-            const isFreePlan =
-              result.code === "RATE_LIMIT_EXCEEDED" && result.plan === "free";
             return (
               <Banner
                 tone={isRateLimit ? "warning" : "critical"}
-                title={isRateLimit ? "Generation limit reached" : "Failed to queue jobs"}
-                action={
-                  isFreePlan
-                    ? { content: "Upgrade plan", url: "/app/billing", target: "_self" }
-                    : undefined
-                }
+                title={result.code === "INSUFFICIENT_CREDITS" ? "Not enough credits" : isRateLimit ? "Service temporarily busy" : "Failed to queue jobs"}
               >
                 <BlockStack gap="100">
                   <Text as="p" variant="bodySm">
                     {result.error ?? "An unexpected error occurred. Please try again."}
                   </Text>
-                  {result.shopUsed !== undefined && (
-                    <Text as="p" variant="bodySm" tone="subdued">
-                      Usage today: {result.shopUsed} / {result.shopLimit}
-                    </Text>
-                  )}
                 </BlockStack>
               </Banner>
             );
@@ -247,6 +206,12 @@ const keywordLimitError =
           {/* Info card */}
           <Card>
             <BlockStack gap="200">
+              <InlineStack align="space-between" blockAlign="center">
+                <Text as="p" variant="bodyMd">
+                  Credit cost before generation
+                </Text>
+                <Badge tone="info">{`${creditCost} credit${creditCost === 1 ? "" : "s"}`}</Badge>
+              </InlineStack>
   <InlineStack gap="200" blockAlign="end">
     <div style={{ flex: 1 }}>
       <TextField
@@ -258,25 +223,16 @@ const keywordLimitError =
         disabled={isSubmitting}
         helpText="Comma-separated SEO keywords applied to all products."
       />
-    </div>
-    <div style={{ paddingTop: 22 }}>
-  {keywordSuggestBlocked ? (
-    <Tooltip content="Upgrade to Basic or higher to use keyword suggestions">
-      <Button size="slim" disabled>
-        ✨ Suggest
+    </div>    <div style={{ paddingTop: 22 }}>
+      <Button
+        onClick={handleSuggestKeywords}
+        loading={isSuggestingKeywords}
+        disabled={isSubmitting || count === 0}
+        size="slim"
+      >
+        Suggest
       </Button>
-    </Tooltip>
-  ) : (
-    <Button
-      onClick={handleSuggestKeywords}
-      loading={isSuggestingKeywords}
-      disabled={isSubmitting || count === 0}
-      size="slim"
-    >
-      ✨ Suggest
-    </Button>
-  )}
-</div>
+    </div>
   </InlineStack>
 
   {/* Current keyword tags */}
@@ -324,7 +280,7 @@ const keywordLimitError =
   {/* Suggested keyword chips */}
   {suggestedKeywords.length > 0 && (
     <BlockStack gap="100">
-      <Text variant="bodySm" tone="subdued">
+      <Text as="p" variant="bodySm" tone="subdued">
         Suggested for your selection — click to add:
       </Text>
       <InlineStack gap="100" wrap>
@@ -349,20 +305,6 @@ const keywordLimitError =
     </BlockStack>
   )}
 
-  {/* Keyword limit error */}
-{keywordLimitError && (
-  <Banner
-    tone={keywordFetcher.data?.plan === "free" ? "warning" : "info"}
-    title="Keyword suggestion limit reached"
-    action={
-      keywordFetcher.data?.plan !== "pro"
-        ? { content: "Upgrade plan", url: "/app/billing", target: "_self" }
-        : undefined
-    }
-  >
-    {keywordFetcher.data?.error}
-  </Banner>
-)}
 </BlockStack>
           </Card>
 
@@ -462,7 +404,7 @@ const keywordLimitError =
                 {/* Suggested keyword chips */}
                 {suggestedKeywords.length > 0 && (
                   <BlockStack gap="100">
-                    <Text variant="bodySm" tone="subdued">
+                    <Text as="p" variant="bodySm" tone="subdued">
                       Suggested for your selection — click to add:
                     </Text>
                     <InlineStack gap="100" wrap>
@@ -521,3 +463,4 @@ const keywordLimitError =
     </Modal>
   );
 }
+

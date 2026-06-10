@@ -12,9 +12,9 @@
 import { json, type LoaderFunctionArgs } from "@remix-run/node";
 import { z } from "zod";
 
-import { authenticate } from "../shopify.server";
 import { db } from "../lib/db.server";
 import { sanitiseHtml } from "../lib/html.server";
+import { requireAdminSession } from "../lib/auth.server";
 
 // UUID v4
 const UUID_V4_RE =
@@ -137,10 +137,10 @@ function shapeResult(raw: unknown): { result: Record<string, unknown> | null; co
 
 export async function loader({ request, params }: LoaderFunctionArgs) {
   // Hard requirement: every request authenticated and shop-scoped
-  const { session } = await authenticate.admin(request);
-  const shopDomain = session.shop;
+  const { shopDomain } = await requireAdminSession(request);
 
   const jobId = params.jobId;
+  console.log("[poll-api] request", { shopDomain, jobId });
 
   // Shape guard (fail closed)
   if (!jobId || !UUID_V4_RE.test(jobId)) {
@@ -167,6 +167,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
   });
 
   if (!job) {
+    console.log("[poll-api] not_found", { shopDomain, jobId });
     const res: PollResponse = {
       status: "FAILED",
       result: null,
@@ -190,6 +191,16 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     errorMessage: safeError,
     ...(shaped.code ? { code: shaped.code } : {}),
   };
+
+  console.log("[poll-api] response", {
+    shopDomain,
+    jobId,
+    status: res.status,
+    hasRawResult: Boolean(job.result),
+    hasShapedResult: Boolean(res.result),
+    code: res.code ?? null,
+    errorMessage: res.errorMessage ?? null,
+  });
 
   return json(res, {
     headers: noStoreHeaders(),

@@ -107,7 +107,7 @@ model CreditTransaction {
   @@index([shopId])
   @@index([requestId])
 }
-// Tracks per-shop daily usage — one row per shop per UTC day
+// DEPRECATED: legacy per-shop usage counter. Billing enforcement uses ShopCredit and CreditTransaction only.
 model ShopUsage {
   id         String   @id @default(cuid())
   shopDomain String
@@ -122,7 +122,7 @@ model ShopUsage {
   @@index([date])
 }
 
-// Global daily usage — single row per UTC day, all shops combined
+// DEPRECATED: legacy global usage counter. Redis handles only safety throttling; billing uses credits only.
 model GlobalUsage {
   id        String   @id @default(cuid())
   date      String   // UTC date string: "2025-03-27"
@@ -144,3 +144,4 @@ model CustomTemplate {
 
   @@index([shopDomain])
 }
+

@@ -39,24 +39,10 @@ import {
 } from "../components/producttable/Productfiltermodal";
 import { BulkGenerateModal } from "../components/BulkComponents/BulkGenerateModal";
 import { BulkProgressBar } from "../components/BulkComponents/BulkProgressBar";
-import { resolvePlan, BULK_LIMITS, type Plan } from "../lib/rateLimiter.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin, billing } = await authenticate.admin(request);
+  const { admin } = await authenticate.admin(request);
 
-  // Resolve plan for bulk limit enforcement
-  let shopPlan: Plan = "free";
-  let bulkLimit: number = BULK_LIMITS.free;
-  try {
-    const { appSubscriptions } = await billing.check();
-    shopPlan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
-    bulkLimit =
-      BULK_LIMITS[shopPlan] === Infinity
-        ? 999999 // serialize Infinity as large number for JSON
-        : BULK_LIMITS[shopPlan];
-  } catch {
-    // fail open — treat as free
-  }
 
   const url = new URL(request.url);
   const search = url.searchParams.get("search") || "";
@@ -131,7 +117,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         .map((p: any) => p.productType)
         .filter((type: string): type is string => !!type && type.trim() !== ""),
     ),
-  );
+  ) as string[];
 
   const totalProducts = products.length;
   const activeProducts = products.filter(
@@ -157,8 +143,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     draftProducts,
     totalInventory,
     generatedDescriptions,
-    shopPlan,
-    bulkLimit,
   };
 };
 
@@ -269,8 +253,6 @@ export default function ProductsDashboard() {
     draftProducts,
     totalInventory,
     generatedDescriptions,
-    shopPlan,
-    bulkLimit,
   } = useLoaderData<typeof loader>();
 
   const navigate = useNavigate();
@@ -282,26 +264,19 @@ export default function ProductsDashboard() {
   const [appliedFilters, setAppliedFilters] =
     useState<ProductFilters>(EMPTY_FILTERS);
 
-  // ── Bulk generate state ────────────────────────────────────────────────────
   const [bulkModalOpen, setBulkModalOpen] = useState(false);
-  const [bulkSuccessBanner, setBulkSuccessBanner] = useState<{
-    count: number;
-  } | null>(null);
-  // Track the active bulk run for the progress bar
-  const [activeBulk, setActiveBulk] = useState<{
-    bulkId: string;
-    productCount: number;
-  } | null>(null);
+  const [bulkSuccessBanner, setBulkSuccessBanner] = useState<{ count: number } | null>(null);
+  const [activeBulk, setActiveBulk] = useState<{ bulkId: string; productCount: number } | null>(null);
 
   const resourceName = { singular: "product", plural: "products" };
 
-  // ── Filtering ──────────────────────────────────────────────────────────────
   const filteredProducts = products.filter((p: any) => {
     if (
       appliedFilters.statuses.length > 0 &&
       !appliedFilters.statuses.includes(p.status)
-    )
+    ) {
       return false;
+    }
 
     if (appliedFilters.stock.length > 0) {
       const cat = getStockCategory(p.totalInventory ?? 0);
@@ -311,8 +286,9 @@ export default function ProductsDashboard() {
     if (
       appliedFilters.productTypes?.length > 0 &&
       !appliedFilters.productTypes.includes(p.productType)
-    )
+    ) {
       return false;
+    }
 
     if (appliedFilters.collections?.length > 0) {
       const productCollectionTitles =
@@ -326,8 +302,6 @@ export default function ProductsDashboard() {
     return true;
   });
 
-  // ── IndexTable selection (Polaris hook) ───────────────────────────────────
-  // useIndexResourceState tracks selected row IDs (the Shopify GID strings).
   const {
     selectedResources,
     allResourcesSelected,
@@ -337,7 +311,6 @@ export default function ProductsDashboard() {
     resourceIDResolver: (p: any) => p.id,
   });
 
-  // True when any search or filter is active
   const isFiltered =
     searchQuery.trim() !== "" ||
     appliedFilters.statuses.length > 0 ||
@@ -349,7 +322,6 @@ export default function ProductsDashboard() {
     appliedFilters.stock.length +
     (appliedFilters.productTypes?.length || 0);
 
-  // ── Active filter pills ────────────────────────────────────────────────────
   const STATUS_LABEL: Record<string, string> = {
     ACTIVE: "Active",
     DRAFT: "Draft",
@@ -374,7 +346,6 @@ export default function ProductsDashboard() {
     })),
   ];
 
-  // ── Handlers ───────────────────────────────────────────────────────────────
   const handleRemovePill = (pill: FilterPill) => {
     if (pill.value !== undefined) {
       const next = {
@@ -395,54 +366,30 @@ export default function ProductsDashboard() {
     navigate("/app/products");
   };
 
-  // Called by BulkGenerateModal after successful enqueue
   const handleBulkSuccess = useCallback(
     (jobIds: string[], bulkId: string | null) => {
       setBulkModalOpen(false);
       clearSelection();
       setBulkSuccessBanner({ count: jobIds.length });
 
-      // If we have a bulkId, show the inline progress bar instead of redirecting
       if (bulkId) {
         setActiveBulk({ bulkId, productCount: jobIds.length });
       } else {
-        // Single product — just redirect to jobs after a moment
         setTimeout(() => navigate("/app/jobs"), 2000);
       }
     },
     [clearSelection, navigate],
   );
 
-  // ── Promoted bulk actions (shown in IndexTable toolbar when rows selected) ──
-  // ── Bulk selection cap warning ─────────────────────────────────────────────
-  const UNLIMITED = 999999;
-  const atBulkLimit =
-    bulkLimit !== UNLIMITED && selectedResources.length >= bulkLimit;
+  const promotedBulkActions = [
+    {
+      content: `Generate AI Descriptions (${selectedResources.length})`,
+      onAction: () => setBulkModalOpen(true),
+      disabled: selectedResources.length === 0,
+    },
+  ];
 
-  const overBulkLimit = selectedResources.length > bulkLimit;
-
-  // ── Promoted bulk actions ──────────────────────────────────────────────────
-  const promotedBulkActions =
-    shopPlan === "free"
-      ? [
-          {
-            content: "✨ Bulk Generate (Pro feature)",
-            onAction: () => setBulkModalOpen(true),
-            disabled: true,
-          },
-        ]
-      : [
-          {
-            content: `✨ Generate AI Descriptions (${selectedResources.length})`,
-            onAction: () => {
-              if (overBulkLimit) return; // safety guard — button should be disabled
-              setBulkModalOpen(true);
-            },
-            disabled: overBulkLimit,
-          },
-        ];
-
-  // ── Row markup ─────────────────────────────────────────────────────────────
+  // Row markup ─────────────────────────────────────────────────────────────
   // ── Row markup — click row = navigate, NO modal open ──────────────────────
   const rowMarkup = filteredProducts.map((product: any, index: number) => {
     const numericId = product.id.split("/").pop();
@@ -637,44 +584,6 @@ export default function ProductsDashboard() {
 
             <Divider />
 
-            {/* Bulk limit warning — shown when selection is at/over limit */}
-            {selectedResources.length > 0 && bulkLimit !== 999999 && (
-              <Box paddingInline="400" paddingBlockStart="200">
-                {overBulkLimit ? (
-                  <Banner
-                    tone="critical"
-                    title="Bulk generation not available"
-                    action={{
-                      content: "Upgrade plan",
-                      url: "/app/billing",
-                      target: "_self",
-                    }}
-                  >
-                    Bulk generation is only available on paid plans. Upgrade to
-                    generate descriptions for multiple products at once.
-                  </Banner>
-                ) : atBulkLimit ? (
-                  <Banner
-                    tone="warning"
-                    title={`Selection limit reached (${bulkLimit}/${bulkLimit})`}
-                  >
-                    You've reached the maximum for your {shopPlan} plan.{" "}
-                    {shopPlan !== "pro" && (
-                      <a href="/app/billing" style={{ color: "#2c6ecb" }}>
-                        Upgrade for a higher limit.
-                      </a>
-                    )}
-                  </Banner>
-                ) : (
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    {selectedResources.length} selected ·{" "}
-                    {bulkLimit - selectedResources.length} remaining ({shopPlan}{" "}
-                    plan limit: {bulkLimit})
-                  </Text>
-                )}
-              </Box>
-            )}
-
             {/* ── IndexTable — now selectable ─────────────────────────────── */}
             <IndexTable
               resourceName={resourceName}
@@ -733,8 +642,6 @@ export default function ProductsDashboard() {
         selectedProductIds={selectedResources}
         onClose={() => setBulkModalOpen(false)}
         onSuccess={handleBulkSuccess}
-        bulkLimit={bulkLimit}
-        shopPlan={shopPlan}
       />
     </Page>
   );

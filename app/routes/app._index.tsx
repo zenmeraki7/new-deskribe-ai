@@ -33,7 +33,6 @@ import { authenticate } from "../shopify.server";
 import {
   checkAndIncrementKeywordLimit,
   checkAndIncrementRateLimit,
-  refundRateLimit,
   resolvePlan,
 } from "../lib/rateLimiter.server";
 import { CREDIT_COSTS, deductCredits, refundCredits } from "../lib/creditService.server";
@@ -84,7 +83,7 @@ interface LoaderData {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const { admin, billing } = await authenticate.admin(request);
+  const { admin, billing, session } = await authenticate.admin(request);
 
   // Safe billing check — don't crash if it fails
   try {
@@ -176,17 +175,17 @@ export async function action({ request }: ActionFunctionArgs) {
       plan,
       amount: CREDIT_COSTS.keywordSuggestion,
       requestId: creditRequestId,
+      kind: "keyword_suggestion",
       metadata: { intent: "index_suggest_keywords" },
     });
 
     if (!credit.allowed) {
-      await refundRateLimit(session.shop, plan);
       return json(
         {
           ok: false,
           kind: "error",
           code: "INSUFFICIENT_CREDITS",
-          error: `Not enough monthly credits remaining (${credit.creditsRemaining}/${credit.creditsLimit}).`,
+          error: "Not enough credits",
           creditsRemaining: credit.creditsRemaining,
           creditsLimit: credit.creditsLimit,
           resetDate: credit.resetDate.toISOString(),
@@ -199,7 +198,6 @@ export async function action({ request }: ActionFunctionArgs) {
       const keywords = await suggestKeywords(title, vendor, productType, tags);
       return json({ ok: true, kind: "suggest_keywords", keywords });
     } catch (err) {
-      await refundRateLimit(session.shop, plan);
       await refundCredits({
         shopId: session.shop,
         plan,
@@ -223,7 +221,6 @@ export async function action({ request }: ActionFunctionArgs) {
   if (intent === "generate") {
     let creditRequestId: string | null = null;
     let plan = resolvePlan(null);
-    let rateApplied = false;
     try {
       const { appSubscriptions } = await billing.check();
       plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
@@ -242,7 +239,6 @@ export async function action({ request }: ActionFunctionArgs) {
           { status: 429 },
         );
       }
-      rateApplied = true;
 
       const productId = String(form.get("productId") ?? "");
       const vibe = String(form.get("vibe") ?? "casual");
@@ -261,7 +257,6 @@ export async function action({ request }: ActionFunctionArgs) {
       const p = data?.data?.product;
 
       if (!p) {
-        if (rateApplied) await refundRateLimit(session.shop, plan);
         return json(
           { ok: false, kind: "error", error: "Product not found." },
           { status: 404 },
@@ -274,17 +269,17 @@ export async function action({ request }: ActionFunctionArgs) {
         plan,
         amount: CREDIT_COSTS.standardGeneration,
         requestId: creditRequestId,
+        kind: "generation",
         metadata: { intent: "index_generate", productId },
       });
 
       if (!credit.allowed) {
-        if (rateApplied) await refundRateLimit(session.shop, plan);
         return json(
           {
             ok: false,
             kind: "error",
             code: "INSUFFICIENT_CREDITS",
-            error: `Not enough monthly credits remaining (${credit.creditsRemaining}/${credit.creditsLimit}).`,
+            error: "Not enough credits",
             creditsRemaining: credit.creditsRemaining,
             creditsLimit: credit.creditsLimit,
             resetDate: credit.resetDate.toISOString(),
@@ -322,7 +317,6 @@ export async function action({ request }: ActionFunctionArgs) {
         },
       });
     } catch (err) {
-      if (rateApplied) await refundRateLimit(session.shop, plan);
       if (creditRequestId) {
         await refundCredits({
           shopId: session.shop,

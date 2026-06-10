@@ -3,15 +3,8 @@ import { getRedis } from "./redis.server";
 export const PLANS = ["free", "basic", "advanced", "pro"] as const;
 export type Plan = (typeof PLANS)[number];
 
-export const BULK_LIMITS: Record<Plan, number> = {
-  free: 50,
-  basic: 50,
-  advanced: 50,
-  pro: 50,
-};
-
 const SHOP_PER_MINUTE_LIMIT = 30;
-const GLOBAL_DAILY_LIMIT = 5000;
+const GLOBAL_SAFETY_DAILY_CAP = 5000;
 const SHOP_KEY_TTL_SECONDS = 2 * 60;
 const GLOBAL_KEY_TTL_SECONDS = 26 * 60 * 60;
 
@@ -34,8 +27,6 @@ function globalRedisKey(): string {
 export interface RateLimitResult {
   allowed: boolean;
   reason?: "shop_limit" | "global_limit";
-  shopUsed?: number;
-  shopLimit?: number;
 }
 
 export function resolvePlan(subscriptionName: string | null | undefined): Plan {
@@ -51,6 +42,8 @@ export async function checkAndIncrementRateLimit(
   shopDomain: string,
   _plan?: Plan,
 ): Promise<RateLimitResult> {
+  if (!shopDomain) throw new Error("Missing shop context");
+
   const shopKey = shopRedisKey(shopDomain);
   const globalKey = globalRedisKey();
 
@@ -64,13 +57,11 @@ export async function checkAndIncrementRateLimit(
   const shopCount = results?.[0]?.[1] as number;
   const globalCount = results?.[2]?.[1] as number;
 
-  if (globalCount > GLOBAL_DAILY_LIMIT) {
+  if (globalCount > GLOBAL_SAFETY_DAILY_CAP) {
     await getRedis().pipeline().decr(shopKey).decr(globalKey).exec();
     return {
       allowed: false,
       reason: "global_limit",
-      shopUsed: shopCount - 1,
-      shopLimit: SHOP_PER_MINUTE_LIMIT,
     };
   }
 
@@ -79,20 +70,12 @@ export async function checkAndIncrementRateLimit(
     return {
       allowed: false,
       reason: "shop_limit",
-      shopUsed: shopCount - 1,
-      shopLimit: SHOP_PER_MINUTE_LIMIT,
     };
   }
 
   return {
     allowed: true,
-    shopUsed: shopCount,
-    shopLimit: SHOP_PER_MINUTE_LIMIT,
   };
-}
-
-export async function refundRateLimit(shopDomain: string, _plan?: Plan): Promise<void> {
-  await getRedis().pipeline().decr(shopRedisKey(shopDomain)).decr(globalRedisKey()).exec();
 }
 
 export async function checkAndIncrementKeywordLimit(
@@ -100,12 +83,6 @@ export async function checkAndIncrementKeywordLimit(
   plan?: Plan,
 ): Promise<RateLimitResult> {
   return checkAndIncrementRateLimit(shopDomain, plan);
-}
-
-export async function getShopUsageToday(shopDomain: string): Promise<number> {
-  const key = shopRedisKey(shopDomain);
-  const val = await getRedis().get(key);
-  return val ? parseInt(val, 10) : 0;
 }
 
 export function canUseCustomTemplates(plan: Plan): boolean {
