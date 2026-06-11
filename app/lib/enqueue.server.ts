@@ -96,7 +96,7 @@ export async function enqueueGenerationJobs({
     (productIds.length > 1 ? newUuid() : null);
 
   for (const productId of productIds) {
-    const material = `${shopDomain}:${productId}:${vibe}:${format}:${keywords}:${includeSocials}`;
+    const material = `${shopDomain}:${productId}:${vibe}:${format}:${keywords}:${includeSocials}:${customInstruction || ""}`;
     const inputHash = hashInput(material);
 
     // Idempotency: reuse an in-flight job with the same parameters
@@ -106,6 +106,7 @@ export async function enqueueGenerationJobs({
         productId,
         inputHash,
         status: { in: ["PENDING", "PROCESSING"] },
+        customInstruction: customInstruction || null,
       },
       select: { id: true },
     });

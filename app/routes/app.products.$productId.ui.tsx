@@ -22,7 +22,7 @@ import {
   InlineGrid,
   Tooltip,
 } from "@shopify/polaris";
-import { useFetcher, useLoaderData, useNavigate } from "@remix-run/react";
+import { useFetcher, useLoaderData, useNavigate, useRevalidator } from "@remix-run/react";
 
 import type { LoaderData, DraftResult, CustomTemplate } from "./app.products.$productId.types";
 import {
@@ -97,6 +97,7 @@ function useJobPoll() {
   const fetcher = useFetcher<PollPayload>();
   const timerRef = useRef<number | null>(null);
   const startedAtRef = useRef<number | null>(null);
+  const requestInFlightRef = useRef(false);
 
   const [jobId, setJobId] = useState<string | null>(null);
   const [status, setStatus] = useState<PollStatus>("IDLE");
@@ -109,17 +110,19 @@ function useJobPoll() {
     [],
   );
 
-  const stop = useCallback(() => {
-    setJobId(null);
-    startedAtRef.current = null;
-  }, []);
-
   const clearTimer = useCallback(() => {
     if (timerRef.current) {
       window.clearTimeout(timerRef.current);
       timerRef.current = null;
     }
   }, []);
+
+  const stop = useCallback(() => {
+    clearTimer();
+    requestInFlightRef.current = false;
+    setJobId(null);
+    startedAtRef.current = null;
+  }, [clearTimer]);
 
   const scheduleMs = useCallback(() => {
     const base = JOB_POLL_INTERVAL_MS;
@@ -147,7 +150,10 @@ function useJobPoll() {
         timerRef.current = window.setTimeout(tick, scheduleMs());
         return;
       }
-      fetcher.load(`/app/api/job/${jobId}`);
+      if (!requestInFlightRef.current) {
+        requestInFlightRef.current = true;
+        fetcher.load(`/app/api/job/${jobId}`);
+      }
       timerRef.current = window.setTimeout(tick, scheduleMs());
     };
 
@@ -161,6 +167,9 @@ function useJobPoll() {
   }, [jobId, clearTimer, scheduleMs]);
 
   useEffect(() => {
+    if (fetcher.state === "idle") {
+      requestInFlightRef.current = false;
+    }
     if (!fetcher.data) return;
 
     const nextStatus: PollStatus = fetcher.data.status ?? "IDLE";
@@ -177,15 +186,28 @@ function useJobPoll() {
 
   const startPolling = useCallback((id: string) => {
     if (!isUuidV4(id)) return;
+    clearTimer();
+    requestInFlightRef.current = false;
     setResult(null);
     setErrorMessage(null);
     setStatus("PENDING");
     startedAtRef.current = Date.now();
     setJobId(id);
-  }, []);
+  }, [clearTimer]);
+
+  const reset = useCallback(() => {
+    clearTimer();
+    requestInFlightRef.current = false;
+    setJobId(null);
+    setStatus("IDLE");
+    setResult(null);
+    setErrorMessage(null);
+    startedAtRef.current = null;
+  }, [clearTimer]);
 
   return {
     startPolling,
+    reset,
     status,
     result,
     errorMessage,
@@ -386,6 +408,7 @@ export default function ProductEditorModalRoute() {
   } = useLoaderData<LoaderData>();
 
   const navigate = useNavigate();
+  const revalidator = useRevalidator();
 
   // ── Core generation state ─────────────────────────────────────────────────
   const [vibe, setVibe] = useState<string>("casual");
@@ -393,6 +416,9 @@ export default function ProductEditorModalRoute() {
   const [keywords, setKeywords] = useState<string>("");
   const [includeSocials, setIncludeSocials] = useState<boolean>(false);
   const [localCreditError, setLocalCreditError] = useState<string>("");
+  const [generationRequestPending, setGenerationRequestPending] = useState(false);
+  const [isClosing, setIsClosing] = useState(false);
+  const generationSubmitLockedRef = useRef(false);
 
   // ── Custom template state ─────────────────────────────────────────────────
   const [showTemplateBuilder, setShowTemplateBuilder] = useState(false);
@@ -408,6 +434,7 @@ export default function ProductEditorModalRoute() {
   // ── Polling ───────────────────────────────────────────────────────────────
   const {
     startPolling,
+    reset: resetPolling,
     status: pollStatus,
     result: pollResult,
     errorMessage: pollErrorMessage,
@@ -588,14 +615,27 @@ export default function ProductEditorModalRoute() {
   }, [generateFetcher.data?.jobId, startPolling]);
 
   useEffect(() => {
+    if (generateFetcher.state !== "idle" || !generateFetcher.data) return;
+    generationSubmitLockedRef.current = false;
+    setGenerationRequestPending(false);
+  }, [generateFetcher.state, generateFetcher.data]);
+
+  useEffect(() => {
     if (
       activeJob &&
       (activeJob.status === "PENDING" || activeJob.status === "PROCESSING")
     ) {
       startPolling(activeJob.id);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [activeJob?.id, activeJob?.status, startPolling]);
+
+  const lastRevalidatedJobIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (pollStatus !== "COMPLETED" || !lastCompletedJobId) return;
+    if (lastRevalidatedJobIdRef.current === lastCompletedJobId) return;
+    lastRevalidatedJobIdRef.current = lastCompletedJobId;
+    revalidator.revalidate();
+  }, [lastCompletedJobId, pollStatus, revalidator]);
 
   const handleLoadComparison = useCallback(() => {
     if (descFetcher.state !== "idle") return;
@@ -631,6 +671,7 @@ export default function ProductEditorModalRoute() {
 
   // ── Derived state ─────────────────────────────────────────────────────────
   const isGenerating =
+    generationRequestPending ||
     isPolling ||
     generateFetcher.state !== "idle" ||
     pollStatus === "PENDING" ||
@@ -675,7 +716,7 @@ export default function ProductEditorModalRoute() {
       ? String(templateFetcher.data.error ?? "Something went wrong")
       : "";
 
-  const handleClose = () => navigate("/app/products");
+  const isGenerationBusy = isGenerating || generationSubmitLockedRef.current;
 
   useEffect(() => {
     if (draftResult) {
@@ -686,17 +727,18 @@ export default function ProductEditorModalRoute() {
 
   const applyJobId = lastCompletedJobId ?? latestDraft?.id ?? null;
 
-  const terminalStatuses: PollStatus[] = ["COMPLETED", "FAILED", "CANCELLED"];
-  const canApply = Boolean(
+  const hasCompletedDraft = Boolean(
     draftResult &&
       draftHtml &&
       applyJobId &&
       isUuidV4(applyJobId) &&
+      (pollStatus === "COMPLETED" || latestDraft?.id === applyJobId),
+  );
+
+  const canApply = Boolean(
+    hasCompletedDraft &&
       !isApplying &&
-      !isGenerating &&
-      terminalStatuses.includes(pollStatus) &&
-      pollStatus !== "PENDING" &&
-      pollStatus !== "PROCESSING",
+      !isGenerating,
   );
 
   const isCustomVibeSelected = vibe.startsWith("custom:");
@@ -708,6 +750,46 @@ export default function ProductEditorModalRoute() {
     credits.creditsRemaining,
     CREDIT_COSTS.keywordSuggestion,
   );
+
+  const handleGenerate = useCallback(() => {
+    if (isGenerationBusy) return;
+    if (!canGenerateWithCredits) {
+      setLocalCreditError("Not enough credits");
+      return;
+    }
+
+    generationSubmitLockedRef.current = true;
+    setGenerationRequestPending(true);
+    setLocalCreditError("");
+
+    const fd = new FormData();
+    fd.set("intent", "generate");
+    fd.set("vibe", clampTextInput(vibe, 40));
+    fd.set("format", clampTextInput(format, 40));
+    fd.set("keywords", clampTextInput(keywords, 2000));
+    fd.set("includeSocials", String(includeSocials));
+    if (isCustomVibeSelected && activeCustomInstruction) {
+      fd.set("customInstruction", clampTextInput(activeCustomInstruction, 1000));
+    }
+    generateFetcher.submit(fd, { method: "post" });
+  }, [
+    activeCustomInstruction,
+    canGenerateWithCredits,
+    format,
+    generateFetcher,
+    includeSocials,
+    isCustomVibeSelected,
+    isGenerationBusy,
+    keywords,
+    vibe,
+  ]);
+
+  const handleClose = useCallback(() => {
+    if (isClosing) return;
+    setIsClosing(true);
+    resetPolling();
+    navigate("/app/products");
+  }, [isClosing, navigate, resetPolling]);
 
   return (
     <>
@@ -725,7 +807,7 @@ export default function ProductEditorModalRoute() {
 
       {/* ── Main Product Editor Modal ── */}
       <Modal
-        open={!showTemplateBuilder}
+        open={!showTemplateBuilder && !isClosing}
         onClose={handleClose}
         title={
           <InlineStack gap="200" blockAlign="center">
@@ -738,25 +820,9 @@ export default function ProductEditorModalRoute() {
         }
         primaryAction={{
           content: isGenerating ? "Generating…" : "Generate Draft",
-          onAction: () => {
-            if (!canGenerateWithCredits) {
-              setLocalCreditError("Not enough credits");
-              return;
-            }
-            setLocalCreditError("");
-            const fd = new FormData();
-            fd.set("intent", "generate");
-            fd.set("vibe", clampTextInput(vibe, 40));
-            fd.set("format", clampTextInput(format, 40));
-            fd.set("keywords", clampTextInput(keywords, 2000));
-            fd.set("includeSocials", String(includeSocials));
-            if (isCustomVibeSelected && activeCustomInstruction) {
-              fd.set("customInstruction", clampTextInput(activeCustomInstruction, 1000));
-            }
-            generateFetcher.submit(fd, { method: "post" });
-          },
+          onAction: handleGenerate,
           loading: isGenerating,
-          disabled: isGenerating || !canGenerateWithCredits,
+          disabled: isGenerationBusy || !canGenerateWithCredits,
         }}
         secondaryActions={[{ content: "Close", onAction: handleClose }]}
       >
@@ -1141,7 +1207,7 @@ export default function ProductEditorModalRoute() {
             </Card>
 
             {/* ── Apply to Shopify ── */}
-            {(latestDraft || pollStatus === "COMPLETED") && (
+            {hasCompletedDraft && (
               <InlineStack align="end">
                 <Button
                   variant="primary"

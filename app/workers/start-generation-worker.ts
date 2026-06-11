@@ -1,5 +1,6 @@
 // FILE: app/workers/start-generation-worker.ts
 import "../lib/queue.server";
-import "../worker/generation.worker";
+import { startGenerationWorker } from "../worker/generation.worker";
 
+startGenerationWorker();
 console.log("[worker] generation worker booted");

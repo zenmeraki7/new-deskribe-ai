@@ -519,6 +519,7 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
       format,
       keywords: keywordsCsv,
       includeSocials,
+      customInstruction: customInstruction || null,
     },
     orderBy: { createdAt: "desc" },
     select: { id: true, status: true },
@@ -529,7 +530,7 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
         ok: true,
         kind: "generate",
         jobId: existing.id,
-        status: "PENDING",
+        status: existing.status,
         alreadyQueued: true,
       });
     }

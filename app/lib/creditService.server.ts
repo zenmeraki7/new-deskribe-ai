@@ -7,7 +7,16 @@ import { CREDIT_COSTS, PLAN_CREDITS } from "./credits";
 
 export { CREDIT_COSTS, PLAN_CREDITS };
 
-export type CreditDebitKind = "generation" | "bulk_generation" | "regeneration";
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type CreditDebitKind =
+  | "generation"
+  | "bulk_generation"
+  | "regeneration"
+  | "keyword_suggestion";
+
 type CreditKind = "grant" | CreditDebitKind | "refund";
 
 export interface CreditResult {
@@ -32,8 +41,14 @@ export interface CreditFailure {
   reason: "insufficient_credits";
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
 function nextMonthlyResetDate(now = new Date()) {
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0, 0));
+  return new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0, 0),
+  );
 }
 
 function toDecimal(value: number) {
@@ -46,18 +61,40 @@ function asNumber(value: unknown) {
 }
 
 function stableTransactionId(requestId: string, kind: CreditKind) {
-  return crypto.createHash("sha256").update(`${kind}:${requestId}`).digest("hex");
+  return crypto
+    .createHash("sha256")
+    .update(`${kind}:${requestId}`)
+    .digest("hex");
 }
 
-function grantRequestId(shopId: string, plan: Plan, resetDate: Date, creditsLimit: Prisma.Decimal) {
+function grantRequestId(
+  shopId: string,
+  plan: Plan,
+  resetDate: Date,
+  creditsLimit: Prisma.Decimal,
+) {
   return `grant:${shopId}:${plan}:${resetDate.toISOString()}:${creditsLimit.toString()}`;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Internal: recordGrant + ensureCycle (write path only — used by deduct/refund)
+// ─────────────────────────────────────────────────────────────────────────────
+
 async function recordGrant(
   tx: Prisma.TransactionClient,
-  row: { shopId: string; plan: string; resetDate: Date; creditsLimit: Prisma.Decimal },
+  row: {
+    shopId: string;
+    plan: string;
+    resetDate: Date;
+    creditsLimit: Prisma.Decimal;
+  },
 ) {
-  const requestId = grantRequestId(row.shopId, row.plan as Plan, row.resetDate, row.creditsLimit);
+  const requestId = grantRequestId(
+    row.shopId,
+    row.plan as Plan,
+    row.resetDate,
+    row.creditsLimit,
+  );
   await tx.creditTransaction.upsert({
     where: {
       shopId_requestId_kind: {
@@ -82,13 +119,19 @@ async function recordGrant(
   });
 }
 
-async function ensureCycle(tx: Prisma.TransactionClient, shopId: string, plan: Plan) {
+async function ensureCycle(
+  tx: Prisma.TransactionClient,
+  shopId: string,
+  plan: Plan,
+) {
+  // Advisory lock prevents concurrent ensureCycle calls for the same shop
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${shopId}))`;
 
   const now = new Date();
   const creditsLimit = toDecimal(PLAN_CREDITS[plan]);
 
   const existing = await tx.shopCredit.findUnique({ where: { shopId } });
+
   if (!existing) {
     const created = await tx.shopCredit.create({
       data: {
@@ -117,7 +160,10 @@ async function ensureCycle(tx: Prisma.TransactionClient, shopId: string, plan: P
     return reset;
   }
 
-  if (existing.plan !== plan || !existing.creditsLimit.equals(creditsLimit)) {
+  if (
+    existing.plan !== plan ||
+    !existing.creditsLimit.equals(creditsLimit)
+  ) {
     const updated = await tx.shopCredit.update({
       where: { shopId },
       data: { plan, creditsLimit },
@@ -130,25 +176,61 @@ async function ensureCycle(tx: Prisma.TransactionClient, shopId: string, plan: P
   return existing;
 }
 
-export async function getCreditBalance(shopId: string, plan: Plan) {
-  if (!shopId) {
-    throw new Error("Missing shop context");
-  }
+// ─────────────────────────────────────────────────────────────────────────────
+// getCreditBalance — READ ONLY, no transaction, no lock, safe for loaders
+// ─────────────────────────────────────────────────────────────────────────────
 
-  return db.$transaction(async (tx) => {
-    const row = await ensureCycle(tx, shopId, plan);
-    const creditsUsed = asNumber(row.creditsUsed);
-    const creditsLimit = asNumber(row.creditsLimit);
+export async function getCreditBalance(shopId: string, plan: Plan) {
+  if (!shopId) throw new Error("Missing shop context");
+
+  const existing = await db.shopCredit.findUnique({ where: { shopId } });
+
+  // No row yet — return plan defaults without writing anything.
+  // ensureCycle will create the row on the first real action.
+  if (!existing) {
+    const creditsLimit = PLAN_CREDITS[plan];
     return {
       shopId,
-      plan: row.plan as Plan,
-      creditsUsed,
+      plan,
+      creditsUsed: 0,
       creditsLimit,
-      creditsRemaining: Math.max(0, creditsLimit - creditsUsed),
-      resetDate: row.resetDate,
+      creditsRemaining: creditsLimit,
+      resetDate: nextMonthlyResetDate(),
     };
-  });
+  }
+
+  const now = new Date();
+
+  // Reset date has passed — show zeroed balance optimistically.
+  // The row will be properly reset by ensureCycle on the next action.
+  if (existing.resetDate <= now) {
+    const creditsLimit = PLAN_CREDITS[plan];
+    return {
+      shopId,
+      plan,
+      creditsUsed: 0,
+      creditsLimit,
+      creditsRemaining: creditsLimit,
+      resetDate: nextMonthlyResetDate(now),
+    };
+  }
+
+  const creditsUsed = asNumber(existing.creditsUsed);
+  const creditsLimit = asNumber(existing.creditsLimit);
+
+  return {
+    shopId,
+    plan: existing.plan as Plan,
+    creditsUsed,
+    creditsLimit,
+    creditsRemaining: Math.max(0, creditsLimit - creditsUsed),
+    resetDate: existing.resetDate,
+  };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// deductCredits — write path, uses ensureCycle inside transaction
+// ─────────────────────────────────────────────────────────────────────────────
 
 export async function deductCredits({
   shopId,
@@ -165,31 +247,89 @@ export async function deductCredits({
   kind?: CreditDebitKind;
   metadata?: Prisma.InputJsonValue;
 }): Promise<CreditResult | CreditFailure> {
-  if (!shopId) {
-    throw new Error("Missing shop context");
-  }
-
+  if (!shopId) throw new Error("Missing shop context");
   if (!Number.isFinite(amount) || amount <= 0) {
     throw new Error("Credit deduction amount must be greater than zero");
   }
 
   const resolvedRequestId = requestId ?? crypto.randomUUID();
 
-  return db.$transaction(async (tx) => {
-    const current = await ensureCycle(tx, shopId, plan);
-    const existingDebit = await tx.creditTransaction.findUnique({
-      where: {
-        shopId_requestId_kind: {
+  return db.$transaction(
+    async (tx) => {
+      const current = await ensureCycle(tx, shopId, plan);
+
+      // Idempotency: if this exact request was already applied, return early
+      const existingDebit = await tx.creditTransaction.findUnique({
+        where: {
+          shopId_requestId_kind: { shopId, requestId: resolvedRequestId, kind },
+        },
+      });
+
+      if (existingDebit) {
+        const creditsUsed = asNumber(current.creditsUsed);
+        const creditsLimit = asNumber(current.creditsLimit);
+        return {
+          allowed: true,
+          requestId: resolvedRequestId,
+          amount,
+          creditsUsed,
+          creditsLimit,
+          creditsRemaining: Math.max(0, creditsLimit - creditsUsed),
+          resetDate: current.resetDate,
+          alreadyApplied: true,
+        } satisfies CreditResult;
+      }
+
+      // Atomic deduction — only succeeds if enough credits remain
+      const updated = await tx.shopCredit.updateMany({
+        where: {
+          shopId,
+          creditsUsed: {
+            lte: new Prisma.Decimal(current.creditsLimit).minus(amount),
+          },
+        },
+        data: {
+          creditsUsed: { increment: toDecimal(amount) },
+          plan,
+          creditsLimit: toDecimal(PLAN_CREDITS[plan]),
+        },
+      });
+
+      if (updated.count !== 1) {
+        const fresh = await tx.shopCredit.findUniqueOrThrow({
+          where: { shopId },
+        });
+        const creditsUsed = asNumber(fresh.creditsUsed);
+        const creditsLimit = asNumber(fresh.creditsLimit);
+        return {
+          allowed: false,
+          requestId: resolvedRequestId,
+          reason: "insufficient_credits",
+          amount,
+          creditsUsed,
+          creditsLimit,
+          creditsRemaining: Math.max(0, creditsLimit - creditsUsed),
+          resetDate: fresh.resetDate,
+        } satisfies CreditFailure;
+      }
+
+      await tx.creditTransaction.create({
+        data: {
+          id: stableTransactionId(resolvedRequestId, kind),
           shopId,
           requestId: resolvedRequestId,
           kind,
+          amount: toDecimal(amount),
+          plan,
+          metadata,
         },
-      },
-    });
+      });
 
-    if (existingDebit) {
-      const creditsUsed = asNumber(current.creditsUsed);
-      const creditsLimit = asNumber(current.creditsLimit);
+      const fresh = await tx.shopCredit.findUniqueOrThrow({
+        where: { shopId },
+      });
+      const creditsUsed = asNumber(fresh.creditsUsed);
+      const creditsLimit = asNumber(fresh.creditsLimit);
       return {
         allowed: true,
         requestId: resolvedRequestId,
@@ -197,67 +337,16 @@ export async function deductCredits({
         creditsUsed,
         creditsLimit,
         creditsRemaining: Math.max(0, creditsLimit - creditsUsed),
-        resetDate: current.resetDate,
-        alreadyApplied: true,
-      };
-    }
-
-    const updated = await tx.shopCredit.updateMany({
-      where: {
-        shopId,
-        creditsUsed: {
-          lte: new Prisma.Decimal(current.creditsLimit).minus(amount),
-        },
-      },
-      data: {
-        creditsUsed: { increment: toDecimal(amount) },
-        plan,
-        creditsLimit: toDecimal(PLAN_CREDITS[plan]),
-      },
-    });
-
-    if (updated.count !== 1) {
-      const fresh = await tx.shopCredit.findUniqueOrThrow({ where: { shopId } });
-      const creditsUsed = asNumber(fresh.creditsUsed);
-      const creditsLimit = asNumber(fresh.creditsLimit);
-      return {
-        allowed: false,
-        requestId: resolvedRequestId,
-        reason: "insufficient_credits",
-        amount,
-        creditsUsed,
-        creditsLimit,
-        creditsRemaining: Math.max(0, creditsLimit - creditsUsed),
         resetDate: fresh.resetDate,
-      };
-    }
-
-    await tx.creditTransaction.create({
-      data: {
-        id: stableTransactionId(resolvedRequestId, kind),
-        shopId,
-        requestId: resolvedRequestId,
-        kind,
-        amount: toDecimal(amount),
-        plan,
-        metadata,
-      },
-    });
-
-    const fresh = await tx.shopCredit.findUniqueOrThrow({ where: { shopId } });
-    const creditsUsed = asNumber(fresh.creditsUsed);
-    const creditsLimit = asNumber(fresh.creditsLimit);
-    return {
-      allowed: true,
-      requestId: resolvedRequestId,
-      amount,
-      creditsUsed,
-      creditsLimit,
-      creditsRemaining: Math.max(0, creditsLimit - creditsUsed),
-      resetDate: fresh.resetDate,
-    };
-  });
+      } satisfies CreditResult;
+    },
+    { timeout: 15000 },
+  );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// refundCredits — write path, uses ensureCycle inside transaction
+// ─────────────────────────────────────────────────────────────────────────────
 
 export async function refundCredits({
   shopId,
@@ -272,71 +361,75 @@ export async function refundCredits({
   requestId: string;
   metadata?: Prisma.InputJsonValue;
 }) {
-  if (!shopId) {
-    throw new Error("Missing shop context");
-  }
-
+  if (!shopId) throw new Error("Missing shop context");
   if (!Number.isFinite(amount) || amount <= 0) {
     throw new Error("Credit refund amount must be greater than zero");
   }
 
-  return db.$transaction(async (tx) => {
-    const existingCredit = await tx.shopCredit.findUnique({ where: { shopId } });
-    const effectivePlan = plan ?? ((existingCredit?.plan as Plan | undefined) ?? "free");
-    const current = await ensureCycle(tx, shopId, effectivePlan);
-    const existingRefund = await tx.creditTransaction.findUnique({
-      where: {
-        shopId_requestId_kind: {
+  return db.$transaction(
+    async (tx) => {
+      const existingCredit = await tx.shopCredit.findUnique({
+        where: { shopId },
+      });
+      const effectivePlan =
+        plan ?? ((existingCredit?.plan as Plan | undefined) ?? "free");
+      const current = await ensureCycle(tx, shopId, effectivePlan);
+
+      // Idempotency check
+      const existingRefund = await tx.creditTransaction.findUnique({
+        where: {
+          shopId_requestId_kind: { shopId, requestId, kind: "refund" },
+        },
+      });
+
+      if (existingRefund) {
+        return {
+          refunded: false,
+          alreadyApplied: true,
+          creditsUsed: asNumber(current.creditsUsed),
+          creditsLimit: asNumber(current.creditsLimit),
+          resetDate: current.resetDate,
+        };
+      }
+
+      await tx.shopCredit.update({
+        where: { shopId },
+        data: {
+          creditsUsed: { decrement: toDecimal(amount) },
+          plan: effectivePlan,
+          creditsLimit: toDecimal(PLAN_CREDITS[effectivePlan]),
+        },
+      });
+
+      // Clamp to zero — creditsUsed must never go negative
+      await tx.$executeRaw`
+        UPDATE "ShopCredit"
+        SET "creditsUsed" = 0
+        WHERE "shopId" = ${shopId} AND "creditsUsed" < 0
+      `;
+
+      await tx.creditTransaction.create({
+        data: {
+          id: stableTransactionId(requestId, "refund"),
           shopId,
           requestId,
           kind: "refund",
+          amount: toDecimal(amount),
+          plan: effectivePlan,
+          metadata,
         },
-      },
-    });
+      });
 
-    if (existingRefund) {
+      const fresh = await tx.shopCredit.findUniqueOrThrow({
+        where: { shopId },
+      });
       return {
-        refunded: false,
-        alreadyApplied: true,
-        creditsUsed: asNumber(current.creditsUsed),
-        creditsLimit: asNumber(current.creditsLimit),
-        resetDate: current.resetDate,
+        refunded: true,
+        creditsUsed: asNumber(fresh.creditsUsed),
+        creditsLimit: asNumber(fresh.creditsLimit),
+        resetDate: fresh.resetDate,
       };
-    }
-
-    await tx.shopCredit.update({
-      where: { shopId },
-      data: {
-        creditsUsed: { decrement: toDecimal(amount) },
-        plan: effectivePlan,
-        creditsLimit: toDecimal(PLAN_CREDITS[effectivePlan]),
-      },
-    });
-
-    await tx.$executeRaw`
-      UPDATE "ShopCredit"
-      SET "creditsUsed" = 0
-      WHERE "shopId" = ${shopId} AND "creditsUsed" < 0
-    `;
-
-    await tx.creditTransaction.create({
-      data: {
-        id: stableTransactionId(requestId, "refund"),
-        shopId,
-        requestId,
-        kind: "refund",
-        amount: toDecimal(amount),
-        plan: effectivePlan,
-        metadata,
-      },
-    });
-
-    const fresh = await tx.shopCredit.findUniqueOrThrow({ where: { shopId } });
-    return {
-      refunded: true,
-      creditsUsed: asNumber(fresh.creditsUsed),
-      creditsLimit: asNumber(fresh.creditsLimit),
-      resetDate: fresh.resetDate,
-    };
-  });
+    },
+    { timeout: 15000 },
+  );
 }

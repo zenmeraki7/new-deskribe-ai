@@ -73,7 +73,7 @@ export interface LoaderData {
 
 // Action results are intentionally explicit and "tagged" by shape.
 export type ActionResult =
-  | { ok: true; kind: "generate"; jobId: string; status: "PENDING" }
+  | { ok: true; kind: "generate"; jobId: string; status: "PENDING" | "PROCESSING" }
   | { ok: true; kind: "apply"; applied: true }
   | { ok: true; kind: "suggest_keywords"; keywords: string[] }
   | { ok: true; kind: "fetch_description"; descriptionHtml: string; descriptionText: string }

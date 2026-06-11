@@ -67,7 +67,12 @@ async function markCompleted(jobId: string, shopDomain: string, result: DraftRes
   });
 }
 
-export const generationWorker = new Worker<GenerationJobData>(
+let generationWorker: Worker<GenerationJobData> | null = null;
+
+export function startGenerationWorker() {
+  if (generationWorker) return generationWorker;
+
+  generationWorker = new Worker<GenerationJobData>(
   "generation",
   async (bullJob: Job<GenerationJobData>) => {
     const { jobId, shopDomain, productId } = bullJob.data || ({} as any);
@@ -204,3 +209,6 @@ generationWorker.on("failed", (job, err) => {
 generationWorker.on("error", (err) => {
   console.error("[generation.worker] error", err);
 });
+
+  return generationWorker;
+}

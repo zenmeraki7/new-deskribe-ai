@@ -1,5 +1,3 @@
-// FILE: app/routes/app.index.tsx
-
 import crypto from "node:crypto";
 import { useState, useCallback, useEffect, useMemo } from "react";
 import {
@@ -23,7 +21,6 @@ import {
 
 import { useLoaderData, useFetcher, useNavigate } from "@remix-run/react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-// AFTER
 import { json, redirect } from "@remix-run/node";
 import {
   suggestKeywords,
@@ -38,7 +35,6 @@ import {
 import { CREDIT_COSTS } from "../lib/credits";
 import { CreditUsageCard } from "../components/CreditUsageCard";
 import { formatCredits, hasCredits } from "../lib/credits";
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -87,7 +83,7 @@ interface LoaderData {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Loader — fetch first product from Shopify
+// Loader — plain read, no transaction, no lock
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function loader({ request }: LoaderFunctionArgs) {
@@ -95,21 +91,21 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const { admin, billing, shopDomain } = await requireAdminSession(request);
   let plan = resolvePlan(null);
 
-  // Safe billing check — don't crash if it fails
   try {
-   const { hasActivePayment, appSubscriptions } = await billing.check();
-   plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
+    const { hasActivePayment, appSubscriptions } = await billing.check();
+    plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
 
     if (!hasActivePayment) {
-       throw redirect(`https://${shopDomain}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`);
-}
-  
+      throw redirect(
+        `https://${shopDomain}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`,
+      );
+    }
   } catch (err) {
-    // If it's a redirect, let it through
     if (err instanceof Response) throw err;
-    // Otherwise log and continue — don't crash the app
     console.error("[billing.check error]", err);
   }
+
+  // getCreditBalance is now a plain DB read — no transaction, no lock
   const credits = await getCreditBalance(shopDomain, plan);
 
   try {
@@ -124,9 +120,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
             vendor
             productType
             tags
-            featuredImage {
-              url
-            }
+            featuredImage { url }
           }
         }
       }
@@ -160,11 +154,13 @@ export async function loader({ request }: LoaderFunctionArgs) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Action — suggest_keywords | generate | apply
+// Action
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function action({ request }: ActionFunctionArgs) {
-  const { deductCredits, refundCredits } = await import("../lib/creditService.server");
+  const { deductCredits, refundCredits } = await import(
+    "../lib/creditService.server"
+  );
   const { admin, billing, shopDomain } = await requireAdminSession(request);
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
@@ -182,12 +178,16 @@ export async function action({ request }: ActionFunctionArgs) {
     const { appSubscriptions } = await billing.check();
     const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
     const rate = await checkAndIncrementKeywordLimit(shopDomain, plan);
+
     if (!rate.allowed) {
       return json(
         {
           ok: false,
           kind: "error",
-          code: rate.reason === "global_limit" ? "GLOBAL_LIMIT_REACHED" : "RATE_LIMIT_EXCEEDED",
+          code:
+            rate.reason === "global_limit"
+              ? "GLOBAL_LIMIT_REACHED"
+              : "RATE_LIMIT_EXCEEDED",
           error:
             rate.reason === "global_limit"
               ? "Service is temporarily at capacity. Please try again in a few hours."
@@ -203,7 +203,7 @@ export async function action({ request }: ActionFunctionArgs) {
       plan,
       amount: CREDIT_COSTS.keywordSuggestion,
       requestId: creditRequestId,
-      kind: "generation",
+      kind: "keyword_suggestion", // ← fixed: was "generation"
       metadata: { intent: "index_suggest_keywords" },
     });
 
@@ -238,7 +238,8 @@ export async function action({ request }: ActionFunctionArgs) {
         {
           ok: false,
           kind: "error",
-          error: err instanceof Error ? err.message : "Keyword generation failed",
+          error:
+            err instanceof Error ? err.message : "Keyword generation failed",
         },
         { status: 500 },
       );
@@ -249,16 +250,21 @@ export async function action({ request }: ActionFunctionArgs) {
   if (intent === "generate") {
     let creditRequestId: string | null = null;
     let plan = resolvePlan(null);
+
     try {
       const { appSubscriptions } = await billing.check();
       plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
       const rate = await checkAndIncrementRateLimit(shopDomain, plan);
+
       if (!rate.allowed) {
         return json(
           {
             ok: false,
             kind: "error",
-            code: rate.reason === "global_limit" ? "GLOBAL_LIMIT_REACHED" : "RATE_LIMIT_EXCEEDED",
+            code:
+              rate.reason === "global_limit"
+                ? "GLOBAL_LIMIT_REACHED"
+                : "RATE_LIMIT_EXCEEDED",
             error:
               rate.reason === "global_limit"
                 ? "Service is temporarily at capacity. Please try again in a few hours."
@@ -323,7 +329,10 @@ export async function action({ request }: ActionFunctionArgs) {
         tags: p.tags,
         vibe,
         format,
-        keywords: keywords.split(",").map((k: string) => k.trim()).filter(Boolean),
+        keywords: keywords
+          .split(",")
+          .map((k: string) => k.trim())
+          .filter(Boolean),
         includeSocials,
       });
 
@@ -359,7 +368,10 @@ export async function action({ request }: ActionFunctionArgs) {
         {
           ok: false,
           kind: "error",
-          error: err instanceof Error ? err.message : "Description generation failed",
+          error:
+            err instanceof Error
+              ? err.message
+              : "Description generation failed",
         },
         { status: 500 },
       );
@@ -382,10 +394,7 @@ export async function action({ request }: ActionFunctionArgs) {
       const response = await admin.graphql(
         `#graphql
         mutation UpdateProduct($id: ID!, $descriptionHtml: String!) {
-          productUpdate(input: {
-            id: $id,
-            descriptionHtml: $descriptionHtml
-          }) {
+          productUpdate(input: { id: $id, descriptionHtml: $descriptionHtml }) {
             product { id }
             userErrors { field message }
           }
@@ -397,14 +406,21 @@ export async function action({ request }: ActionFunctionArgs) {
       const userErrors = result?.data?.productUpdate?.userErrors;
 
       if (userErrors && userErrors.length > 0) {
-        return json({ ok: false, error: userErrors[0].message }, { status: 400 });
+        return json(
+          { ok: false, error: userErrors[0].message },
+          { status: 400 },
+        );
       }
 
       return json({ ok: true, applied: true });
     } catch (err) {
       console.error("Apply error:", err);
       return json(
-        { ok: false, error: err instanceof Error ? err.message : "Failed to apply description" },
+        {
+          ok: false,
+          error:
+            err instanceof Error ? err.message : "Failed to apply description",
+        },
         { status: 500 },
       );
     }
@@ -424,19 +440,15 @@ export default function IndexPage() {
   const { product, error, credits } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
 
-  // FIX: Separate fetchers for suggest and generate to avoid state conflicts
   const suggestFetcher = useFetcher<any>();
   const generateFetcher = useFetcher<any>();
   const applyFetcher = useFetcher<any>();
 
-  // Settings state
   const [vibe, setVibe] = useState("casual");
   const [format, setFormat] = useState("paragraph");
   const [keywords, setKeywords] = useState("");
   const [includeSocials, setIncludeSocials] = useState(false);
   const [localCreditError, setLocalCreditError] = useState<string | null>(null);
-
-  // FIX: showSuccessBanner is now properly wired
   const [showSuccessBanner, setShowSuccessBanner] = useState(false);
 
   const isGenerating = generateFetcher.state !== "idle";
@@ -447,7 +459,6 @@ export default function IndexPage() {
       ? generateFetcher.data.result
       : null;
 
-  // Show errors from either fetcher
   const actionError =
     localCreditError ??
     (generateFetcher.data?.ok === false
@@ -471,25 +482,20 @@ export default function IndexPage() {
 
   const remainingCredits = useMemo(() => {
     const spent =
-      (generateFetcher.data?.ok === true && generateFetcher.data?.kind === "generate"
+      (generateFetcher.data?.ok === true &&
+      generateFetcher.data?.kind === "generate"
         ? creditCosts.generation
         : 0) +
-      (suggestFetcher.data?.ok === true && suggestFetcher.data?.kind === "suggest_keywords"
+      (suggestFetcher.data?.ok === true &&
+      suggestFetcher.data?.kind === "suggest_keywords"
         ? creditCosts.keywordSuggestion
         : 0);
-
     return Math.max(0, credits.creditsRemaining - spent);
   }, [credits.creditsRemaining, creditCosts, generateFetcher.data, suggestFetcher.data]);
 
   const isApplying = applyFetcher.state !== "idle";
-
   const canApply =
-    generationResult &&
-    generationResult.body_html &&
-    !isGenerating &&
-    !isApplying;
-
-  // ── Handlers ──────────────────────────────────────────────────────────────
+    generationResult && generationResult.body_html && !isGenerating && !isApplying;
 
   const handleGenerate = useCallback(() => {
     if (!product) return;
@@ -534,7 +540,6 @@ export default function IndexPage() {
     );
   }, []);
 
-  // FIX: showSuccessBanner is now properly set and auto-dismissed
   useEffect(() => {
     if (applyFetcher.data?.ok && applyFetcher.data?.applied) {
       setShowSuccessBanner(true);
@@ -550,10 +555,7 @@ export default function IndexPage() {
 
   const handleAddSuggestedKeyword = useCallback((kw: string) => {
     setKeywords((prev) => {
-      const existing = prev
-        .split(",")
-        .map((k) => k.trim())
-        .filter(Boolean);
+      const existing = prev.split(",").map((k) => k.trim()).filter(Boolean);
       if (existing.includes(kw)) return prev;
       return [...existing, kw].join(", ");
     });
@@ -567,18 +569,9 @@ export default function IndexPage() {
     generateFetcher.load(window.location.pathname);
   }, [generateFetcher]);
 
-  // ── Derived ───────────────────────────────────────────────────────────────
-
   const imageUrl = product?.featuredImage?.url ?? DUMMY_IMAGE;
+  const keywordTags = keywords.split(",").map((k) => k.trim()).filter(Boolean);
 
-  const keywordTags = keywords
-    .split(",")
-    .map((k) => k.trim())
-    .filter(Boolean);
-
-  // ── Render ────────────────────────────────────────────────────────────────
-
-  // FIX: Removed stray success Banner from error branch
   if (error) {
     return (
       <Page title="DescribeAI" subtitle="AI Product Description Generator">
@@ -613,7 +606,6 @@ export default function IndexPage() {
     <Page title="DescribeAI" subtitle="AI Product Description Generator">
       <Layout>
         <Layout.Section>
-          {/* FIX: Success banner uses showSuccessBanner state */}
           {showSuccessBanner && (
             <Banner
               tone="success"
@@ -621,7 +613,8 @@ export default function IndexPage() {
               onDismiss={() => setShowSuccessBanner(false)}
             >
               <Text as="p">
-                The product description has been successfully updated in Shopify.
+                The product description has been successfully updated in
+                Shopify.
               </Text>
             </Banner>
           )}
@@ -661,10 +654,7 @@ export default function IndexPage() {
                   Selected Product
                 </Text>
 
-                <Box
-                  background="bg-surface-secondary"
-                  borderRadius="200"
-                >
+                <Box background="bg-surface-secondary" borderRadius="200">
                   <div
                     style={{
                       width: "100%",
@@ -675,11 +665,7 @@ export default function IndexPage() {
                     <img
                       src={imageUrl}
                       alt={product.title}
-                      style={{
-                        width: "100%",
-                        height: "100%",
-                        objectFit: "cover",
-                      }}
+                      style={{ width: "100%", height: "100%", objectFit: "cover" }}
                     />
                   </div>
                 </Box>
@@ -688,15 +674,14 @@ export default function IndexPage() {
                   <Text variant="headingMd" as="h3">
                     {product.title}
                   </Text>
-                  {/* <Text as="p" variant="bodySm" tone="subdued">
-{product.handle}
-                  </Text> */}
                   {product.vendor && (
                     <Text as="p" variant="bodySm" tone="subdued">
                       Vendor: {product.vendor}
                     </Text>
                   )}
-                  {product.productType && <Badge>{product.productType}</Badge>}
+                  {product.productType && (
+                    <Badge>{product.productType}</Badge>
+                  )}
                   {!product.featuredImage && (
                     <Badge tone="warning">Using placeholder image</Badge>
                   )}
@@ -710,7 +695,6 @@ export default function IndexPage() {
 
             {/* ── RIGHT: Settings + Output ───────────────────────────────── */}
             <BlockStack gap="400">
-              {/* Generation Settings */}
               <Card>
                 <BlockStack gap="400">
                   <Text as="h3" variant="headingSm">
@@ -738,13 +722,8 @@ export default function IndexPage() {
                     </div>
                   </InlineStack>
 
-                  {/* Keywords field */}
                   <BlockStack gap="200">
-                    <InlineStack
-                      gap="200"
-                      align="space-between"
-                      blockAlign="end"
-                    >
+                    <InlineStack gap="200" align="space-between" blockAlign="end">
                       <TextField
                         label="Keywords (comma-separated)"
                         value={keywords}
@@ -759,7 +738,10 @@ export default function IndexPage() {
                             disabled={
                               isGenerating ||
                               isSuggestingKeywords ||
-                              !hasCredits(remainingCredits, creditCosts.keywordSuggestion)
+                              !hasCredits(
+                                remainingCredits,
+                                creditCosts.keywordSuggestion,
+                              )
                             }
                           >
                             Suggest
@@ -768,21 +750,16 @@ export default function IndexPage() {
                       />
                     </InlineStack>
 
-                    {/* Keyword tags (current) */}
                     {keywordTags.length > 0 && (
                       <InlineStack gap="100" wrap>
                         {keywordTags.map((kw) => (
-                          <Tag
-                            key={kw}
-                            onRemove={() => handleKeywordTagRemove(kw)}
-                          >
+                          <Tag key={kw} onRemove={() => handleKeywordTagRemove(kw)}>
                             {kw}
                           </Tag>
                         ))}
                       </InlineStack>
                     )}
 
-                    {/* Suggested keywords */}
                     {suggestedKeywords.length > 0 && (
                       <BlockStack gap="100">
                         <Text as="p" variant="bodySm" tone="subdued">
@@ -811,13 +788,6 @@ export default function IndexPage() {
                     )}
                   </BlockStack>
 
-                  {/* <Checkbox
-                    label="Include Instagram caption"
-                    checked={includeSocials}
-                    onChange={setIncludeSocials}
-                    disabled={isGenerating}
-                  /> */}
-
                   <Button
                     variant="primary"
                     tone="success"
@@ -831,6 +801,7 @@ export default function IndexPage() {
                   >
                     Generate Description
                   </Button>
+
                   <InlineStack align="space-between">
                     <Text as="p" variant="bodySm" tone="subdued">
                       Credit cost before generation
@@ -850,7 +821,6 @@ export default function IndexPage() {
                 </BlockStack>
               </Card>
 
-              {/* Generated Output */}
               <Card>
                 <BlockStack gap="300">
                   <Text as="p" variant="headingSm">
@@ -911,17 +881,13 @@ export default function IndexPage() {
                           </Text>
                         </BlockStack>
                         <BlockStack gap="050">
-                          <Text as="p" variant="headingMd">
-                            {vibe}
-                          </Text>
+                          <Text as="p" variant="headingMd">{vibe}</Text>
                           <Text as="p" variant="bodySm" tone="subdued">
                             Style
                           </Text>
                         </BlockStack>
                         <BlockStack gap="050">
-                          <Text as="p" variant="headingMd">
-                            {format}
-                          </Text>
+                          <Text as="p" variant="headingMd">{format}</Text>
                           <Text as="p" variant="bodySm" tone="subdued">
                             Format
                           </Text>
@@ -973,48 +939,44 @@ export default function IndexPage() {
                 </BlockStack>
               </Card>
 
-              <div style={{marginBottom:'10px'}}>
-              <Card>
+              <div style={{ marginBottom: "10px" }}>
+                <Card>
                   <BlockStack gap="400">
-                  <Text as="h2" variant="headingMd">
-                    🚀 How It Works
-                  </Text>
-
-                  <List type="number">
-                    <List.Item>
-                      <Text as="span" fontWeight="semibold">
-                        Select a Product:
-                      </Text>{" "}
-                      Choose a product from the table to get started.
-                    </List.Item>
-
-                    <List.Item>
-                      <Text as="span" fontWeight="semibold">
-                        Customize Your Settings:
-                      </Text>{" "}
-                      Adjust tone, length, and other generation options to match
-                      your needs.
-                    </List.Item>
-
-                    <List.Item>
-                      <Text as="span" fontWeight="semibold">
-                        Generate Draft:
-                      </Text>{" "}
-                      Click the generate button to create your AI-powered
-                      product description.
-                    </List.Item>
-
-                    <List.Item>
-                      <Text as="span" fontWeight="semibold">
-                        Save to Shopify:
-                      </Text>{" "}
-                      Review the draft and save it directly to your Shopify
-                      store with one click.
-                    </List.Item>
-                  </List>
-                </BlockStack>
-              </Card>
-               </div>
+                    <Text as="h2" variant="headingMd">
+                      🚀 How It Works
+                    </Text>
+                    <List type="number">
+                      <List.Item>
+                        <Text as="span" fontWeight="semibold">
+                          Select a Product:
+                        </Text>{" "}
+                        Choose a product from the table to get started.
+                      </List.Item>
+                      <List.Item>
+                        <Text as="span" fontWeight="semibold">
+                          Customize Your Settings:
+                        </Text>{" "}
+                        Adjust tone, length, and other generation options to
+                        match your needs.
+                      </List.Item>
+                      <List.Item>
+                        <Text as="span" fontWeight="semibold">
+                          Generate Draft:
+                        </Text>{" "}
+                        Click the generate button to create your AI-powered
+                        product description.
+                      </List.Item>
+                      <List.Item>
+                        <Text as="span" fontWeight="semibold">
+                          Save to Shopify:
+                        </Text>{" "}
+                        Review the draft and save it directly to your Shopify
+                        store with one click.
+                      </List.Item>
+                    </List>
+                  </BlockStack>
+                </Card>
+              </div>
             </BlockStack>
           </div>
         </Layout.Section>
