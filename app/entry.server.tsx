@@ -8,6 +8,7 @@ import {
 import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
 
+import "./worker/generation.worker";
 export const streamTimeout = 5000;
 
 export default async function handleRequest(

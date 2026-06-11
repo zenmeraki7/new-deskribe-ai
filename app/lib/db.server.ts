@@ -1,3 +1,4 @@
+//app/lib/db.server.ts
 import { PrismaClient } from "@prisma/client";
 
 declare global {

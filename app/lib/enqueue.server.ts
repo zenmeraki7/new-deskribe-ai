@@ -82,6 +82,13 @@ export async function enqueueGenerationJobs({
 }: EnqueueParams): Promise<EnqueueResult> {
   if (!shopDomain) throw new Error("Missing shop context");
 
+  console.log("[bullmq-audit][enqueue] called", {
+    shopDomain,
+    productCount: productIds.length,
+    explicitBulkId,
+    queueName: generationQueue.name,
+  });
+
   const jobIds: string[] = [];
   const skipped: string[] = [];
 
@@ -109,6 +116,10 @@ export async function enqueueGenerationJobs({
     });
 
     if (existing) {
+      console.log("[bullmq-audit][enqueue] existing active job reused", {
+        generationJobId: existing.id,
+        productId,
+      });
       jobIds.push(existing.id);
       continue;
     }
@@ -144,24 +155,58 @@ export async function enqueueGenerationJobs({
       },
     });
 
-    await generationQueue.add(
+    console.log("[bullmq-audit][enqueue] GenerationJob created", {
+      generationJobId: job.id,
+      productId,
+      status: job.status,
+      bullJobId: job.bullJobId,
+    });
+
+    const payload = {
+      jobId: job.id,
+      shopDomain,
+      productId,
+      vibe,
+      format,
+      keywords,
+      includeSocials,
+      customInstruction: customInstruction || undefined,
+      creditRequestId: creditRequestId ?? undefined,
+      creditCost: creditCost ?? undefined,
+    };
+
+    console.log("[bullmq-audit][enqueue] queue.add starting", {
+      queueName: generationQueue.name,
+      bullJobIdOption: job.id,
+      jobName: `generate:${productId}`,
+      payload,
+    });
+
+    const bullJob = await generationQueue.add(
       `generate:${productId}`,
-      {
-        jobId: job.id,
-        shopDomain,
-        productId,
-        vibe,
-        format,
-        keywords,
-        includeSocials,
-        customInstruction: customInstruction || undefined, 
-        creditRequestId: creditRequestId ?? undefined,
-        creditCost: creditCost ?? undefined,
-      },
+      payload,
       { jobId: job.id },
     );
 
+    console.log("[bullmq-audit][enqueue] queue.add succeeded", {
+      queueName: generationQueue.name,
+      returnedBullJobId: bullJob.id,
+      generationJobId: job.id,
+    });
+
     console.log("[enqueue] Job added to Redis queue:", job.id, bulkId ? `(bulk: ${bulkId})` : "");
+
+    await db.generationJob.update({
+      where: { id: job.id },
+      data: { bullJobId: String(bullJob.id) },
+    });
+
+    const storedJob = await db.generationJob.findUnique({
+      where: { id: job.id },
+      select: { id: true, status: true, bullJobId: true },
+    });
+
+    console.log("[bullmq-audit][enqueue] GenerationJob after queue.add", storedJob);
 
     jobIds.push(job.id);
   }

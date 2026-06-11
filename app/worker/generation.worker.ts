@@ -2,11 +2,11 @@
 import { Worker, type Job } from "bullmq";
 import { z } from "zod";
 
-import { db } from "../lib/db.server";
-import { getRedis  } from "../lib/redis.server";
-import { sanitiseHtml } from "../lib/html.server";
-import { generateProductDescription } from "../lib/ai.server";
-import { refundCredits } from "../lib/creditService.server";
+import { db } from "../lib/db.server.ts";
+import { getRedis  } from "../lib/redis.server.ts";
+import { sanitiseHtml } from "../lib/html.server.ts";
+import { generateProductDescription } from "../lib/ai.server.ts";
+import { refundCredits } from "../lib/creditService.server.ts";
 
 const DraftSchema = z
   .object({
@@ -47,30 +47,60 @@ function clampError(err: unknown): string {
 }
 
 async function setProgressSafe(jobId: string, shopDomain: string, progress: number) {
-  await db.generationJob.updateMany({
+  const updated = await db.generationJob.updateMany({
     where: { id: jobId, shopDomain, progress: { lt: progress } },
     data: { progress },
+  });
+  console.log("[bullmq-audit][worker] progress update", {
+    generationJobId: jobId,
+    shopDomain,
+    progress,
+    updatedCount: updated.count,
   });
 }
 
 async function markFailed(jobId: string, shopDomain: string, errorMessage: string) {
-  await db.generationJob.updateMany({
+  const updated = await db.generationJob.updateMany({
     where: { id: jobId, shopDomain },
     data: { status: "FAILED", errorMessage, progress: 0 },
+  });
+  console.log("[bullmq-audit][worker] status FAILED update", {
+    generationJobId: jobId,
+    shopDomain,
+    updatedCount: updated.count,
+    errorMessage,
   });
 }
 
 async function markCompleted(jobId: string, shopDomain: string, result: DraftResult, costTokens = 0) {
-  await db.generationJob.updateMany({
+  const updated = await db.generationJob.updateMany({
     where: { id: jobId, shopDomain },
     data: { status: "COMPLETED", result, progress: 100, errorMessage: null, costTokens },
   });
+  console.log("[bullmq-audit][worker] status COMPLETED update", {
+    generationJobId: jobId,
+    shopDomain,
+    updatedCount: updated.count,
+  });
 }
+
+console.log("[bullmq-audit][worker] defining worker", {
+  workerQueueName: "generation",
+  redisUrlPresent: Boolean(process.env.REDIS_URL),
+  concurrency: LIMITS.CONCURRENCY,
+});
 
 export const generationWorker = new Worker<GenerationJobData>(
   "generation",
   async (bullJob: Job<GenerationJobData>) => {
     const { jobId, shopDomain, productId } = bullJob.data || ({} as any);
+
+    console.log("[bullmq-audit][worker] processor received job", {
+      workerQueueName: bullJob.queueName,
+      bullJobId: bullJob.id,
+      jobName: bullJob.name,
+      payload: bullJob.data,
+    });
 
     if (!jobId || !shopDomain || !productId) {
       throw new Error("Invalid job payload (missing jobId/shopDomain/productId)");
@@ -96,6 +126,13 @@ export const generationWorker = new Worker<GenerationJobData>(
       },
     });
 
+    console.log("[bullmq-audit][worker] GenerationJob lookup", {
+      generationJobId: jobId,
+      shopDomain,
+      found: Boolean(dbJob),
+      status: dbJob?.status,
+    });
+
     if (!dbJob) return { ok: false, code: "JOB_NOT_FOUND" as const };
 
     if (dbJob.status === "COMPLETED") return { ok: true, already: "COMPLETED" as const };
@@ -107,6 +144,12 @@ export const generationWorker = new Worker<GenerationJobData>(
     const claimed = await db.generationJob.updateMany({
       where: { id: jobId, shopDomain, status: "PENDING" },
       data: { status: "PROCESSING", progress: 1, errorMessage: null },
+    });
+
+    console.log("[bullmq-audit][worker] status PROCESSING update", {
+      generationJobId: jobId,
+      shopDomain,
+      updatedCount: claimed.count,
     });
 
     if (claimed.count !== 1) {
@@ -132,6 +175,12 @@ export const generationWorker = new Worker<GenerationJobData>(
       const title = dbJob.productTitle ?? dbJob.productId;
 
       // ── Call real AI ────────────────────────────────────────────────────
+      console.log("[bullmq-audit][worker] generateProductDescription start", {
+        generationJobId: jobId,
+        shopDomain,
+        productId,
+      });
+
       const aiResult = await generateProductDescription({
   title: dbJob.productTitle ?? dbJob.productId,
   vendor: dbJob.productVendor ?? "",
@@ -143,6 +192,12 @@ export const generationWorker = new Worker<GenerationJobData>(
   includeSocials: dbJob.includeSocials ?? false,
   customInstruction: dbJob.customInstruction ?? undefined,
 });
+
+      console.log("[bullmq-audit][worker] generateProductDescription finish", {
+        generationJobId: jobId,
+        shopDomain,
+        productId,
+      });
 
       await setProgressSafe(jobId, shopDomain, 80);
 
@@ -192,7 +247,31 @@ generationWorker.on("ready", () => {
   console.log("[generation.worker] ready — using real AI generation");
 });
 
+generationWorker.on("active", (job) => {
+  console.log("[bullmq-audit][worker] active", {
+    workerQueueName: job.queueName,
+    bullJobId: job.id,
+    jobName: job.name,
+    generationJobId: job.data?.jobId,
+  });
+});
+
+generationWorker.on("completed", (job, result) => {
+  console.log("[bullmq-audit][worker] completed event", {
+    workerQueueName: job.queueName,
+    bullJobId: job.id,
+    generationJobId: job.data?.jobId,
+    result,
+  });
+});
+
 generationWorker.on("failed", (job, err) => {
+  console.error("[bullmq-audit][worker] failed event", {
+    workerQueueName: job?.queueName,
+    bullJobId: job?.id,
+    generationJobId: job?.data?.jobId,
+    message: err?.message,
+  });
   console.error("[generation.worker] failed", {
     bullJobId: job?.id,
     jobId: job?.data?.jobId,

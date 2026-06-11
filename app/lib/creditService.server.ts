@@ -1,8 +1,8 @@
 import crypto from "node:crypto";
 import { Prisma } from "@prisma/client";
 
-import { db } from "./db.server";
-import type { Plan } from "./rateLimiter.server";
+import { db } from "./db.server.ts";
+import type { Plan } from "./rateLimiter.server.ts";
 
 export const PLAN_CREDITS: Record<Plan, number> = {
   free: 100,
