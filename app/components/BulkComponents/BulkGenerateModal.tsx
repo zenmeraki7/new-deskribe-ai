@@ -50,7 +50,7 @@ interface BulkGenerateModalProps {
   selectedProductIds: string[];
   onClose: () => void;
   onSuccess: (jobIds: string[], bulkId: string | null) => void;
-  bulkLimit: number;
+  remainingCredits: number;
   shopPlan: string;
 }
 
@@ -58,6 +58,8 @@ interface BulkKeywordResult {
   ok: boolean;
   keywords?: string[];
   error?: string;
+  code?: string;
+  plan?: string;
 }
 
 interface BulkResult {
@@ -77,7 +79,7 @@ export function BulkGenerateModal({
   selectedProductIds,
   onClose,
   onSuccess,
-  bulkLimit,
+  remainingCredits,
   shopPlan,
 }: BulkGenerateModalProps) {
   const fetcher = useFetcher<BulkResult>();
@@ -161,35 +163,35 @@ const keywordLimitError =
           <Text as="span" variant="headingMd">
             Bulk Generate AI Descriptions
           </Text>
-          <Badge tone="info">{count} product{count !== 1 ? "s" : ""}</Badge>
+          <Badge tone="new">{`${count} product${count !== 1 ? "s" : ""}`}</Badge>
         </InlineStack>
       }
       primaryAction={{
-        content: isSubmitting ? "Queuing…" : `✨ Generate for ${count} product${count !== 1 ? "s" : ""}`,
+        content: isSubmitting ? "Queuing…" : `✨ Generate (${count} Credits)`,
         onAction: handleSubmit,
         loading: isSubmitting,
-        disabled: isSubmitting || count === 0 || (count > bulkLimit && bulkLimit !== 999999),
+        disabled: isSubmitting || count === 0 || count > remainingCredits,
       }}
       secondaryActions={[{ content: "Cancel", onAction: onClose }]}
-      large
+      size="large"
     >
       <Modal.Section>
         <BlockStack gap="400">
 
-          {/* Plan limit guard */}
-          {count > bulkLimit && bulkLimit !== 999999 && (
+          {/* Credit limit guard */}
+          {count > remainingCredits && (
             <Banner
               tone="critical"
-              title="Selection exceeds your plan limit"
+              title="Insufficient credits"
               action={
                 shopPlan !== "pro"
                   ? { content: "Upgrade plan", url: "/app/billing", target: "_self" }
                   : undefined
               }
             >
-              Your {shopPlan} plan supports up to {bulkLimit} products per bulk run.
-              Please go back and deselect {count - bulkLimit} product
-              {count - bulkLimit !== 1 ? "s" : ""} before generating.
+              This action requires {count} credits, but you only have {remainingCredits} remaining.
+              Please deselect {count - remainingCredits} product
+              {count - remainingCredits !== 1 ? "s" : ""} or upgrade your plan.
             </Banner>
           )}
 
@@ -324,7 +326,7 @@ const keywordLimitError =
   {/* Suggested keyword chips */}
   {suggestedKeywords.length > 0 && (
     <BlockStack gap="100">
-      <Text variant="bodySm" tone="subdued">
+      <Text variant="bodySm" tone="subdued" as="p">
         Suggested for your selection — click to add:
       </Text>
       <InlineStack gap="100" wrap>
@@ -462,7 +464,7 @@ const keywordLimitError =
                 {/* Suggested keyword chips */}
                 {suggestedKeywords.length > 0 && (
                   <BlockStack gap="100">
-                    <Text variant="bodySm" tone="subdued">
+                    <Text as="span" variant="bodySm" tone="subdued">
                       Suggested for your selection — click to add:
                     </Text>
                     <InlineStack gap="100" wrap>

@@ -19,6 +19,7 @@ import {
   Banner,
   Tag,
   List,
+  ProgressBar,
 } from "@shopify/polaris";
 
 import { useLoaderData, useFetcher, useNavigate } from "@remix-run/react";
@@ -30,6 +31,14 @@ import {
   generateProductDescription,
 } from "../lib/ai.server";
 import { authenticate } from "../shopify.server";
+import {
+  resolvePlan,
+  checkAndDeductCredits,
+  refundCredits,
+  getShopUsageThisMonth,
+  PLAN_CREDITS,
+  CREDIT_COSTS,
+} from "../lib/creditService.server";
 
 
 const PLANS = [
@@ -81,6 +90,10 @@ interface ShopifyProduct {
 interface LoaderData {
   product: ShopifyProduct | null;
   error?: string;
+  shopPlan: string;
+  remainingCredits: number;
+  totalCredits: number;
+  creditsUsed: number;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -88,7 +101,7 @@ interface LoaderData {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const { admin, billing } = await authenticate.admin(request);
+  const { admin, billing, session } = await authenticate.admin(request);
 
   // Safe billing check — don't crash if it fails
   try {
@@ -128,11 +141,29 @@ export async function loader({ request }: LoaderFunctionArgs) {
     const product: ShopifyProduct | null =
       data?.data?.products?.nodes?.[0] ?? null;
 
-    return json<LoaderData>({ product });
+    const { appSubscriptions } = await billing.check();
+    const activeSub = appSubscriptions?.[0];
+    const shopPlan = resolvePlan(activeSub?.name ?? null);
+    
+    const creditsUsed = await getShopUsageThisMonth(session.shop);
+    const totalCredits = PLAN_CREDITS[shopPlan as keyof typeof PLAN_CREDITS] || 0;
+    const remainingCredits = Math.max(0, totalCredits - creditsUsed);
+
+    return json<LoaderData>({ 
+      product,
+      shopPlan,
+      creditsUsed,
+      totalCredits,
+      remainingCredits,
+    });
   } catch (err) {
     return json<LoaderData>({
       product: null,
       error: "Failed to load product.",
+      shopPlan: "free",
+      creditsUsed: 0,
+      totalCredits: PLAN_CREDITS.free,
+      remainingCredits: PLAN_CREDITS.free,
     });
   }
 }
@@ -146,6 +177,10 @@ export async function action({ request }: ActionFunctionArgs) {
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
 
+  const shopDomain = session.shop;
+  const { appSubscriptions } = await billing.check();
+  const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
+
   // ── suggest_keywords ──────────────────────────────────────────────────────
   if (intent === "suggest_keywords") {
     const title = String(form.get("title") ?? "");
@@ -158,8 +193,24 @@ export async function action({ request }: ActionFunctionArgs) {
 
     try {
       const keywords = await suggestKeywords(title, vendor, productType, tags);
+      const cost = CREDIT_COSTS.keywordSuggestion;
+      const limitResult = await checkAndDeductCredits(shopDomain, plan, cost);
+      
+      if (!limitResult.allowed) {
+        return json(
+          {
+            ok: false,
+            kind: "error",
+            error: `Insufficient credits. Need ${cost} credits, but you only have ${Math.max(0, limitResult.limit - limitResult.used)} remaining.`,
+          },
+          { status: 403 }
+        );
+      }
+
       return json({ ok: true, kind: "suggest_keywords", keywords });
     } catch (err) {
+      const cost = CREDIT_COSTS.keywordSuggestion;
+      await refundCredits(shopDomain, plan, cost);
       console.error("Keyword generation error:", err);
       return json(
         {
@@ -198,6 +249,20 @@ export async function action({ request }: ActionFunctionArgs) {
         );
       }
 
+      const cost = CREDIT_COSTS.productDescription;
+      const limitResult = await checkAndDeductCredits(shopDomain, plan, cost);
+      
+      if (!limitResult.allowed) {
+        return json(
+          {
+            ok: false,
+            kind: "error",
+            error: `Insufficient credits. Need ${cost} credits, but you only have ${Math.max(0, limitResult.limit - limitResult.used)} remaining.`,
+          },
+          { status: 403 }
+        );
+      }
+
       const result = await generateProductDescription({
         title: p.title,
         vendor: p.vendor,
@@ -227,6 +292,8 @@ export async function action({ request }: ActionFunctionArgs) {
         },
       });
     } catch (err) {
+      const cost = CREDIT_COSTS.productDescription;
+      await refundCredits(shopDomain, plan, cost);
       console.error("Generation error:", err);
       return json(
         {
@@ -294,7 +361,7 @@ export async function action({ request }: ActionFunctionArgs) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function IndexPage() {
-  const { product, error } = useLoaderData<typeof loader>();
+  const { product, error, remainingCredits, totalCredits, creditsUsed } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
 
   // FIX: Separate fetchers for suggest and generate to avoid state conflicts
@@ -479,8 +546,28 @@ export default function IndexPage() {
               alignItems: "start",
             }}
           >
-            {/* ── LEFT: Product Card ─────────────────────────────────────── */}
-            <Card>
+            {/* ── LEFT: Product Card + Dashboard ─────────────────────────────────────── */}
+            <BlockStack gap="400">
+              {/* Credit Dashboard Widget */}
+              <Card>
+                <BlockStack gap="200">
+                  <InlineStack align="space-between">
+                    <Text variant="headingSm" as="h3">Credits Remaining</Text>
+                    <Text variant="bodyMd" fontWeight="bold" as="span">
+                      {remainingCredits % 1 === 0 ? remainingCredits : remainingCredits.toFixed(1)} / {totalCredits}
+                    </Text>
+                  </InlineStack>
+                  <ProgressBar 
+                    progress={totalCredits > 0 ? (creditsUsed / totalCredits) * 100 : 0} 
+                    tone={(totalCredits > 0 && (creditsUsed / totalCredits) * 100 >= 90) ? "critical" : "success"}
+                  />
+                  <Button variant="plain" onClick={() => navigate("/app/credits")}>
+                    View usage details
+                  </Button>
+                </BlockStack>
+              </Card>
+
+              <Card>
               <BlockStack gap="300">
                 <Text as="h2" variant="headingSm">
                   Selected Product
@@ -532,6 +619,7 @@ export default function IndexPage() {
                 </Button>
               </BlockStack>
             </Card>
+            </BlockStack>
 
             {/* ── RIGHT: Settings + Output ───────────────────────────────── */}
             <BlockStack gap="400">
@@ -581,9 +669,9 @@ export default function IndexPage() {
                           <Button
                             onClick={handleSuggestKeywords}
                             loading={isSuggestingKeywords}
-                            disabled={isGenerating || isSuggestingKeywords}
+                            disabled={isGenerating || isSuggestingKeywords || remainingCredits < 0.5}
                           >
-                            Suggest
+                            Suggest (0.5)
                           </Button>
                         }
                       />
@@ -644,10 +732,15 @@ export default function IndexPage() {
                     tone="success"
                     onClick={handleGenerate}
                     loading={isGenerating}
-                    disabled={isGenerating || isSuggestingKeywords}
+                    disabled={isGenerating || isSuggestingKeywords || remainingCredits < 1}
                   >
-                    Generate Description
+                    Generate Description (1 Credit)
                   </Button>
+                  {remainingCredits < 1 && (
+                    <Text as="p" tone="critical" variant="bodySm">
+                      Not enough credits to generate.
+                    </Text>
+                  )}
                 </BlockStack>
               </Card>
 

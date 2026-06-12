@@ -18,8 +18,13 @@ import {
   UUID_V4_RE,
 } from "../../routes/app.products.$productId.constants";
 import type { LoaderData, ProductMeta, DraftResult } from "../../routes/app.products.$productId.types";
-import { checkAndIncrementRateLimit, checkAndIncrementKeywordLimit, refundRateLimit,  KEYWORD_LIMITS } from "../../lib/rateLimiter.server";
-import { resolvePlan, type Plan } from "../../lib/rateLimiter.server";
+import {
+  resolvePlan,
+  checkAndDeductCredits,
+  refundCredits,
+  CREDIT_COSTS,
+  type Plan,
+} from "../../lib/creditService.server";
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -353,6 +358,7 @@ export async function loader({ request, params }: LoaderFunctionArgs): Promise<R
     latestDraft: sanitizedLatestDraft,
     policyWarnings,
     shopPlan,
+    shopDomain,
     customTemplates: customTemplates.map((t) => ({
       ...t,
       createdAt: t.createdAt.toISOString(),
@@ -467,27 +473,21 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
   // ── Intent: generate ────────────────────────────────────────────────────
   if (intent === "generate") {
     const plan = await getShopPlan(billing);
-    const limitResult = await checkAndIncrementRateLimit(shopDomain, plan);
+    const cost = CREDIT_COSTS.productDescription;
+    const limitResult = await checkAndDeductCredits(shopDomain, plan, cost);
 
     if (!limitResult.allowed) {
-      const isGlobal = limitResult.reason === "global_limit";
       return json(
         {
           ok: false,
           kind: "error",
-          code: isGlobal ? "GLOBAL_LIMIT_REACHED" : "RATE_LIMIT_EXCEEDED",
-          error: isGlobal
-            ? "Service is temporarily at capacity. Please try again in a few hours."
-            : `Daily generation limit reached (${limitResult.shopUsed}/${limitResult.shopLimit}). ${
-                plan === "free"
-                  ? "Upgrade to Pro for unlimited generations/day."
-                  : "Limit resets at midnight UTC."
-              }`,
-          shopUsed: limitResult.shopUsed,
-          shopLimit: limitResult.shopLimit,
+          code: "CREDIT_LIMIT_EXCEEDED",
+          error: `Insufficient credits. This requires ${cost} credits, but you only have ${Math.max(0, limitResult.limit - limitResult.used)} remaining.`,
+          shopUsed: limitResult.used,
+          shopLimit: limitResult.limit,
           plan,
         },
-        { status: 429 },
+        { status: 403 },
       );
     }
 
@@ -524,7 +524,7 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
   });
 
     if (existing) {
-       await refundRateLimit(shopDomain, plan);
+       await refundCredits(shopDomain, plan, cost);
       return json({
         ok: true,
         kind: "generate",
@@ -548,7 +548,7 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
 
     // Product wasn't found or access was denied — no job was created.
     if (skipped.includes(productGid) || jobIds.length === 0) {
-      await refundRateLimit(shopDomain, plan);   // ← refund
+      await refundCredits(shopDomain, plan, cost);   // ← refund
       return json(
         { ok: false, kind: "error", error: "Product not found or access denied", code: "NOT_FOUND_OR_DENIED" },
         { status: 403 },
@@ -558,7 +558,7 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     return json({ ok: true, kind: "generate", jobId: jobIds[0], status: "PENDING" });
 
   } catch (err) {
-    await refundRateLimit(shopDomain, plan);     // ← refund
+    await refundCredits(shopDomain, plan, cost);     // ← refund
     const message = err instanceof Error ? err.message : "Unknown error";
     return json(
       { ok: false, kind: "error", error: message, code: "GENERATE_FAILED" },
@@ -615,18 +615,16 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
   if (intent === "suggest_keywords") {
     try {
       const plan = await getShopPlan(billing);
-      const limitResult = await checkAndIncrementKeywordLimit(shopDomain, plan);
+      const cost = CREDIT_COSTS.keywordSuggestion;
+      const limitResult = await checkAndDeductCredits(shopDomain, plan, cost);
 
       if (!limitResult.allowed) {
-        const isNotAllowed = limitResult.reason === "not_allowed";
         return json(
           {
             ok: false,
             kind: "error",
-            code: "KEYWORD_LIMIT_EXCEEDED",
-            error: isNotAllowed
-              ? "Keyword suggestions are not available on the Free plan. Upgrade to Basic or higher."
-              : `Daily keyword suggestion limit reached (${limitResult.used}/${limitResult.limit}). Resets at midnight UTC.`,
+            code: "CREDIT_LIMIT_EXCEEDED",
+            error: `Insufficient credits. This requires ${cost} credits, but you only have ${Math.max(0, limitResult.limit - limitResult.used)} remaining.`,
             plan,
             keywordUsed: limitResult.used,
             keywordLimit: limitResult.limit,
@@ -649,12 +647,13 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
           : [],
       );
 
-      const planLimit = KEYWORD_LIMITS[plan];
-      const capCount = planLimit === Infinity ? 20 : planLimit;
+      const capCount = 20; // Default cap
       const safe = normalizeKeywordList(keywords).slice(0, capCount);
 
       return json({ ok: true, kind: "suggest_keywords", keywords: safe });
     } catch (err) {
+      const plan = await getShopPlan(billing);
+      await refundCredits(shopDomain, plan, CREDIT_COSTS.keywordSuggestion);
       const message = err instanceof Error ? err.message : "Unknown error";
       return json(
         { ok: false, kind: "error", error: message, code: "SUGGEST_FAILED" },

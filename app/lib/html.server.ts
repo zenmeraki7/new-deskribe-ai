@@ -1,5 +1,6 @@
 // FILE: app/lib/html.server.ts
 
+// @ts-ignore
 import sanitizeHtml from "sanitize-html";
 
 const ALLOWED_TAGS = [

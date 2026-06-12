@@ -1,11 +1,13 @@
-// app/lib/redis.server.ts
 import IORedis from "ioredis";
 
-let redis: IORedis | null = null;
+declare global {
+  var __redis: IORedis | undefined;
+}
 
 export function getRedis() {
-  if (!redis) {
-    redis = new IORedis(process.env.REDIS_URL!, {
+  if (!globalThis.__redis) {
+    const redisUrl = process.env.REDIS_URL || "redis://localhost:6379";
+    globalThis.__redis = new IORedis(redisUrl, {
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
       retryStrategy(times) {
@@ -13,18 +15,18 @@ export function getRedis() {
       },
     });
 
-    redis.on("connect", () => {
+    globalThis.__redis.on("connect", () => {
       console.log("[redis] connected");
     });
 
-    redis.on("ready", () => {
+    globalThis.__redis.on("ready", () => {
       console.log("[redis] ready");
     });
 
-    redis.on("error", (err) => {
+    globalThis.__redis.on("error", (err) => {
       console.error("[redis] error:", err);
     });
   }
 
-  return redis;
+  return globalThis.__redis;
 }

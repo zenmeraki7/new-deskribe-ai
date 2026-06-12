@@ -3,14 +3,14 @@ import { json } from "@remix-run/node";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { authenticate } from "../shopify.server";
 import { db } from "../lib/db.server";
-import { resolvePlan, canUseCustomTemplates } from "../lib/rateLimiter.server";
+import { resolvePlan, canUseCustomTemplates } from "../lib/creditService.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const { session, billing } = await authenticate.admin(request);
   const shopDomain = session.shop;
 
   const { appSubscriptions } = await billing.check();
-  const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null); // ← null coalesce
+  const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null) as any; // ← null coalesce
 
   if (!canUseCustomTemplates(plan)) {
     return json({ forbidden: true, templates: [] }, { status: 403 });
@@ -37,7 +37,7 @@ export async function action({ request }: ActionFunctionArgs) {
   const shopDomain = session.shop;
 
   const { appSubscriptions } = await billing.check();
-  const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
+  const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null) as any;
 
   if (!canUseCustomTemplates(plan)) {
     return json(

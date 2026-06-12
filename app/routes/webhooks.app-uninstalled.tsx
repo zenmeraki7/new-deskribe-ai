@@ -45,7 +45,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // Step 3: Delete all DB rows
     await db.$transaction([
       db.generationJob.deleteMany({ where: { shopDomain: shop } }),
-      db.shopUsage.deleteMany({ where: { shopDomain: shop } }),
+      db.shopCreditUsage.deleteMany({ where: { shopDomain: shop } }),
       db.customTemplate.deleteMany({ where: { shopDomain: shop } }),
       db.history.deleteMany({ where: { shopDomain: shop } }),
       db.session.deleteMany({ where: { shop } }),

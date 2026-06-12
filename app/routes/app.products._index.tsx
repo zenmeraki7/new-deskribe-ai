@@ -32,30 +32,26 @@ import {
   ActiveFilterPills,
   type FilterPill,
 } from "../components/producttable/ActiveFilterPills";
-import {
-  ProductFilterModal,
-  type ProductFilters,
-  EMPTY_FILTERS,
-} from "../components/producttable/Productfiltermodal";
+import { ProductFilterModal, type ProductFilters, EMPTY_FILTERS } from "../components/producttable/Productfiltermodal";
 import { BulkGenerateModal } from "../components/BulkComponents/BulkGenerateModal";
 import { BulkProgressBar } from "../components/BulkComponents/BulkProgressBar";
-import { resolvePlan, BULK_LIMITS, type Plan } from "../lib/rateLimiter.server";
+import { resolvePlan, PLAN_CREDITS, getShopUsageThisMonth, type Plan } from "../lib/creditService.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin, billing } = await authenticate.admin(request);
+  const { admin, billing, session } = await authenticate.admin(request);
 
-  // Resolve plan for bulk limit enforcement
+  // Resolve plan and credits for bulk limit enforcement
   let shopPlan: Plan = "free";
-  let bulkLimit: number = BULK_LIMITS.free;
+  let remainingCredits = 0;
+  
   try {
     const { appSubscriptions } = await billing.check();
     shopPlan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
-    bulkLimit =
-      BULK_LIMITS[shopPlan] === Infinity
-        ? 999999 // serialize Infinity as large number for JSON
-        : BULK_LIMITS[shopPlan];
+    const usage = await getShopUsageThisMonth(session.shop);
+    remainingCredits = Math.max(0, PLAN_CREDITS[shopPlan] - usage);
   } catch {
     // fail open — treat as free
+    remainingCredits = PLAN_CREDITS["free"];
   }
 
   const url = new URL(request.url);
@@ -158,7 +154,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     totalInventory,
     generatedDescriptions,
     shopPlan,
-    bulkLimit,
+    remainingCredits,
   };
 };
 
@@ -270,7 +266,7 @@ export default function ProductsDashboard() {
     totalInventory,
     generatedDescriptions,
     shopPlan,
-    bulkLimit,
+    remainingCredits,
   } = useLoaderData<typeof loader>();
 
   const navigate = useNavigate();
@@ -415,11 +411,8 @@ export default function ProductsDashboard() {
 
   // ── Promoted bulk actions (shown in IndexTable toolbar when rows selected) ──
   // ── Bulk selection cap warning ─────────────────────────────────────────────
-  const UNLIMITED = 999999;
-  const atBulkLimit =
-    bulkLimit !== UNLIMITED && selectedResources.length >= bulkLimit;
-
-  const overBulkLimit = selectedResources.length > bulkLimit;
+  const atBulkLimit = selectedResources.length >= remainingCredits;
+  const overBulkLimit = selectedResources.length > remainingCredits;
 
   // ── Promoted bulk actions ──────────────────────────────────────────────────
   const promotedBulkActions =
@@ -638,7 +631,7 @@ export default function ProductsDashboard() {
             <Divider />
 
             {/* Bulk limit warning — shown when selection is at/over limit */}
-            {selectedResources.length > 0 && bulkLimit !== 999999 && (
+            {selectedResources.length > 0 && (
               <Box paddingInline="400" paddingBlockStart="200">
                 {overBulkLimit ? (
                   <Banner
@@ -656,20 +649,19 @@ export default function ProductsDashboard() {
                 ) : atBulkLimit ? (
                   <Banner
                     tone="warning"
-                    title={`Selection limit reached (${bulkLimit}/${bulkLimit})`}
+                    title={`Selection limit reached (${remainingCredits}/${remainingCredits})`}
                   >
-                    You've reached the maximum for your {shopPlan} plan.{" "}
+                    You've reached your maximum available credits ({remainingCredits}).{" "}
                     {shopPlan !== "pro" && (
                       <a href="/app/billing" style={{ color: "#2c6ecb" }}>
-                        Upgrade for a higher limit.
+                        Upgrade for more credits.
                       </a>
                     )}
                   </Banner>
                 ) : (
                   <Text as="p" variant="bodySm" tone="subdued">
                     {selectedResources.length} selected ·{" "}
-                    {bulkLimit - selectedResources.length} remaining ({shopPlan}{" "}
-                    plan limit: {bulkLimit})
+                    {remainingCredits - selectedResources.length} credits remaining
                   </Text>
                 )}
               </Box>
@@ -723,8 +715,8 @@ export default function ProductsDashboard() {
         onFiltersChange={setPendingFilters}
         onApply={() => setAppliedFilters({ ...pendingFilters })}
         onClear={() => setPendingFilters(EMPTY_FILTERS)}
-        productTypeOptions={productTypes}
-        collectionOptions={collections}
+        productTypeOptions={productTypes as string[]}
+        collectionOptions={collections as string[]}
       />
 
       {/* ── Bulk Generate modal ───────────────────────────────────────────── */}
@@ -733,7 +725,7 @@ export default function ProductsDashboard() {
         selectedProductIds={selectedResources}
         onClose={() => setBulkModalOpen(false)}
         onSuccess={handleBulkSuccess}
-        bulkLimit={bulkLimit}
+        remainingCredits={remainingCredits}
         shopPlan={shopPlan}
       />
     </Page>

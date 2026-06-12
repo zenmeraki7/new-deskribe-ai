@@ -37,6 +37,10 @@ export interface JobRow {
   hasPreviousDescription: boolean; // true when DB `previousDescription` is non-null
   createdAt: string;       // ISO string
   updatedAt: string;       // ISO string
+  bulkId: string | null;
+  draftBodyHtml: string;
+  metaTitle: string;
+  metaDescription: string;
 }
 
 export interface LoaderData {
@@ -46,6 +50,7 @@ export interface LoaderData {
   nextCursor: string | null;
   prevCursor: string | null;
   totalPending: number;    // server-computed, shop-scoped
+  shopDomain: string;
 }
 
 /**
@@ -57,8 +62,8 @@ export type BadgeTone =
   | "critical"
   | "attention"
   | "info"
-  | "subdued"
-  | "warning";
+  | "warning"
+  | undefined;
 
 /**
  * Map status to UI badge metadata.
@@ -75,11 +80,11 @@ export function statusBadge(status: string): { label: string; tone: BadgeTone } 
     case "PENDING":
       return { label: "Pending", tone: "attention" };
     case "CANCELLED":
-      return { label: "Cancelled", tone: "subdued" };
+      return { label: "Cancelled", tone: undefined };
     case "UNDONE":
       return { label: "Undone", tone: "warning" };
     default:
-      return { label: "Unknown", tone: "subdued" };
+      return { label: "Unknown", tone: undefined };
   }
 }
 

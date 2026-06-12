@@ -133,7 +133,7 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
   const pageRows = rows.slice(0, take);
 
   const hasActiveJobs = pageRows.some(
-    (j) => isJobStatus(j.status) && ACTIVE_STATUSES.includes(j.status),
+    (j) => isJobStatus(j.status) && (ACTIVE_STATUSES as readonly string[]).includes(j.status),
   );
 
   const totalPending = await db.generationJob.count({

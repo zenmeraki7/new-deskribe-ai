@@ -156,7 +156,7 @@ function JobDetailModal({ job, open, onClose, shopDomain }: JobDetailModalProps)
           : []),
         { content: "Close", onAction: onClose },
       ]}
-      large
+      size="large"
     >
       <Modal.Section>
         <BlockStack gap="400">
@@ -255,7 +255,7 @@ function JobDetailModal({ job, open, onClose, shopDomain }: JobDetailModalProps)
                 </Text>
                 <Box
                   padding="300"
-                  background="bg-surface-critical-subdued"
+                  background="bg-surface-critical"
                   borderRadius="200"
                 >
                   <Text as="p" variant="bodySm" tone="critical">
@@ -434,7 +434,7 @@ function JobTableRow({ job, index, onViewDetails }: JobRowProps) {
   const updatedDate = safeDateLabel(job.updatedAt);
   const progress = clampProgress(job.progress);
   const canUndo =
-    job.status === "COMPLETED" && !hasUndone && job.status !== "UNDONE";
+    job.status === "COMPLETED" && !hasUndone;
 
   const rowError =
     actionFetcher.data?.ok === false
@@ -773,40 +773,19 @@ export default function JobsRoute() {
   const tabs = [
     {
       id: "all",
-      content: (
-        <InlineStack gap="200" blockAlign="center">
-          <span>All</span>
-          <Badge>{jobs.length}</Badge>
-        </InlineStack>
-      ),
+      content: `All (${jobs.length})`,
       accessibilityLabel: "All",
       panelID: "all-panel",
     },
     {
       id: "individual",
-      content: (
-        <InlineStack gap="200" blockAlign="center">
-          <span>Individual</span>
-          <Badge>{individualJobs.length}</Badge>
-        </InlineStack>
-      ),
+      content: `Individual (${individualJobs.length})`,
       accessibilityLabel: "Individual jobs",
       panelID: "individual-panel",
     },
     {
       id: "bulk",
-      content: (
-        <InlineStack gap="200" blockAlign="center">
-          <span>Bulk Runs</span>
-          <Badge
-            tone={
-              bulkRuns.some((r) => r.pendingCount > 0) ? "attention" : undefined
-            }
-          >
-            {bulkRuns.length}
-          </Badge>
-        </InlineStack>
-      ),
+      content: `Bulk Runs (${bulkRuns.length})`,
       accessibilityLabel: "Bulk runs",
       panelID: "bulk-panel",
     },
@@ -828,7 +807,7 @@ export default function JobsRoute() {
     }
     return (
       <>
-        <Box padding="300" borderBlockEndWidth="1px" borderColor="border">
+        <Box padding="300" borderBlockEndWidth="025" borderColor="border">
           <Text as="p" variant="bodySm" tone="subdued">
             Jobs are shop-scoped and actions are idempotent.
           </Text>
@@ -837,11 +816,11 @@ export default function JobsRoute() {
           resourceName={{ singular: "job", plural: "jobs" }}
           itemCount={jobList.length}
           headings={[
-            { title: "Product", width: "30%" },
-            { title: "Status", width: "12%" },
-            { title: "Details", width: "20%" },
-            { title: "Updated", width: "20%" },
-            { title: "Actions", width: "18%" },
+            { title: "Product" },
+            { title: "Status" },
+            { title: "Details" },
+            { title: "Updated" },
+            { title: "Actions" },
           ]}
           selectable={false}
         >
@@ -875,7 +854,7 @@ export default function JobsRoute() {
     }
     return (
       <>
-        <Box padding="300" borderBlockEndWidth="1px" borderColor="border">
+        <Box padding="300" borderBlockEndWidth="025" borderColor="border">
           <Text as="p" variant="bodySm" tone="subdued">
             Each bulk run groups all products from a single batch generation.
             Click "Review & Apply" to manage results.

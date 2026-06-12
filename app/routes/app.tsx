@@ -26,6 +26,7 @@ export default function App() {
         </Link>
         <Link to="/app/products">Products</Link>
         <Link to="/app/jobs">History</Link>
+        <Link to="/app/credits">Credits</Link>
         <Link to="/app/billing">Billing</Link>
       </NavMenu>
 

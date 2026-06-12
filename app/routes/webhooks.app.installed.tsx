@@ -11,7 +11,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // Clear all shop-specific data on reinstall
     await db.$transaction([
       db.generationJob.deleteMany({ where: { shopDomain: shop } }),
-      db.shopUsage.deleteMany({ where: { shopDomain: shop } }),
+      db.shopCreditUsage.deleteMany({ where: { shopDomain: shop } }),
       db.customTemplate.deleteMany({ where: { shopDomain: shop } }),
      db.history.deleteMany({ where: { shopDomain: shop } }),
     ]);

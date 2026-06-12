@@ -10,7 +10,7 @@ import { db } from "../lib/db.server";
 import { sanitiseHtml } from "../lib/html.server";
 import { generationQueue } from "../lib/queue.server";
 import BulkReviewPage from "./app.bulk.$bulkId.ui";
-import { checkAndIncrementRateLimit, resolvePlan } from "app/lib/rateLimiter.server";
+import { checkAndDeductCredits, resolvePlan, CREDIT_COSTS } from "../lib/creditService.server";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -267,11 +267,11 @@ export async function action({ request, params }: ActionFunctionArgs) {
     }
 const { billing } = await authenticate.admin(request); // already have this from top-level auth
   const { appSubscriptions } = await billing.check();
-  const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
-  const limitResult = await checkAndIncrementRateLimit(shopDomain, plan);
+  const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null) as any;
+  const limitResult = await checkAndDeductCredits(shopDomain, plan, CREDIT_COSTS.productDescription);
   
   if (!limitResult.allowed) {
-    return json({ ok: false, error: "Daily generation limit reached.", code: "RATE_LIMIT_EXCEEDED" }, { status: 429 });
+    return json({ ok: false, error: "Not enough credits.", code: "INSUFFICIENT_CREDITS" }, { status: 402 });
   }
 
 

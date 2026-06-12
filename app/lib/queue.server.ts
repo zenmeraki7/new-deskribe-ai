@@ -4,5 +4,5 @@ import { Queue } from "bullmq";
 import { getRedis } from "./redis.server";
 
 export const generationQueue = new Queue("generation", {
-  connection: getRedis(),
+  connection: getRedis() as any,
 });

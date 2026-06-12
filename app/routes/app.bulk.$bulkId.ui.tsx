@@ -106,7 +106,7 @@ function PreviewModal({
         },
         { content: "Close", onAction: onClose },
       ]}
-      large
+      size="large"
     >
       <Modal.Section>
         <BlockStack gap="400">
@@ -288,7 +288,7 @@ function JobCard({
 
       {/* Error */}
       {isFailed && job.errorMessage && (
-        <Box padding="200" background="bg-surface-critical-subdued" borderRadius="200">
+        <Box padding="200" background="bg-surface-critical" borderRadius="200">
           <Text as="p" variant="bodySm" tone="critical">
             {job.errorMessage.length > 120
               ? `${job.errorMessage.slice(0, 120)}…`

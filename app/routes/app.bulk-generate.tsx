@@ -6,13 +6,11 @@ import { authenticate } from "../shopify.server";
 import { enqueueGenerationJobs } from "../lib/enqueue.server";
 import { suggestKeywordsBulk } from "../lib/ai.server";
 import {
-  checkAndIncrementKeywordLimit,
-  checkAndIncrementRateLimit,
   resolvePlan,
-  refundRateLimit,
-  KEYWORD_LIMITS,
-  BULK_LIMITS,
-} from "../lib/rateLimiter.server";
+  checkAndDeductCredits,
+  refundCredits,
+  CREDIT_COSTS,
+} from "../lib/creditService.server";
 
 const MAX_BULK = 50;
 
@@ -76,23 +74,6 @@ export async function action({ request }: ActionFunctionArgs) {
 
   // ── Intent: suggest_keywords_bulk ─────────────────────────────────────────
   if (intent === "suggest_keywords_bulk") {
-    const limitResult = await checkAndIncrementKeywordLimit(shopDomain, plan);
-
-    if (!limitResult.allowed) {
-      const isNotAllowed = limitResult.reason === "not_allowed";
-      return json(
-        {
-          ok: false,
-          code: "KEYWORD_LIMIT_EXCEEDED",
-          error: isNotAllowed
-            ? "Keyword suggestions are not available on the Free plan. Upgrade to Basic or higher."
-            : `Daily keyword suggestion limit reached (${limitResult.used}/${limitResult.limit}). Resets at midnight UTC.`,
-          plan,
-        },
-        { status: 403 },
-      );
-    }
-
     const rawIds = String(fd.get("productIds") ?? "[]");
     let productIds: string[] = [];
 
@@ -112,6 +93,21 @@ export async function action({ request }: ActionFunctionArgs) {
 
     if (productIds.length === 0) {
       return json({ ok: true, kind: "suggest_keywords_bulk", keywords: [] });
+    }
+
+    const cost = CREDIT_COSTS.keywordSuggestion;
+    const limitResult = await checkAndDeductCredits(shopDomain, plan, cost);
+
+    if (!limitResult.allowed) {
+      return json(
+        {
+          ok: false,
+          code: "CREDIT_LIMIT_EXCEEDED",
+          error: `Insufficient credits. This requires ${cost} credits, but you only have ${Math.max(0, limitResult.limit - limitResult.used)} remaining.`,
+          plan,
+        },
+        { status: 403 },
+      );
     }
 
     try {
@@ -160,16 +156,14 @@ export async function action({ request }: ActionFunctionArgs) {
 
       const keywords = await suggestKeywordsBulk(productMetas);
 
-      const planLimit = KEYWORD_LIMITS[plan];
-      const capCount = planLimit === Infinity ? 20 : Number(planLimit);
+      const capCount = 20; // Just cap to 20 keywords
 
       const safe = keywords
         .filter((k) => typeof k === "string" && k.trim())
         .map((k) => k.trim().slice(0, 50))
-        .slice(0, capCount);
-
       return json({ ok: true, kind: "suggest_keywords_bulk", keywords: safe });
     } catch (err) {
+      await refundCredits(shopDomain, plan, cost);
       const message = err instanceof Error ? err.message : "Unknown error";
       return json(
         { ok: false, error: message, code: "SUGGEST_BULK_FAILED" },
@@ -180,19 +174,6 @@ export async function action({ request }: ActionFunctionArgs) {
 
   // ── Intent: bulk_generate ─────────────────────────────────────────────────
   if (intent === "bulk_generate") {
-    // ── Plan gate: free plan blocked entirely ────────────────────────────
-    const bulkLimit = BULK_LIMITS[plan];
-    if (bulkLimit === 0) {
-      return json(
-        {
-          ok: false,
-          error:
-            "Bulk generation is not available on the Free plan. Upgrade to Basic or higher.",
-          code: "PLAN_UPGRADE_REQUIRED",
-        },
-        { status: 403 },
-      );
-    }
 
     // ── Parse and validate productIds ────────────────────────────────────
     let productIds: string[];
@@ -217,31 +198,16 @@ export async function action({ request }: ActionFunctionArgs) {
       );
     }
 
-    // ── Plan-specific bulk size cap ──────────────────────────────────────
-    if (bulkLimit !== Infinity && productIds.length > bulkLimit) {
+    const cost = productIds.length * CREDIT_COSTS.bulkGeneration;
+    const limitResult = await checkAndDeductCredits(shopDomain, plan, cost);
+    if (!limitResult.allowed) {
       return json(
         {
           ok: false,
-          error: `Your plan allows up to ${bulkLimit} products per bulk run.`,
-          code: "BULK_LIMIT_EXCEEDED",
+          code: "CREDITS_EXCEEDED",
+          error: `Insufficient credits. This requires ${cost} credits, but you only have ${Math.max(0, limitResult.limit - limitResult.used)} remaining.`,
         },
         { status: 403 },
-      );
-    }
-
-    // ── Per-generation rate limit (counts as 1 call, not N) ──────────────
-    const limitResult = await checkAndIncrementRateLimit(shopDomain, plan);
-    if (!limitResult.allowed) {
-      const isGlobal = limitResult.reason === "global_limit";
-      return json(
-        {
-          ok: false,
-          code: isGlobal ? "GLOBAL_LIMIT_REACHED" : "RATE_LIMIT_EXCEEDED",
-          error: isGlobal
-            ? "Service is temporarily at capacity. Please try again in a few hours."
-            : `Daily generation limit reached (${limitResult.shopUsed}/${limitResult.shopLimit}). Limit resets at midnight UTC.`,
-        },
-        { status: 429 },
       );
     }
 
@@ -262,7 +228,7 @@ export async function action({ request }: ActionFunctionArgs) {
       });
 
        if (jobIds.length === 0) {
-      await refundRateLimit(shopDomain, plan);   // ← refund
+      await refundCredits(shopDomain, plan, cost);   // ← refund
       return json(
         { ok: false, error: "No products could be enqueued", code: "ALL_SKIPPED" },
         { status: 403 },
@@ -271,7 +237,7 @@ export async function action({ request }: ActionFunctionArgs) {
 
       return json({ ok: true, jobIds, skipped, bulkId });
     } catch (err: any) {
-    await refundRateLimit(shopDomain, plan);     // ← refund
+    await refundCredits(shopDomain, plan, cost);     // ← refund
     console.error("[bulk-generate] enqueue error:", err);
     return json(
       { ok: false, error: err?.message ?? "Failed to enqueue jobs" },

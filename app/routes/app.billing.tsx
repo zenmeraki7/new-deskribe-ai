@@ -49,7 +49,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // Wait briefly for Shopify to activate the new subscription
       await new Promise(r => setTimeout(r, 3000));
 
-    const { appSubscriptions } = await billing.check();
+    const { appSubscriptions } = await (billing as any).check();
 
     // Cancel all subscriptions except the newly approved one
       const sorted = [...(appSubscriptions ?? [])].sort(
@@ -57,19 +57,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   );
 
   for (const sub of sorted.slice(1)) {
-    await withRetry(() => billing.cancel({ subscriptionId: sub.id }));
+    await withRetry(() => (billing as any).cancel({ subscriptionId: sub.id }));
   }
 
     // Re-fetch to get the clean state
-     const { appSubscriptions: updatedSubs } = await withRetry(() =>
-    billing.check({ plans: PLANS, isTest: isTestBilling })
+     const { appSubscriptions: updatedSubs } = await withRetry<any>(() =>
+    (billing as any).check({ plans: [...PLANS], isTest: isTestBilling })
   );
 
   return json({ subscription: updatedSubs?.[0] ?? null });
 }
 
   // Normal page load
-  const { appSubscriptions } = await billing.check();
+  const { appSubscriptions } = await (billing as any).check();
 
   return json({ subscription: appSubscriptions?.[0] ?? null });
 };  // ← this closing brace was missing
@@ -82,10 +82,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   // ── Cancel ──────────────────────────────────────────────────────────────
   if (intent === "cancel") {
-    const { appSubscriptions } = await billing.check();
+    const { appSubscriptions } = await (billing as any).check();
     if (appSubscriptions?.[0]) {
       await withRetry(() =>
-        billing.cancel({ subscriptionId: appSubscriptions[0].id })
+        (billing as any).cancel({ subscriptionId: appSubscriptions[0].id })
       );
     }
     return json({ success: true, intent: "cancel" });
@@ -102,7 +102,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const returnUrl = `https://${session.shop}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`;
 
     try {
-      await billing.request({
+      await (billing as any).request({
         plan: planName,
         isTest: process.env.IS_TEST_BILLING === "true",
         returnUrl,

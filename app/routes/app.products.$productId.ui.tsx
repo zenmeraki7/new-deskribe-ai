@@ -22,7 +22,7 @@ import {
   InlineGrid,
   Tooltip,
 } from "@shopify/polaris";
-import { useFetcher, useLoaderData, useNavigate } from "@remix-run/react";
+import { useFetcher, useLoaderData, useNavigate, useRevalidator } from "@remix-run/react";
 
 import type { LoaderData, DraftResult, CustomTemplate } from "./app.products.$productId.types";
 import {
@@ -373,6 +373,7 @@ export default function ProductEditorModalRoute() {
   } = useLoaderData<LoaderData>();
 
   const navigate = useNavigate();
+  const revalidator = useRevalidator();
 
   // ── Core generation state ─────────────────────────────────────────────────
   const [vibe, setVibe] = useState<string>("casual");
@@ -391,6 +392,9 @@ export default function ProductEditorModalRoute() {
   const keywordFetcher = useFetcher<any>();
   const templateFetcher = useFetcher<any>();
 
+  // Track if we've already started polling for the current generation fetcher submission
+  const hasStartedPollingForCurrentSubmit = useRef<boolean>(false);
+
   // ── Polling ───────────────────────────────────────────────────────────────
   const {
     startPolling,
@@ -399,6 +403,7 @@ export default function ProductEditorModalRoute() {
     errorMessage: pollErrorMessage,
     lastCompletedJobId,
     isPolling,
+    jobId,
   } = useJobPoll();
 
   // ── Plan gate (derived early so vibeOptions can use it) ───────────────────
@@ -561,23 +566,52 @@ export default function ProductEditorModalRoute() {
   }, [templateFetcher.data]);
 
   // ── Other effects ─────────────────────────────────────────────────────────
+  // Reset the submit polling ref when fetcher begins submitting
+  useEffect(() => {
+    if (generateFetcher.state === "submitting" || generateFetcher.state === "loading") {
+      hasStartedPollingForCurrentSubmit.current = false;
+    }
+  }, [generateFetcher.state]);
+
+  // Start polling when generateFetcher successfully returns a jobId
   useEffect(() => {
     const data = generateFetcher.data;
-    const jobId = data?.jobId;
-    if (data?.ok && typeof jobId === "string" && isUuidV4(jobId)) {
-      startPolling(jobId);
+    const jobIdFromFetcher = data?.jobId;
+    if (
+      generateFetcher.state === "idle" &&
+      data?.ok &&
+      typeof jobIdFromFetcher === "string" &&
+      isUuidV4(jobIdFromFetcher) &&
+      !hasStartedPollingForCurrentSubmit.current
+    ) {
+      hasStartedPollingForCurrentSubmit.current = true;
+      startPolling(jobIdFromFetcher);
     }
-  }, [generateFetcher.data?.jobId, startPolling]);
+  }, [generateFetcher.state, generateFetcher.data, startPolling]);
 
+  // Poll if there is an active job returned by the loader (e.g. page reload or mount)
   useEffect(() => {
     if (
       activeJob &&
-      (activeJob.status === "PENDING" || activeJob.status === "PROCESSING")
+      (activeJob.status === "PENDING" || activeJob.status === "PROCESSING") &&
+      jobId !== activeJob.id
     ) {
       startPolling(activeJob.id);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [activeJob, jobId, startPolling]);
+
+  // Revalidate the page loader when a job successfully completes to fetch the updated latestDraft
+  const lastRevalidatedJobId = useRef<string | null>(null);
+  useEffect(() => {
+    if (
+      pollStatus === "COMPLETED" &&
+      lastCompletedJobId &&
+      lastRevalidatedJobId.current !== lastCompletedJobId
+    ) {
+      lastRevalidatedJobId.current = lastCompletedJobId;
+      revalidator.revalidate();
+    }
+  }, [pollStatus, lastCompletedJobId, revalidator]);
 
   const handleLoadComparison = useCallback(() => {
     if (descFetcher.state !== "idle") return;
@@ -635,10 +669,12 @@ export default function ProductEditorModalRoute() {
   const isRateLimited =
     generateFetcher.data?.ok === false &&
     (generateFetcher.data?.code === "RATE_LIMIT_EXCEEDED" ||
-      generateFetcher.data?.code === "GLOBAL_LIMIT_REACHED");
+      generateFetcher.data?.code === "GLOBAL_LIMIT_REACHED" ||
+      generateFetcher.data?.code === "CREDIT_LIMIT_EXCEEDED");
 
   const isFreePlanLimit =
-    generateFetcher.data?.code === "RATE_LIMIT_EXCEEDED" &&
+    (generateFetcher.data?.code === "RATE_LIMIT_EXCEEDED" ||
+      generateFetcher.data?.code === "CREDIT_LIMIT_EXCEEDED") &&
     generateFetcher.data?.plan === "free";
 
   const keywordSuggestBlocked = shopPlan === "free";
@@ -670,17 +706,13 @@ export default function ProductEditorModalRoute() {
 
   const applyJobId = lastCompletedJobId ?? latestDraft?.id ?? null;
 
-  const terminalStatuses: PollStatus[] = ["COMPLETED", "FAILED", "CANCELLED"];
   const canApply = Boolean(
     draftResult &&
       draftHtml &&
       applyJobId &&
       isUuidV4(applyJobId) &&
       !isApplying &&
-      !isGenerating &&
-      terminalStatuses.includes(pollStatus) &&
-      pollStatus !== "PENDING" &&
-      pollStatus !== "PROCESSING",
+      !isGenerating
   );
 
   const isCustomVibeSelected = vibe.startsWith("custom:");
@@ -768,7 +800,7 @@ export default function ProductEditorModalRoute() {
                   <Text as="p" variant="bodySm">{generateError}</Text>
                   {generateFetcher.data?.shopUsed !== undefined && (
                     <Text as="p" variant="bodySm" tone="subdued">
-                      Usage today: {generateFetcher.data.shopUsed} /{" "}
+                      Monthly credits used: {generateFetcher.data.shopUsed} /{" "}
                       {generateFetcher.data.shopLimit}
                     </Text>
                   )}
@@ -1110,7 +1142,7 @@ export default function ProductEditorModalRoute() {
                 <DiffViewer
                   beforeHtml={currentHtml}
                   afterHtml={draftHtml}
-                  keywords={highlightKeywords}
+                  keywords={highlightKeywords as any}
                   isLoading={descFetcher.state !== "idle"}
                 />
               </BlockStack>

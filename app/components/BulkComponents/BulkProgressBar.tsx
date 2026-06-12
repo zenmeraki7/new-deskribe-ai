@@ -16,7 +16,7 @@ import {
   Badge,
 } from "@shopify/polaris";
 import { useFetcher } from "@remix-run/react";
-import type { BulkStatusPayload } from "../routes/app.api.bulk.$bulkId";
+import type { BulkStatusPayload } from "../../routes/app.api.bulk.$bulkId";
 
 const POLL_MS = 3000;
 const JITTER = 0.2;
@@ -125,16 +125,16 @@ export function BulkProgressBar({
 
           <InlineStack gap="200" wrap>
             {completed > 0 && (
-              <Badge tone="success">{completed} done</Badge>
+              <Badge tone="success">{`${completed} done`}</Badge>
             )}
             {inFlight > 0 && (
-              <Badge tone="attention">{inFlight} in progress</Badge>
+              <Badge tone="attention">{`${inFlight} in progress`}</Badge>
             )}
             {failed > 0 && (
-              <Badge tone="critical">{failed} failed</Badge>
+              <Badge tone="critical">{`${failed} failed`}</Badge>
             )}
             {data?.cancelled != null && data.cancelled > 0 && (
-              <Badge tone="warning">{data.cancelled} cancelled</Badge>
+              <Badge tone="warning">{`${data.cancelled} cancelled`}</Badge>
             )}
           </InlineStack>
 

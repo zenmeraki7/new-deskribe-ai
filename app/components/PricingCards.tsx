@@ -23,14 +23,10 @@ const plans: Plan[] = [
     yearlyStrikePrice: 0,
     description: "Get started with AI-powered descriptions",
     features: [
-      { text: "10 AI descriptions / day", included: true },
+      { text: "30 credits / month", included: true },
       { text: "1 store connected", included: true },
-      { text: "2 tones & 2 formats (Casual, Minimalist / Paragraph, Bullets)", included: true },
-      { text: "Email support", included: false },
-      { text: "SEO optimization", included: false },
-      { text: "Keyword suggestions", included: false },
-      { text: "Bulk generation", included: false },
-      { text: "Custom writing style templates", included: false }, // ← updated label
+      { text: "2 tones & 2 formats", included: true },
+      { text: "Custom writing style templates", included: false },
     ],
   },
   {
@@ -42,14 +38,10 @@ const plans: Plan[] = [
     yearlyStrikePrice: 119.88,
     description: "Perfect for growing stores",
     features: [
-      { text: "200 AI descriptions / day", included: true },
-      // { text: "2 stores connected", included: true },
-      { text: "All tones & formats (5 styles, 3 formats)", included: true },
+      { text: "600 credits / month", included: true },
+      { text: "All tones & formats", included: true },
       { text: "Email support", included: true },
-      { text: "SEO optimization", included: true },
-      { text: "5 keyword suggestions / day", included: true },
-      { text: "Bulk generation (20/batch)", included: true },
-      { text: "Custom writing style templates", included: false }, // ← updated label
+      { text: "Custom writing style templates", included: false },
     ],
   },
   {
@@ -63,14 +55,10 @@ const plans: Plan[] = [
     highlighted: true,
     badge: "Most Popular",
     features: [
-      { text: "1,000 AI descriptions / day", included: true },
-      // { text: "5 stores connected", included: true },
-      { text: "All tones & formats (5 styles, 3 formats)", included: true },
+      { text: "3,000 credits / month", included: true },
+      { text: "All tones & formats", included: true },
       { text: "Priority email support", included: true },
-      { text: "Advanced SEO optimization", included: true },
-      { text: "15 keyword suggestions / day", included: true },
-      { text: "Bulk generation (50/batch)", included: true },
-      { text: "Custom writing style templates", included: true }, // ← was false, now true
+      { text: "Custom writing style templates", included: true },
     ],
   },
   {
@@ -80,16 +68,12 @@ const plans: Plan[] = [
     strikePrice: 34.99,
     yearlyPrice: 209.92,
     yearlyStrikePrice: 299.88,
-    description: "Unlimited power for large catalogs",
+    description: "Maximum power for large catalogs",
     features: [
-      { text: "Unlimited AI descriptions", included: true },
-      // { text: "Unlimited stores", included: true },
-      { text: "All templates + custom", included: true },
+      { text: "10,000 credits / month", included: true },
+      { text: "All tones & formats", included: true },
       { text: "24/7 priority support", included: true },
-      { text: "Advanced SEO + keywords", included: true },
-      { text: "50 keyword suggestions / day", included: true },
-      { text: "Unlimited bulk generation", included: true },
-      { text: "Custom writing style templates", included: true }, // ← updated label
+      { text: "Custom writing style templates", included: true },
     ],
   },
 ];

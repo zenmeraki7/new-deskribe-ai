@@ -16,12 +16,11 @@ const shopify = shopifyApp({
   scopes: process.env.SCOPES?.split(","),
   appUrl: (process.env.SHOPIFY_APP_URL || "").trim().replace(/\/$/, ""),
   authPathPrefix: "/auth",
-  sessionStorage: new PrismaSessionStorage(db),
+  sessionStorage: new PrismaSessionStorage(db) as any,
   distribution: AppDistribution.AppStore,
 
   future: {
     unstable_newEmbeddedAuthStrategy: true,
-    removeRest: true,
   },
   ...(process.env.SHOP_CUSTOM_DOMAIN
     ? { customShopDomains: [process.env.SHOP_CUSTOM_DOMAIN] }
@@ -66,8 +65,7 @@ const shopify = shopifyApp({
         {
           amount: 9.99,
           currencyCode: "USD",
-          interval: BillingInterval.Every30Days,
-          trialDays: 0,  
+          interval: BillingInterval.Every30Days,  
         },
       ],
     },
@@ -76,8 +74,7 @@ const shopify = shopifyApp({
         {
           amount: 83.92,
           currencyCode: "USD",
-          interval: BillingInterval.Annual,
-          trialDays: 0,  
+          interval: BillingInterval.Annual,  
         },
       ],
     },
@@ -86,8 +83,7 @@ const shopify = shopifyApp({
         {
           amount: 17.99,
           currencyCode: "USD",
-          interval: BillingInterval.Every30Days,
-          trialDays: 0,  
+          interval: BillingInterval.Every30Days,  
         },
       ],
     },
@@ -96,8 +92,7 @@ const shopify = shopifyApp({
         {
           amount: 151.12,
           currencyCode: "USD",
-          interval: BillingInterval.Annual,
-          trialDays: 0,  
+          interval: BillingInterval.Annual,  
         },
       ],
     },
@@ -106,8 +101,7 @@ const shopify = shopifyApp({
         {
           amount: 24.99,
           currencyCode: "USD",
-          interval: BillingInterval.Every30Days,
-          trialDays: 0,  
+          interval: BillingInterval.Every30Days,  
         },
       ],
     },
@@ -116,8 +110,7 @@ const shopify = shopifyApp({
         {
           amount: 209.92,
           currencyCode: "USD",
-          interval: BillingInterval.Annual,
-          trialDays: 0,  
+          interval: BillingInterval.Annual,  
         },
       ],
     },

@@ -75,31 +75,31 @@ model GenerationJob {
   @@index([productId])
   @@index([status])
 }
-// Tracks per-shop daily usage — one row per shop per UTC day
-model ShopUsage {
-  id         String   @id @default(cuid())
-  shopDomain String
-  date       String   // UTC date string: "2025-03-27"
-  count      Int      @default(0)
-  plan       String   @default("free") // "free" | "pro"
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+// Tracks per-shop monthly credit usage
+model ShopCreditUsage {
+  id            String   @id @default(cuid())
+  shopDomain    String
+  billingPeriod String   // e.g. "2025-03"
+  creditsUsed   Float    @default(0)
+  plan          String   @default("free")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  @@unique([shopDomain, date])
+  @@unique([shopDomain, billingPeriod])
   @@index([shopDomain])
-  @@index([date])
+  @@index([billingPeriod])
 }
 
-// Global daily usage — single row per UTC day, all shops combined
-model GlobalUsage {
-  id        String   @id @default(cuid())
-  date      String   // UTC date string: "2025-03-27"
-  count     Int      @default(0)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+// Global monthly credit usage
+model GlobalCreditUsage {
+  id            String   @id @default(cuid())
+  billingPeriod String   // e.g. "2025-03"
+  creditsUsed   Float    @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  @@unique([date])
-  @@index([date])
+  @@unique([billingPeriod])
+  @@index([billingPeriod])
 }
 
 model CustomTemplate {

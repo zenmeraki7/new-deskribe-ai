@@ -63,6 +63,7 @@ export interface LoaderData {
   policyWarnings: string[]; // server-produced warnings (safe strings)
    shopPlan: "free" | "basic" | "advanced" | "pro";
    customTemplates: CustomTemplate[];
+   shopDomain: string;
 }
 
 // Action results are intentionally explicit and "tagged" by shape.

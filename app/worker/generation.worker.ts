@@ -165,7 +165,7 @@ export const generationWorker = new Worker<GenerationJobData>(
     }
   },
   {
-    connection: getRedis (),
+    connection: getRedis() as any,
     concurrency: LIMITS.CONCURRENCY,
   },
 );
