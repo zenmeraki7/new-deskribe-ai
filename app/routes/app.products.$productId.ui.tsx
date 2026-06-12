@@ -167,10 +167,11 @@ function useJobPoll() {
   }, [jobId, clearTimer, scheduleMs]);
 
   useEffect(() => {
-    if (fetcher.state === "idle") {
-      requestInFlightRef.current = false;
-    }
-    if (!fetcher.data) return;
+    if (fetcher.state !== "idle") return;
+
+    requestInFlightRef.current = false;
+
+    if (fetcher.data === undefined) return;
 
     const nextStatus: PollStatus = fetcher.data.status ?? "IDLE";
     setStatus(nextStatus);
@@ -182,10 +183,11 @@ function useJobPoll() {
       if (nextStatus === "COMPLETED" && jobId) setLastCompletedJobId(jobId);
       stop();
     }
-  }, [fetcher.data, stop, terminal, jobId]);
+  }, [fetcher.data, fetcher.state, stop, terminal, jobId]);
 
   const startPolling = useCallback((id: string) => {
     if (!isUuidV4(id)) return;
+    console.log("[useJobPoll] startPolling", id);
     clearTimer();
     requestInFlightRef.current = false;
     setResult(null);
@@ -439,6 +441,7 @@ export default function ProductEditorModalRoute() {
     result: pollResult,
     errorMessage: pollErrorMessage,
     lastCompletedJobId,
+    jobId: pollingJobId,
     isPolling,
   } = useJobPoll();
 
@@ -630,12 +633,6 @@ export default function ProductEditorModalRoute() {
   }, [activeJob?.id, activeJob?.status, startPolling]);
 
   const lastRevalidatedJobIdRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (pollStatus !== "COMPLETED" || !lastCompletedJobId) return;
-    if (lastRevalidatedJobIdRef.current === lastCompletedJobId) return;
-    lastRevalidatedJobIdRef.current = lastCompletedJobId;
-    revalidator.revalidate();
-  }, [lastCompletedJobId, pollStatus, revalidator]);
 
   const handleLoadComparison = useCallback(() => {
     if (descFetcher.state !== "idle") return;
@@ -670,17 +667,35 @@ export default function ProductEditorModalRoute() {
   }, []);
 
   // ── Derived state ─────────────────────────────────────────────────────────
+  const draftResult: DraftResult | null =
+    (pollResult as DraftResult | null) ?? latestDraft?.result ?? null;
+
+  const latestDraftCompletesActiveJob = Boolean(
+    latestDraft?.id &&
+      draftResult &&
+      (latestDraft.id === pollingJobId || latestDraft.id === activeJob?.id),
+  );
+
   const isGenerating =
-    generationRequestPending ||
-    isPolling ||
+    (generationRequestPending && !latestDraftCompletesActiveJob) ||
+    (isPolling && !latestDraftCompletesActiveJob) ||
     generateFetcher.state !== "idle" ||
-    pollStatus === "PENDING" ||
-    pollStatus === "PROCESSING";
+    ((pollStatus === "PENDING" || pollStatus === "PROCESSING") && !latestDraftCompletesActiveJob);
 
   const isApplying = applyFetcher.state !== "idle";
 
-  const draftResult: DraftResult | null =
-    (pollResult as DraftResult | null) ?? latestDraft?.result ?? null;
+  useEffect(() => {
+    if (!latestDraftCompletesActiveJob) return;
+    if (pollStatus !== "PENDING" && pollStatus !== "PROCESSING") return;
+    resetPolling();
+  }, [latestDraftCompletesActiveJob, pollStatus, resetPolling]);
+
+  useEffect(() => {
+    if (pollStatus !== "COMPLETED" || !lastCompletedJobId || draftResult) return;
+    if (lastRevalidatedJobIdRef.current === lastCompletedJobId) return;
+    lastRevalidatedJobIdRef.current = lastCompletedJobId;
+    revalidator.revalidate();
+  }, [draftResult, lastCompletedJobId, pollStatus, revalidator]);
 
   const draftHtml =
     typeof draftResult?.body_html === "string" ? draftResult.body_html : "";
@@ -739,19 +754,27 @@ export default function ProductEditorModalRoute() {
   }, [draftResult, draftHtml]);
 
   const applyJobId = lastCompletedJobId ?? latestDraft?.id ?? null;
+  const hasCompletedStatus =
+    pollStatus === "COMPLETED" ||
+    latestDraft?.id === applyJobId ||
+    latestDraftCompletesActiveJob;
 
   const hasCompletedDraft = Boolean(
     draftResult &&
       draftHtml &&
       applyJobId &&
       isUuidV4(applyJobId) &&
-      (pollStatus === "COMPLETED" || latestDraft?.id === applyJobId),
+      hasCompletedStatus,
   );
 
   const canApply = Boolean(
     hasCompletedDraft &&
       !isApplying &&
-      !isGenerating,
+      (!isPolling || latestDraftCompletesActiveJob) &&
+      (pollStatus !== "PENDING" || latestDraftCompletesActiveJob) &&
+      (pollStatus !== "PROCESSING" || latestDraftCompletesActiveJob) &&
+      generateFetcher.state === "idle" &&
+      (!generationRequestPending || latestDraftCompletesActiveJob),
   );
 
   const isCustomVibeSelected = vibe.startsWith("custom:");
