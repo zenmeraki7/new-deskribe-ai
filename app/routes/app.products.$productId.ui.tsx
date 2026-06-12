@@ -710,6 +710,19 @@ export default function ProductEditorModalRoute() {
       : "";
   const applySuccess =
     applyFetcher.data?.ok === true && applyFetcher.data?.applied === true;
+  const modalSectionRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!applySuccess) return;
+
+    const scrollContainer = (
+      modalSectionRef.current?.closest(".Polaris-Scrollable") ??
+      document.querySelector(".Polaris-Modal-Section") ??
+      document.querySelector(".Polaris-Scrollable")
+    ) as HTMLElement | null;
+
+    scrollContainer?.scrollTo({ top: 0, behavior: "smooth" });
+  }, [applySuccess, applyFetcher.data]);
 
   const templateSaveError =
     templateFetcher.data?.ok === false
@@ -827,6 +840,7 @@ export default function ProductEditorModalRoute() {
         secondaryActions={[{ content: "Close", onAction: handleClose }]}
       >
         <Modal.Section>
+          <div ref={modalSectionRef}>
           <BlockStack gap="400">
             <CreditUsageCard
               compact
@@ -1208,7 +1222,12 @@ export default function ProductEditorModalRoute() {
 
             {/* ── Apply to Shopify ── */}
             {hasCompletedDraft && (
-              <InlineStack align="end">
+              <InlineStack align="end" gap="300" blockAlign="center">
+                {applySuccess && (
+                  <Text as="p" tone="success" fontWeight="semibold">
+                    Applied to Shopify ✓
+                  </Text>
+                )}
                 <Button
                   variant="primary"
                   tone="success"
@@ -1228,6 +1247,7 @@ export default function ProductEditorModalRoute() {
             )}
 
           </BlockStack>
+          </div>
         </Modal.Section>
       </Modal>
     </>
