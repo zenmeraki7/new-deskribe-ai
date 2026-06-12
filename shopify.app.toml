@@ -1,7 +1,7 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "20f31d269398d5f23df95d0450e772e9"
-application_url = "https://galleries-drag-impressive-allergy.trycloudflare.com"
+application_url = "https://estimated-mom-kernel-talked.trycloudflare.com"
 embedded = true
 name = "test-app"
 handle = "test-app-11537"
@@ -41,9 +41,9 @@ use_legacy_install_flow = false
 
 [auth]
 redirect_urls = [
-  "https://galleries-drag-impressive-allergy.trycloudflare.com/auth/callback",
-  "https://galleries-drag-impressive-allergy.trycloudflare.com/auth/shopify/callback",
-  "https://galleries-drag-impressive-allergy.trycloudflare.com/api/auth/callback"
+  "https://estimated-mom-kernel-talked.trycloudflare.com/auth/callback",
+  "https://estimated-mom-kernel-talked.trycloudflare.com/auth/shopify/callback",
+  "https://estimated-mom-kernel-talked.trycloudflare.com/api/auth/callback"
 ]
 
 [app_proxy]
