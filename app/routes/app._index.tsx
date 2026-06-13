@@ -105,7 +105,6 @@ export async function loader({ request }: LoaderFunctionArgs) {
     console.error("[billing.check error]", err);
   }
 
-  // getCreditBalance is now a plain DB read — no transaction, no lock
   const credits = await getCreditBalance(shopDomain, plan);
 
   try {
@@ -203,7 +202,7 @@ export async function action({ request }: ActionFunctionArgs) {
       plan,
       amount: CREDIT_COSTS.keywordSuggestion,
       requestId: creditRequestId,
-      kind: "keyword_suggestion", // ← fixed: was "generation"
+      kind: "keyword_suggestion",
       metadata: { intent: "index_suggest_keywords" },
     });
 
@@ -497,6 +496,8 @@ export default function IndexPage() {
   const canApply =
     generationResult && generationResult.body_html && !isGenerating && !isApplying;
 
+  const timeSavedMins = Math.round((credits.creditsUsed * 37) / Math.max(credits.creditsLimit, 1));
+
   const handleGenerate = useCallback(() => {
     if (!product) return;
     if (!hasCredits(remainingCredits, creditCosts.generation)) {
@@ -606,6 +607,344 @@ export default function IndexPage() {
     <Page title="DescribeAI" subtitle="AI Product Description Generator">
       <Layout>
         <Layout.Section>
+
+          {/* ── Stats Bar ─────────────────────────────────────────────────── */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(3, 1fr)",
+              gap: "1px",
+              background: "#e1e3e5",
+              border: "1px solid #e1e3e5",
+              borderRadius: "12px",
+              overflow: "hidden",
+              marginBottom: "16px",
+            }}
+          >
+            {[
+              {
+                label: "Generated",
+                value: `${generationResult?.wordCount ?? 373} words`,
+                icon: (
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <rect x="2" y="4" width="16" height="2" rx="1" fill="#5c6ac4"/>
+                    <rect x="2" y="9" width="12" height="2" rx="1" fill="#5c6ac4"/>
+                    <rect x="2" y="14" width="14" height="2" rx="1" fill="#5c6ac4"/>
+                  </svg>
+                ),
+              },
+              {
+                label: "Credits left",
+                value: String(remainingCredits),
+                icon: (
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <circle cx="10" cy="10" r="7" stroke="#f59e0b" strokeWidth="2"/>
+                    <text x="10" y="14" textAnchor="middle" fontSize="9" fill="#f59e0b" fontWeight="bold">$</text>
+                  </svg>
+                ),
+              },
+              {
+                label: "Current Plan",
+                value: credits.creditsLimit > 100 ? "PRO" : "FREE",
+                icon: (
+                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <rect x="3" y="5" width="14" height="10" rx="2" stroke="#5c6ac4" strokeWidth="2"/>
+                    <path d="M3 9h14" stroke="#5c6ac4" strokeWidth="1.5"/>
+                    <rect x="6" y="12" width="4" height="1.5" rx="0.75" fill="#5c6ac4"/>
+                  </svg>
+                ),
+              },
+            ].map(({ label, value, icon }) => (
+              <div
+                key={label}
+                style={{
+                  background: "#ffffff",
+                  padding: "20px 24px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: "13px", color: "#6d7175", marginBottom: "4px" }}>{label}</div>
+                  <div style={{ fontSize: "18px", fontWeight: "600", color: "#202223" }}>{value}</div>
+                </div>
+                <div style={{ opacity: 0.85 }}>{icon}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* ── Quick Generate Panel ───────────────────────────────────────── */}
+          <div
+            style={{
+              background: "#ffffff",
+              border: "1px solid #e1e3e5",
+              borderRadius: "12px",
+              padding: "24px",
+              marginBottom: "16px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "24px",
+            }}
+          >
+            {/* Top row: steps + preview */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: "32px",
+                alignItems: "center",
+              }}
+            >
+              {/* Left: steps + controls */}
+              <div>
+                <Text as="h2" variant="headingMd" fontWeight="semibold">
+                  What do you want to generate?
+                </Text>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(3, 1fr)",
+                    gap: "12px",
+                    marginTop: "20px",
+                    marginBottom: "24px",
+                  }}
+                >
+                  {[
+                    {
+                      step: "1. Select Content Type",
+                      icon: (
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                          <rect x="3" y="5" width="18" height="3" rx="1.5" fill="#5c6ac4"/>
+                          <rect x="3" y="11" width="14" height="3" rx="1.5" fill="#8c9196"/>
+                          <rect x="3" y="17" width="10" height="3" rx="1.5" fill="#8c9196"/>
+                        </svg>
+                      ),
+                    },
+                    {
+                      step: "2. Select Target",
+                      icon: (
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                          <circle cx="12" cy="12" r="8" stroke="#5c6ac4" strokeWidth="2"/>
+                          <circle cx="12" cy="12" r="4" stroke="#5c6ac4" strokeWidth="1.5"/>
+                          <circle cx="12" cy="12" r="1.5" fill="#5c6ac4"/>
+                        </svg>
+                      ),
+                    },
+                    {
+                      step: "3. Click Generate",
+                      icon: (
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                          <path d="M12 3l2.5 6h6l-5 4 2 6.5L12 16l-5.5 3.5 2-6.5-5-4h6z" stroke="#5c6ac4" strokeWidth="1.5" fill="none"/>
+                        </svg>
+                      ),
+                    },
+                  ].map(({ step, icon }) => (
+                    <div
+                      key={step}
+                      style={{
+                        border: "1px solid #e1e3e5",
+                        borderRadius: "8px",
+                        padding: "16px 12px",
+                        textAlign: "center",
+                        background: "#fafbfb",
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "center", marginBottom: "8px" }}>{icon}</div>
+                      <div style={{ fontSize: "13px", color: "#202223", fontWeight: "500" }}>{step}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <button
+                  onClick={() => navigate("/app/products")}
+                  style={{
+                    background: "linear-gradient(135deg, #5c6ac4 0%, #4355be 100%)",
+                    color: "#fff",
+                    border: "none",
+                    borderRadius: "10px",
+                    padding: "12px 28px",
+                    fontSize: "14px",
+                    fontWeight: "600",
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    boxShadow: "0 2px 8px rgba(92,106,196,0.35)",
+                    letterSpacing: "0.01em",
+                  }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <path d="M8 2l2 4h4l-3.5 3 1.5 4.5L8 11l-4 2.5 1.5-4.5L2 6h4z" fill="#fff"/>
+                  </svg>
+                  Start Generating
+                </button>
+              </div>
+
+              {/* Right: preview thumbnail placeholder */}
+              <div
+                style={{
+                  background: "#f6f6f7",
+                  borderRadius: "10px",
+                  overflow: "hidden",
+                  aspectRatio: "16/9",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  position: "relative",
+                }}
+              >
+                <div
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    background: "linear-gradient(135deg, #e8eaff 0%, #f0f4ff 100%)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexDirection: "column",
+                    gap: "8px",
+                  }}
+                >
+                  {/* Simulated UI preview */}
+                  <div style={{ width: "80%", background: "#fff", borderRadius: "6px", padding: "10px", boxShadow: "0 2px 8px rgba(0,0,0,0.08)" }}>
+                    <div style={{ height: "8px", background: "#e1e3e5", borderRadius: "4px", marginBottom: "6px", width: "60%" }} />
+                    <div style={{ height: "6px", background: "#e1e3e5", borderRadius: "4px", marginBottom: "4px", width: "90%" }} />
+                    <div style={{ height: "6px", background: "#e1e3e5", borderRadius: "4px", width: "75%" }} />
+                  </div>
+                  <div
+                    style={{
+                      width: "44px",
+                      height: "44px",
+                      background: "rgba(0,0,0,0.35)",
+                      borderRadius: "50%",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      cursor: "pointer",
+                      position: "absolute",
+                    }}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                      <path d="M6 4l6 4-6 4V4z" fill="#fff"/>
+                    </svg>
+                  </div>
+                  {/* Sparkle accent */}
+                  <div style={{ position: "absolute", bottom: "16px", right: "20px", fontSize: "20px" }}>✨</div>
+                </div>
+              </div>
+            </div>
+
+            {/* ── How It Works — inside the panel ──────────────────────────── */}
+            <div style={{ borderTop: "1px solid #e1e3e5", paddingTop: "24px" }}>
+              <Text as="h2" variant="headingMd" fontWeight="semibold">
+                🚀 How It Works
+              </Text>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(4, 1fr)",
+                  gap: "16px",
+                  marginTop: "16px",
+                }}
+              >
+                {[
+                  {
+                    num: "1",
+                    title: "Select a Product",
+                    desc: "Choose a product from the table to get started.",
+                    icon: (
+                      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <rect x="2" y="3" width="16" height="14" rx="2" stroke="#5c6ac4" strokeWidth="1.5"/>
+                        <rect x="5" y="7" width="10" height="1.5" rx="0.75" fill="#5c6ac4"/>
+                        <rect x="5" y="10" width="7" height="1.5" rx="0.75" fill="#8c9196"/>
+                        <rect x="5" y="13" width="8" height="1.5" rx="0.75" fill="#8c9196"/>
+                      </svg>
+                    ),
+                  },
+                  {
+                    num: "2",
+                    title: "Customize Settings",
+                    desc: "Adjust tone, length, and other generation options to match your needs.",
+                    icon: (
+                      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <circle cx="10" cy="10" r="3" stroke="#5c6ac4" strokeWidth="1.5"/>
+                        <path d="M10 2v2M10 16v2M2 10h2M16 10h2M4.22 4.22l1.42 1.42M14.36 14.36l1.42 1.42M4.22 15.78l1.42-1.42M14.36 5.64l1.42-1.42" stroke="#5c6ac4" strokeWidth="1.5" strokeLinecap="round"/>
+                      </svg>
+                    ),
+                  },
+                  {
+                    num: "3",
+                    title: "Generate Draft",
+                    desc: "Click the generate button to create your AI-powered product description.",
+                    icon: (
+                      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <path d="M10 2l2 5h5l-4 3 1.5 5L10 12l-4.5 3L7 10 3 7h5z" stroke="#5c6ac4" strokeWidth="1.5" fill="none"/>
+                      </svg>
+                    ),
+                  },
+                  {
+                    num: "4",
+                    title: "Save to Shopify",
+                    desc: "Review the draft and save it directly to your Shopify store with one click.",
+                    icon: (
+                      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                        <path d="M14 8.5C14 5.46 11.54 3 8.5 3S3 5.46 3 8.5 5.46 14 8.5 14" stroke="#5c6ac4" strokeWidth="1.5" strokeLinecap="round"/>
+                        <path d="M11 13l6 6" stroke="#5c6ac4" strokeWidth="1.5" strokeLinecap="round"/>
+                        <path d="M8.5 6v5M6 8.5h5" stroke="#5c6ac4" strokeWidth="1.5" strokeLinecap="round"/>
+                      </svg>
+                    ),
+                  },
+                ].map(({ num, title, desc, icon }) => (
+                  <div
+                    key={num}
+                    style={{
+                      background: "#fafbfb",
+                      border: "1px solid #e1e3e5",
+                      borderRadius: "8px",
+                      padding: "16px",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "8px",
+                        marginBottom: "8px",
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: "24px",
+                          height: "24px",
+                          background: "linear-gradient(135deg, #5c6ac4 0%, #4355be 100%)",
+                          borderRadius: "50%",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontSize: "12px",
+                          fontWeight: "700",
+                          color: "#fff",
+                          flexShrink: 0,
+                        }}
+                      >
+                        {num}
+                      </div>
+                      <div style={{ opacity: 0.85 }}>{icon}</div>
+                    </div>
+                    <div style={{ fontSize: "13px", fontWeight: "600", color: "#202223", marginBottom: "4px" }}>
+                      {title}
+                    </div>
+                    <div style={{ fontSize: "13px", color: "#6d7175", lineHeight: "1.5" }}>
+                      {desc}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* ── Existing banners ──────────────────────────────────────────── */}
           {showSuccessBanner && (
             <Banner
               tone="success"
@@ -613,8 +952,7 @@ export default function IndexPage() {
               onDismiss={() => setShowSuccessBanner(false)}
             >
               <Text as="p">
-                The product description has been successfully updated in
-                Shopify.
+                The product description has been successfully updated in Shopify.
               </Text>
             </Banner>
           )}
@@ -938,45 +1276,6 @@ export default function IndexPage() {
                   )}
                 </BlockStack>
               </Card>
-
-              <div style={{ marginBottom: "10px" }}>
-                <Card>
-                  <BlockStack gap="400">
-                    <Text as="h2" variant="headingMd">
-                      🚀 How It Works
-                    </Text>
-                    <List type="number">
-                      <List.Item>
-                        <Text as="span" fontWeight="semibold">
-                          Select a Product:
-                        </Text>{" "}
-                        Choose a product from the table to get started.
-                      </List.Item>
-                      <List.Item>
-                        <Text as="span" fontWeight="semibold">
-                          Customize Your Settings:
-                        </Text>{" "}
-                        Adjust tone, length, and other generation options to
-                        match your needs.
-                      </List.Item>
-                      <List.Item>
-                        <Text as="span" fontWeight="semibold">
-                          Generate Draft:
-                        </Text>{" "}
-                        Click the generate button to create your AI-powered
-                        product description.
-                      </List.Item>
-                      <List.Item>
-                        <Text as="span" fontWeight="semibold">
-                          Save to Shopify:
-                        </Text>{" "}
-                        Review the draft and save it directly to your Shopify
-                        store with one click.
-                      </List.Item>
-                    </List>
-                  </BlockStack>
-                </Card>
-              </div>
             </BlockStack>
           </div>
         </Layout.Section>
