@@ -8,6 +8,7 @@ import { sanitiseHtml } from "../lib/html.server";
 import { generateProductDescription } from "../lib/ai.server";
 import { refundCredits } from "../lib/creditService.server";
 
+
 const DraftSchema = z
   .object({
     body_html: z.string().min(1),

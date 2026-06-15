@@ -1,4 +1,4 @@
-import { startGenerationWorker } from "./app/workers/generation.worker"; // ← fixed: was "./app/worker/generation.worker"
+import { startGenerationWorker } from "./app/worker/generation.worker"; // ← fixed: was "./app/worker/generation.worker"
 
 const worker = startGenerationWorker();
 

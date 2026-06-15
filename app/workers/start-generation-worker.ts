@@ -1,6 +1,6 @@
 import "dotenv/config";
 import "../lib/queue.server";
-import { startGenerationWorker } from "../worker/generation.worker.ts"; // ← fixed: was "../worker/generation.worker"
+import { startGenerationWorker } from "../worker/generation.worker"; // ← fixed: was "../worker/generation.worker"
 
 const worker = startGenerationWorker();
 
