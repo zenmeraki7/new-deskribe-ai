@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS "GlobalUsage";
+DROP TABLE IF EXISTS "ShopUsage";

@@ -1,16 +1,13 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
+// schema.prisma — full updated file
 
 generator client {
-  provider = "prisma-client-js"
+  provider   = "prisma-client-js"
+  engineType = "library"
 }
 
-// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
-// enough when changing adapters.
-// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
 datasource db {
-  provider = "sqlite"
-  url      = "file:dev.sqlite"
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model Session {
@@ -29,4 +26,260 @@ model Session {
   locale        String?
   collaborator  Boolean?  @default(false)
   emailVerified Boolean?  @default(false)
+}
+
+model History {
+  id           String   @id @default(cuid())
+  shopDomain   String   @default("")
+  productId    String
+  productTitle String
+  description  String
+  vibe         String
+  format       String
+  keywords     String?
+  createdAt    DateTime @default(now())
+}
+
+model BulkOperation {
+  id         String          @id @default(uuid())
+  shopDomain String
+  status     String          @default("ACTIVE")
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+  jobs       GenerationJob[]
+
+  @@index([shopDomain, status])
+  @@index([createdAt])
+}
+
+model GenerationJob {
+  isStale              Boolean              @default(false)
+  cancelRequested      Boolean              @default(false)
+  attempts             Int                  @default(0)
+  maxAttempts          Int                  @default(5)
+  lockedAt             DateTime?
+  lockedBy             String?              @db.VarChar(128)
+  // Immediate jobs use now(); retries must set this to now() + backoff.
+  nextRunAt            DateTime             @default(now())
+  lastErrorCode        String?
+  lastError            String?              @db.VarChar(2000)
+  cancelledAt          DateTime?
+  completedAt          DateTime?
+  id                   String               @id @default(uuid())
+  shopDomain           String
+  productId            String // Shopify Product GID, not an internal database ID.
+  status               String
+  inputHash            String
+  requestFingerprint   String?
+  vibe                 String
+  format               String
+  keywords             String
+  result               Json?
+  errorMessage         String?
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+  bulkId               String?
+  bullJobId            String?
+  costTokens           Int                  @default(0)
+  productTitle         String
+  progress             Int                  @default(0)
+  traceId              String?
+  customInstruction    String?
+  // Description snapshot fields — added for undo support
+  generatedDescription String? // The AI-generated description written to Shopify
+  previousDescription  String? // Snapshot of the product description BEFORE generation
+  productVendor        String?
+  productType          String?
+  productTags          String?
+  creditRequestId      String?
+  creditCost           Decimal?             @db.Decimal(12, 1)
+  bulk                 BulkOperation?       @relation(fields: [bulkId], references: [id], onDelete: Restrict)
+  generatedOutputs     GeneratedSeoOutput[]
+
+  @@index([shopDomain])
+  @@index([productId])
+  @@index([status])
+  @@index([status, nextRunAt])
+  @@index([shopDomain, status])
+  @@index([bulkId, status])
+  @@index([shopDomain, bulkId])
+  @@index([lockedBy])
+  @@index([creditRequestId])
+  @@index([shopDomain, requestFingerprint])
+}
+
+model GeneratedSeoOutput {
+  id         String        @id @default(uuid())
+  shopDomain String
+  jobId      String
+  productId  String
+  fields     Json
+  warnings   Json
+  status     String        @default("READY")
+  sourceHash String?
+  appliedAt  DateTime?
+  appliedBy  String?       @db.VarChar(320)
+  applyId    String?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  job        GenerationJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([shopDomain, jobId, productId])
+  @@index([shopDomain, jobId])
+  @@index([shopDomain, jobId, productId, status])
+  @@index([shopDomain, applyId])
+  @@index([shopDomain, appliedAt])
+}
+
+model ApplyJob {
+  id           String         @id @default(uuid())
+  shopDomain   String
+  jobId        String
+  status       String         @default("QUEUED")
+  errorMessage String?
+  requestedBy  String?        @db.VarChar(320)
+  cancelledAt  DateTime?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  items        ApplyJobItem[]
+
+  @@unique([id, shopDomain, jobId])
+  @@index([shopDomain, jobId])
+  @@index([shopDomain, status])
+}
+
+model ApplyJobItem {
+  id                  String    @id @default(uuid())
+  applyJobId          String
+  applyId             String
+  shopDomain          String
+  jobId               String
+  productId           String
+  status              String    @default("QUEUED")
+  errorMessage        String?
+  appliedAt           DateTime?
+  mutationStartedAt   DateTime?
+  mutationCompletedAt DateTime?
+  mutationAttempt     Int       @default(0)
+  mutationFingerprint String?
+  lockedAt            DateTime?
+  retryAfter          DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  applyJob            ApplyJob  @relation(fields: [applyJobId], references: [id], onDelete: Cascade)
+
+  @@unique([shopDomain, applyId, jobId, productId])
+  @@unique([applyId, productId])
+  @@unique([applyJobId, productId])
+  @@index([productId, status])
+  @@index([shopDomain, jobId])
+  @@index([shopDomain, applyId, jobId])
+}
+
+model ProductSeoSnapshot {
+  id         String   @id @default(uuid())
+  shopDomain String
+  jobId      String
+  applyId    String
+  productId  String
+  fields     Json
+  createdAt  DateTime @default(now())
+
+  @@unique([shopDomain, applyId, productId])
+  @@index([shopDomain, jobId])
+}
+
+model ProductMutationSnapshot {
+  id           String   @id @default(uuid())
+  shopDomain   String
+  jobId        String
+  applyId      String
+  productId    String
+  before       Json
+  after        Json
+  status       String   @default("PLANNED")
+  errorMessage String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([shopDomain, jobId])
+  @@index([shopDomain, applyId])
+  @@index([shopDomain, applyId, jobId, productId])
+  @@index([productId])
+}
+
+model ShopCredit {
+  id           String   @id @default(cuid())
+  shopId       String   @unique
+  plan         String   @default("free")
+  creditsUsed  Decimal  @default(0) @db.Decimal(12, 1)
+  creditsLimit Decimal  @db.Decimal(12, 1)
+  resetDate    DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([shopId])
+  @@index([resetDate])
+}
+
+model CreditTransaction {
+  id        String   @id @default(cuid())
+  shopId    String
+  requestId String
+  kind      String
+  amount    Decimal  @db.Decimal(12, 1)
+  plan      String
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@unique([shopId, requestId, kind])
+  @@index([shopId])
+  @@index([requestId])
+}
+
+model CreditRefundLedger {
+  id         String   @id @default(cuid())
+  shopDomain String
+  applyId    String
+  jobId      String
+  productId  String
+  reason     String
+  amount     Int
+  createdAt  DateTime @default(now())
+
+  @@unique([shopDomain, applyId, jobId, productId, reason])
+}
+
+// Tracks per-shop daily usage — one row per shop per UTC day
+model KeywordSuggestionAttempt {
+  id        String   @id @default(cuid())
+  shop      String
+  createdAt DateTime @default(now())
+
+  @@index([shop, createdAt])
+}
+
+model KeywordSuggestionRequest {
+  id                   String   @id @default(cuid())
+  shop                 String
+  idempotencyKey       String
+  keywords             String[]
+  creditsDeducted      Decimal  @db.Decimal(12, 1)
+  newBalance           Decimal  @db.Decimal(12, 1)
+  creditBalanceVersion BigInt
+  createdAt            DateTime @default(now())
+
+  @@unique([shop, idempotencyKey])
+  @@index([shop, createdAt])
+}
+
+model CustomTemplate {
+  id          String   @id @default(cuid())
+  shopDomain  String
+  name        String // e.g. "My Beach Vibes"
+  instruction String // e.g. "Write in a fun surfer tone, use emojis..."
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([shopDomain])
 }

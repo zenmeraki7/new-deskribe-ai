@@ -1,27 +1,55 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "a1f8f9a43fecfcab67dc4868a5ea2ee2"
-name = "desKribe-ai"
-application_url = "https://enhanced-gives-validation-barrel.trycloudflare.com"
+client_id = "20f31d269398d5f23df95d0450e772e9"
+application_url = "https://puts-moss-modifications-polyester.trycloudflare.com"
 embedded = true
-
-[build]
-automatically_update_urls_on_dev = true
+name = "test-app"
+handle = "test-app-11537"
 
 [webhooks]
-api_version = "2026-01"
+api_version = "2025-04"
 
   [[webhooks.subscriptions]]
-  topics = [ "app/uninstalled" ]
-  uri = "/webhooks/app/uninstalled"
+  uri = "/api/webhooks"
+  topics = [
+  "app/uninstalled",
+  "products/delete",
+  "inventory_items/update",
+  "shop/update",
+  "inventory_levels/connect",
+  "bulk_operations/finish",
+  "collections/delete",
+  "products/create",
+  "inventory_items/create",
+  "inventory_items/delete",
+  "collections/update",
+  "inventory_levels/disconnect",
+  "inventory_levels/update",
+  "collections/create",
+  "products/update"
+]
+  compliance_topics = [ "customers/data_request", "customers/redact", "shop/redact" ]
 
-  [[webhooks.subscriptions]]
-  topics = [ "app/scopes_update" ]
-  uri = "/webhooks/app/scopes_update"
+[pos]
+embedded = false
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "write_products"
+scopes = "read_inventory,read_locations,read_metaobjects,read_products,write_products"
+optional_scopes = [ ]
+use_legacy_install_flow = false
 
 [auth]
-redirect_urls = [ "https://enhanced-gives-validation-barrel.trycloudflare.com/api/auth" ]
+redirect_urls = [
+  "https://puts-moss-modifications-polyester.trycloudflare.com/auth/callback",
+  "https://puts-moss-modifications-polyester.trycloudflare.com/auth/shopify/callback",
+  "https://puts-moss-modifications-polyester.trycloudflare.com/api/auth/callback"
+]
+
+[app_proxy]
+url = "https://automatic-learners-excluded-decorative.trycloudflare.com/storefront/subscription"
+subpath = "proxy"
+prefix = "apps"
+
+[build]
+automatically_update_urls_on_dev = true
