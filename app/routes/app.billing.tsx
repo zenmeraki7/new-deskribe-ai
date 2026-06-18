@@ -1,3 +1,4 @@
+//app/routes/app.billing.tsx
 import { useActionData, useLoaderData, useSubmit } from "@remix-run/react";
 import { Banner, Layout, Page, BlockStack, Button, InlineStack } from "@shopify/polaris";
 import { requireAdminSession } from "../lib/auth.server";
