@@ -1,0 +1,203 @@
+// schema.prisma — full updated file
+
+generator client {
+  provider   = "prisma-client-js"
+  engineType = "library"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+}
+
+model Plan {
+  id          String       @id @default(cuid())
+  name        String       @unique
+  creditLimit Int
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  shopCredits ShopCredit[]
+}
+
+model History {
+  id             String   @id @default(cuid())
+  shopDomain     String   @default("")
+  productId      String
+  productTitle   String
+  description    String
+  vibe           String
+  format         String
+  keywords       String?
+  includeSocials Boolean
+  socials        Json?
+  createdAt      DateTime @default(now())
+}
+
+model GenerationJob {
+  isStale Boolean @default(false)
+  id                  String   @id @default(uuid())
+  shopDomain          String
+  productId           String
+  status              String
+  inputHash           String
+  vibe                String
+  format              String
+  keywords            String
+  includeSocials      Boolean
+  result              Json?
+  errorMessage        String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  bulkId              String?
+  bullJobId           String?
+  costTokens          Int      @default(0)
+  productTitle        String
+  progress            Int      @default(0)
+  traceId             String?
+  customInstruction String? 
+  // Description snapshot fields — added for undo support
+  generatedDescription String?  // The AI-generated description written to Shopify
+  previousDescription  String?  // Snapshot of the product description BEFORE generation
+  productVendor   String?
+  productType     String?
+  productTags     String?
+  creditRequestId String?
+  creditCost      Decimal? @db.Decimal(12, 1)
+
+  @@index([shopDomain])
+  @@index([productId])
+  @@index([status])
+  @@index([creditRequestId])
+}
+
+model ShopCredit {
+  id            String   @id @default(cuid())
+  shopId        String   @unique
+  plan          String   @default("free")
+  planId        String
+  planRef       Plan     @relation(fields: [planId], references: [id])
+  creditsUsed   Int      @default(0)
+  creditsLimit  Int      @default(100)
+  cycleStartsAt DateTime @default(now())
+  cycleEndsAt   DateTime
+  resetDate     DateTime
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([shopId])
+  @@index([planId])
+  @@index([resetDate])
+  @@index([cycleEndsAt])
+}
+
+model CreditUsageLog {
+  id             String   @id @default(cuid())
+  shop           String
+  action         String
+  amount         Int      @default(1)
+  idempotencyKey String?
+  createdAt      DateTime @default(now())
+
+  @@index([shop, createdAt])
+  @@unique([shop, idempotencyKey])
+}
+
+model CreditTransaction {
+  id        String   @id @default(cuid())
+  shopId    String
+  requestId String
+  kind      String
+  amount    Decimal  @db.Decimal(12, 1)
+  plan      String
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@unique([shopId, requestId, kind])
+  @@index([shopId])
+  @@index([requestId])
+}
+// Tracks per-shop daily usage — one row per shop per UTC day
+// DEPRECATED: legacy usage counter retained for migration/history only.
+// Do not read from or write to this model for billing enforcement.
+model WebhookDelivery {
+  id          String    @id @default(cuid())
+  webhookId   String    @unique
+  shop        String
+  topic       String
+  eventAt     DateTime?
+  payloadHash String?
+  status      String    @default("PENDING")
+  processedAt DateTime?
+  receivedAt  DateTime  @default(now())
+
+  @@index([shop, topic])
+  @@index([eventAt])
+}
+
+model ShopWebhookState {
+  id          String   @id @default(cuid())
+  shop        String
+  topic       String
+  lastEventAt DateTime
+  updatedAt   DateTime @updatedAt
+
+  @@unique([shop, topic])
+  @@index([shop])
+}
+
+model ShopUsage {
+  id         String   @id @default(cuid())
+  shopDomain String
+  date       String   // UTC date string: "2025-03-27"
+  count      Int      @default(0)
+  plan       String   @default("free") // "free" | "pro"
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([shopDomain, date])
+  @@index([shopDomain])
+  @@index([date])
+}
+
+// Global daily usage — single row per UTC day, all shops combined
+// DEPRECATED: legacy usage counter retained for migration/history only.
+// Do not read from or write to this model for billing enforcement.
+model GlobalUsage {
+  id        String   @id @default(cuid())
+  date      String   // UTC date string: "2025-03-27"
+  count     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([date])
+  @@index([date])
+}
+
+model CustomTemplate {
+  id          String   @id @default(cuid())
+  shopDomain  String
+  name        String           // e.g. "My Beach Vibes"
+  instruction String           // e.g. "Write in a fun surfer tone, use emojis..."
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([shopDomain])
+}

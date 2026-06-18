@@ -1,0 +1,212 @@
+import { useActionData, useLoaderData, useSubmit } from "@remix-run/react";
+import { Banner, Layout, Page, BlockStack, Button, InlineStack } from "@shopify/polaris";
+import { requireAdminSession } from "../lib/auth.server";
+import { json } from "@remix-run/node";
+import type { LoaderFunctionArgs, ActionFunctionArgs } from "@remix-run/node";
+import { useEffect, useState } from "react";
+import { PricingCards } from "../components/PricingCards";
+
+// ── Retry helper ─────────────────────────────────────────────────────────────
+async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (i === attempts - 1) throw err;
+      await new Promise(r => setTimeout(r, 500 * (i + 1)));
+    }
+  }
+  throw new Error("unreachable");
+}
+
+// ── Plan names ───────────────────────────────────────────────────────────────
+const PLANS = [
+  "Basic Plan",
+  "Basic Plan Yearly",
+  "Advanced Plan",
+  "Advanced Plan Yearly",
+  "Pro Plan",
+  "Pro Plan Yearly",
+] as const;
+
+// ── Plan ID map ──────────────────────────────────────────────────────────────
+const PLAN_NAME_MAP: Record<string, Record<string, string>> = {
+  basic:    { monthly: "Basic Plan",    yearly: "Basic Plan Yearly"    },
+  // Local "standard" currently maps to Shopify subscription names "Advanced Plan".
+  // Confirm this if the billing plan names in shopify.server.ts are renamed.
+  standard: { monthly: "Advanced Plan", yearly: "Advanced Plan Yearly" },
+  pro:      { monthly: "Pro Plan",      yearly: "Pro Plan Yearly"      },
+};
+
+const isTestBilling = process.env.IS_TEST_BILLING === "true";
+
+// ── Loader ───────────────────────────────────────────────────────────────────
+export const loader = async ({ request }: LoaderFunctionArgs) => {
+  const { billing } = await requireAdminSession(request);
+
+  const url = new URL(request.url);
+  const chargeId = url.searchParams.get("charge_id");
+
+  if (chargeId) {
+    // Wait briefly for Shopify to activate the new subscription
+      await new Promise(r => setTimeout(r, 3000));
+
+    const { appSubscriptions } = await billing.check();
+
+    // Cancel all subscriptions except the newly approved one
+      const sorted = [...(appSubscriptions ?? [])].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
+
+  for (const sub of sorted.slice(1)) {
+    await withRetry(() => billing.cancel({ subscriptionId: sub.id }));
+  }
+
+    // Re-fetch to get the clean state
+  const { appSubscriptions: updatedSubs } = await withRetry(() =>
+    billing.check({ plans: [...PLANS] as any, isTest: isTestBilling })
+  );
+
+  return json({ subscription: updatedSubs?.[0] ?? null });
+}
+
+  // Normal page load
+  const { appSubscriptions } = await billing.check();
+
+  return json({ subscription: appSubscriptions?.[0] ?? null });
+};  // ← this closing brace was missing
+
+// ── Action ───────────────────────────────────────────────────────────────────
+export const action = async ({ request }: ActionFunctionArgs) => {
+  const { billing, shopDomain } = await requireAdminSession(request);
+  const formData = await request.formData();
+  const intent = formData.get("intent");
+
+  // ── Cancel ──────────────────────────────────────────────────────────────
+  if (intent === "cancel") {
+    const { appSubscriptions } = await billing.check();
+    if (appSubscriptions?.[0]) {
+      await withRetry(() =>
+        billing.cancel({ subscriptionId: appSubscriptions[0].id })
+      );
+    }
+    return json({ success: true, intent: "cancel" });
+  }
+
+  // ── Subscribe ────────────────────────────────────────────────────────────
+  if (intent === "subscribe") {
+    const planId      = formData.get("planId") as string;
+    const billingMode = formData.get("billingMode") as string;
+
+    const planName = PLAN_NAME_MAP[planId]?.[billingMode];
+    if (!planName) return json({ error: "Invalid plan" }, { status: 400 });
+
+    const returnUrl = `https://${shopDomain}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`;
+
+    try {
+      await billing.request({
+        plan: planName as any,
+        isTest: process.env.IS_TEST_BILLING === "true",
+        returnUrl,
+      });
+    } catch (err) {
+      if (err instanceof Response) throw err;
+      throw err;
+    }
+  }
+
+  return json({ success: false });
+};
+
+// ── Component ─────────────────────────────────────────────────────────────────
+export default function Billing() {
+  const loaderData = useLoaderData<typeof loader>();
+  const subscription = "subscription" in loaderData ? loaderData.subscription : null;
+  const actionData = useActionData<typeof action>();
+  const submit = useSubmit();
+  const [billing, setBilling] = useState<"monthly" | "yearly">("monthly");
+
+  const currentPlanId = (() => {
+    const name = subscription?.name?.toLowerCase() ?? "";
+    if (name.includes("pro"))      return "pro";
+    if (name.includes("advanced") || name.includes("standard")) return "standard";
+    if (name.includes("basic"))    return "basic";
+    return "free";
+  })();
+
+  const currentBillingInterval: "monthly" | "yearly" = (() => {
+    const name = subscription?.name?.toLowerCase() ?? "";
+    return name.includes("yearly") ? "yearly" : "monthly";
+  })();
+
+  useEffect(() => {
+    if (actionData && "intent" in actionData && actionData.intent === "cancel") {
+      shopify.toast.show("Plan Successfully Cancelled", {
+        duration: 5000,
+        isError: false,
+      });
+    }
+  }, [actionData]);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (url.searchParams.has("charge_id")) {
+      url.searchParams.delete("charge_id");
+      window.history.replaceState({}, "", url.toString());
+    }
+  }, []);
+
+  function handleSelectPlan(planId: string) {
+    if (planId === "free") return;
+    submit(
+      { intent: "subscribe", planId, billingMode: billing },
+      { method: "POST" }
+    );
+  }
+
+  return (
+    <Page title="Select a Plan">
+      <Layout>
+        <Layout.Section>
+          <BlockStack gap="400">
+            {subscription ? (
+              <Banner
+                title={`Active subscription: ${subscription.name}`}
+                tone="success"
+                secondaryAction={{
+                  content: "Cancel Plan",
+                  onAction: () =>
+                    submit({ intent: "cancel" }, { method: "POST" }),
+                }}
+              />
+            ) : (
+              <Banner
+                title="You do not have an active subscription."
+                tone="critical"
+              />
+            )}
+
+            <InlineStack align="center" gap="200">
+              {(["monthly", "yearly"] as const).map((mode) => (
+                <Button
+                  key={mode}
+                  onClick={() => setBilling(mode)}
+                  variant={billing === mode ? "primary" : "secondary"}
+                >
+                  {mode === "monthly" ? "Pay monthly" : "Pay yearly"}
+                </Button>
+              ))}
+            </InlineStack>
+
+            <PricingCards
+              billing={billing}
+              currentPlanId={currentPlanId}
+              currentBillingInterval={currentBillingInterval}
+              onSelectPlan={handleSelectPlan}
+            />
+          </BlockStack>
+        </Layout.Section>
+      </Layout>
+    </Page>
+  );
+}
