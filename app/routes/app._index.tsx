@@ -96,11 +96,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
     const { hasActivePayment, appSubscriptions } = await billing.check();
     plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
 
-    // if (!hasActivePayment) {
-    //   throw redirect(
-    //     `https://${shopDomain}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing`,
-    //   );
-    // }
+   if (!hasActivePayment) {
+  return redirect("/app/billing");
+}
+
   } catch (err) {
     if (err instanceof Response) throw err;
     console.error("[billing.check error]", err);

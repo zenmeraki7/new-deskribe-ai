@@ -1,3 +1,4 @@
+//app/workers/start-generation-worker.ts
 import "dotenv/config";
 import "../lib/queue.server";
 import { startGenerationWorker } from "../worker/generation.worker.ts"; // ← fixed: was "../worker/generation.worker"

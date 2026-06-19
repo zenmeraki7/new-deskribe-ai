@@ -235,23 +235,23 @@ export function useJobPoll() {
    * - We only "evaluate" when fetcher transitions to idle AND the requestSeq increased.
    * - Since we can't read HTTP status, "missing data at idle" is treated as transient failure.
    */
-  const lastSeenIdleAtRef = useRef<number>(0);
+ // With this:
+const lastProcessedDataRef = useRef<PollResponse | null>(null);
 
-  useEffect(() => {
-    if (!activeJobIdRef.current) return;
+useEffect(() => {
+  if (!activeJobIdRef.current) return;
+  if (fetcher.state !== "idle") return;
 
-    // Only act when idle.
-    if (fetcher.state !== "idle") return;
+  const data = fetcher.data;
 
-    // Prevent running twice for the same idle tick (some renders can re-run effects).
-    const now = Date.now();
-    if (now === lastSeenIdleAtRef.current) return;
-    lastSeenIdleAtRef.current = now;
+  // Dedupe by reference identity, not wall-clock time.
+  // Remix gives a new object reference on each successful load,
+  // so this safely skips re-processing the same response twice
+  // without ever dropping a genuinely new one.
+  if (data !== undefined && data === lastProcessedDataRef.current) return;
+  lastProcessedDataRef.current = data ?? null;
 
-    // Snapshot the job we're polling right now.
-    const currentJobId = activeJobIdRef.current;
-
-    const data = fetcher.data;
+  const currentJobId = activeJobIdRef.current;
 
     // Failure path: no data returned
     if (!data) {

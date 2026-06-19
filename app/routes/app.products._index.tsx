@@ -1,13 +1,4 @@
-/**
- * Route: /app/products
- *
- * Changes from original:
- *  - IndexTable is now selectable (useIndexResourceState)
- *  - promotedBulkActions triggers BulkGenerateModal
- *  - BulkGenerateModal imported and rendered at bottom
- *  - After successful bulk enqueue, toast + redirect to /app/jobs
- */
-
+//app/routes/app.products._index.tsx
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { useLoaderData, useNavigate } from "@remix-run/react";
 import { requireAdminSession } from "../lib/auth.server";

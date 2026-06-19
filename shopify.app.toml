@@ -2,7 +2,7 @@
 
 client_id = "8080a194096cb602f516d4bb1841df93"
 name = "test-meta-new"
-application_url = "https://iii-fuel-truth-alphabetical.trycloudflare.com"
+application_url = "https://plot-listprice-solution-clay.trycloudflare.com"
 embedded = true
 handle = "test-meta-new"
 
@@ -36,9 +36,9 @@ use_legacy_install_flow = false
 
 [auth]
 redirect_urls = [
-  "https://iii-fuel-truth-alphabetical.trycloudflare.com/auth/callback",
-  "https://iii-fuel-truth-alphabetical.trycloudflare.com/auth/shopify/callback",
-  "https://iii-fuel-truth-alphabetical.trycloudflare.com/auth/callback"
+  "https://plot-listprice-solution-clay.trycloudflare.com/auth/callback",
+  "https://plot-listprice-solution-clay.trycloudflare.com/auth/shopify/callback",
+  "https://plot-listprice-solution-clay.trycloudflare.com/auth/callback"
 ]
 
 [app_proxy]
