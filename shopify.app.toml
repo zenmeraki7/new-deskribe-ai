@@ -1,8 +1,8 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "a1f8f9a43fecfcab67dc4868a5ea2ee2"
-name = "desKribe-ai"
-application_url = "https://deskribeai-8addcf545d25.herokuapp.com/"
+name = "Deskribe AI "
+application_url = "https://deskribeai-8addcf545d25.herokuapp.com"
 embedded = true
 
 [build]
@@ -12,6 +12,10 @@ automatically_update_urls_on_dev = true
 api_version = "2026-01"
 
   [[webhooks.subscriptions]]
+  uri = "/webhooks/compliance"
+  compliance_topics = [ "customers/data_request", "customers/redact", "shop/redact" ]
+
+  [[webhooks.subscriptions]]
   topics = [ "app/scopes_update" ]
   uri = "/webhooks/app/scopes_update"
 
@@ -19,13 +23,18 @@ api_version = "2026-01"
   topics = [ "app/uninstalled" ]
   uri = "/webhooks/app/uninstalled"
 
-   [[webhooks.subscriptions]]
-  compliance_topics = ["customers/data_request", "customers/redact", "shop/redact"]
-  uri = "/webhooks/compliance"
-
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
 scopes = "write_products"
+optional_scopes = [ ]
+use_legacy_install_flow = false
 
 [auth]
-redirect_urls = [ "https://deskribeai-8addcf545d25.herokuapp.com/api/auth" ]
+redirect_urls = [
+  "https://deskribeai-8addcf545d25.herokuapp.com/auth/callback",
+  "https://deskribeai-8addcf545d25.herokuapp.com/auth/shopify/callback",
+  "https://deskribeai-8addcf545d25.herokuapp.com/api/auth/callback"
+]
+
+[app_preferences]
+url = "https://bunny-bike-mouth-ann.trycloudflare.com/app"

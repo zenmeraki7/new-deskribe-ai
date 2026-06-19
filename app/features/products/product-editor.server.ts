@@ -5,6 +5,7 @@ import { z } from "zod";
 import { authenticate } from "../../shopify.server";
 import { db } from "../../lib/db.server";
 import { enqueueGenerationJobs } from "../../lib/enqueue.server";
+import { generationQueue } from "../../lib/queue.server";
 import { suggestKeywords } from "../../lib/ai.server";
 import { sanitiseHtml, stripHtml } from "../../lib/html.server";
 
@@ -506,8 +507,13 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     // Normalize vibe: strip "custom:" prefix for storage, use "custom" as the vibe value
     const vibe = rawVibe.startsWith("custom:") ? "custom" : rawVibe;
 
-    // Idempotency: if a matching active job exists within lookback, return it
-     const lookback = new Date(Date.now() - ACTIVE_JOB_LOOKBACK_MS);
+    // Idempotency: if a matching active job exists within lookback, reuse it
+    // — but ONLY if it actually has a live BullMQ job behind it. Otherwise
+    // we'd hand the client back a jobId that polls PENDING forever (this is
+    // exactly how a job created during a Redis outage gets "stuck" even
+    // after Redis recovers — the DB row keeps matching this check on every
+    // retry, so the request never falls through to enqueueGenerationJobs).
+    const lookback = new Date(Date.now() - ACTIVE_JOB_LOOKBACK_MS);
   const existing = await db.generationJob.findFirst({
     where: {
       shopDomain,
@@ -524,14 +530,25 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
   });
 
     if (existing) {
-       await refundRateLimit(shopDomain, plan);
-      return json({
-        ok: true,
-        kind: "generate",
-        jobId: existing.id,
-        status: "PENDING",
-        alreadyQueued: true,
-      });
+      const bullJob = await generationQueue.getJob(existing.id);
+
+      if (bullJob) {
+        await refundRateLimit(shopDomain, plan);
+        return json({
+          ok: true,
+          kind: "generate",
+          jobId: existing.id,
+          status: "PENDING",
+          alreadyQueued: true,
+        });
+      }
+
+      console.warn(
+        `[generate] Orphaned job ${existing.id} (status=${existing.status}) matched idempotency check but has no BullMQ job — falling through to re-enqueue.`,
+      );
+      // Intentionally no `return` here — fall through to enqueueGenerationJobs,
+      // whose own idempotency check is hardened the same way and will safely
+      // re-add this exact job to the queue instead of creating a duplicate row.
     }
 
      try {

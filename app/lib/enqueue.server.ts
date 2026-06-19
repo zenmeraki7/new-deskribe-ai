@@ -74,11 +74,10 @@ export async function enqueueGenerationJobs({
   includeSocials,
   adminGraphql,
   bulkId: explicitBulkId,
-  customInstruction = "", 
+  customInstruction = "",
 }: EnqueueParams): Promise<EnqueueResult> {
   const jobIds: string[] = [];
   const skipped: string[] = [];
-
 
   // Assign a bulkId when this is a multi-product run so the jobs can be
   // grouped on the History page. Single-product jobs get null unless the
@@ -91,7 +90,16 @@ export async function enqueueGenerationJobs({
     const material = `${shopDomain}:${productId}:${vibe}:${format}:${keywords}:${includeSocials}`;
     const inputHash = hashInput(material);
 
-    // Idempotency: reuse an in-flight job with the same parameters
+    // Idempotency: reuse an in-flight job with the same parameters — but
+    // ONLY if a real BullMQ job still exists behind it.
+    //
+    // Why this check is necessary: a DB row can end up at PENDING/PROCESSING
+    // with NO matching BullMQ job — e.g. if Redis was briefly unreachable
+    // when the row was first created (queue.add() never ran or threw), or a
+    // worker died mid-claim. If we trust the DB status alone, that orphaned
+    // row poisons every future "generate" click with the same parameters:
+    // we keep handing back its id, never re-enqueue, and the UI polls
+    // PENDING forever. So always verify against Redis before reusing it.
     const existing = await db.generationJob.findFirst({
       where: {
         shopDomain,
@@ -99,10 +107,49 @@ export async function enqueueGenerationJobs({
         inputHash,
         status: { in: ["PENDING", "PROCESSING"] },
       },
-      select: { id: true },
+      select: { id: true, status: true },
     });
 
     if (existing) {
+      const bullJob = await generationQueue.getJob(existing.id);
+
+      if (bullJob) {
+        // Healthy in-flight job — genuinely reuse it.
+        jobIds.push(existing.id);
+        continue;
+      }
+
+      // Orphan detected: DB says PENDING/PROCESSING, Redis has nothing.
+      console.warn(
+        `[enqueue] Orphaned job ${existing.id} (status=${existing.status}) has no matching BullMQ job — re-enqueueing instead of reusing it.`,
+      );
+
+      // Re-add using the SAME job id so we don't create a duplicate DB row.
+      // BullMQ's jobId option de-dupes against any still-active job with
+      // that id, and cleanly re-creates it if it was actually missing.
+      await generationQueue.add(
+        `generate:${productId}`,
+        {
+          jobId: existing.id,
+          shopDomain,
+          productId,
+          vibe,
+          format,
+          keywords,
+          includeSocials,
+          customInstruction: customInstruction || undefined,
+        },
+        { jobId: existing.id },
+      );
+
+      // Reset the DB row to a clean PENDING state in case it was stuck in
+      // PROCESSING from a worker that died mid-job.
+      await db.generationJob.updateMany({
+        where: { id: existing.id, shopDomain },
+        data: { status: "PENDING", progress: 0, errorMessage: null },
+      });
+
+      console.log("[enqueue] Re-enqueued orphaned job:", existing.id);
       jobIds.push(existing.id);
       continue;
     }
@@ -146,7 +193,7 @@ export async function enqueueGenerationJobs({
         format,
         keywords,
         includeSocials,
-        customInstruction: customInstruction || undefined, 
+        customInstruction: customInstruction || undefined,
       },
       { jobId: job.id },
     );
