@@ -16,6 +16,8 @@
 // Strict Shopify Product GID (Admin API)
 export const PRODUCT_GID_RE = /^gid:\/\/shopify\/Product\/\d+$/;
 
+export const MEDIA_IMAGE_GID_RE = /^gid:\/\/shopify\/MediaImage\/\d+$/;
+
 // Legacy numeric ID (if ever accepted internally; must be converted to GID server-side)
 export const SHOPIFY_NUMERIC_ID_RE = /^\d+$/;
 

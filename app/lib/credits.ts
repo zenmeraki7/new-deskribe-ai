@@ -12,6 +12,7 @@ export const CREDIT_COSTS = {
   enhancedSeoGeneration: 2,
   bulkProductGeneration: 1,
   keywordSuggestion: 0.5,
+  altTextGeneration: 0.5,
 } as const;
 
 export const CREDIT_RULES = [
@@ -19,6 +20,7 @@ export const CREDIT_RULES = [
   { label: "SEO generation", credits: CREDIT_COSTS.enhancedSeoGeneration },
   { label: "Keyword suggestion", credits: CREDIT_COSTS.keywordSuggestion },
   { label: "Bulk generation", credits: CREDIT_COSTS.bulkProductGeneration, suffix: "per product" },
+  { label: "Image alt text", credits: CREDIT_COSTS.altTextGeneration, suffix: "per image" },
 ] as const;
 
 export const PLAN_LABELS: Record<CreditPlan, string> = {

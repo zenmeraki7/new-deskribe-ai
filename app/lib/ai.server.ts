@@ -271,3 +271,122 @@ Example output:
     throw new Error("AI returned invalid keyword format");
   }
 }
+
+// ── Image alt text (single) ────────────────────────────────────────────────
+const ALT_TEXT_MAX_CHARS = 125; // accessibility / SEO best practice
+
+function clampAltText(s: string): string {
+  const trimmed = s.trim().replace(/\s+/g, " ").replace(/^["']|["']$/g, "");
+  return trimmed.length <= ALT_TEXT_MAX_CHARS ? trimmed : trimmed.slice(0, ALT_TEXT_MAX_CHARS).trim();
+}
+
+export async function generateImageAltText(params: {
+  title: string;
+  vendor: string;
+  productType: string;
+  imageIndex: number; // 0-based
+  totalImages: number;
+}): Promise<string> {
+  const { title, vendor, productType, imageIndex, totalImages } = params;
+
+  const positionHint =
+    totalImages <= 1
+      ? "This is the only product image."
+      : `This is image ${imageIndex + 1} of ${totalImages} for this product. Vary the phrasing from a typical "main shot" description — imply a plausible different angle or detail (e.g. close-up, alternate angle, in use) without inventing specific visual details you can't actually know.`;
+
+  const prompt = `
+Write accessible alt text for a Shopify product image.
+
+Product Title: ${title}
+Brand: ${vendor || "unknown"}
+Category: ${productType || "unknown"}
+
+${positionHint}
+
+Rules:
+- Plain text only, no quotes, no markdown
+- Under ${ALT_TEXT_MAX_CHARS} characters
+- Describe the product naturally for a screen-reader user — don't just stuff keywords
+- Do NOT start with "Image of" or "Picture of"
+- Do NOT fabricate specific visual details (colors, materials, scenery) you cannot know from the title alone
+- Include the product name naturally
+
+Return ONLY the alt text string, nothing else.
+`;
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4.1-mini",
+    temperature: 0.5,
+    messages: [
+      {
+        role: "system",
+        content:
+          "You write concise, accessible image alt text for ecommerce. Respond with plain text only — no quotes, no markdown, no preamble.",
+      },
+      { role: "user", content: prompt },
+    ],
+  });
+
+  const raw = completion.choices?.[0]?.message?.content ?? "";
+  const cleaned = stripJsonFences(raw);
+  return clampAltText(cleaned || title);
+}
+
+// ── Image alt text (bulk — multiple images of the same product) ─────────────
+export async function generateImageAltTextBulk(params: {
+  title: string;
+  vendor: string;
+  productType: string;
+  imageCount: number;
+}): Promise<string[]> {
+  const { title, vendor, productType, imageCount } = params;
+  if (imageCount <= 0) return [];
+
+  const prompt = `
+Write accessible alt text for ${imageCount} product images of the SAME Shopify product (different photos of it — front, detail, alternate angle, etc., though you don't know exactly what each one shows).
+
+Product Title: ${title}
+Brand: ${vendor || "unknown"}
+Category: ${productType || "unknown"}
+
+Rules:
+- Return ONLY a valid JSON array of exactly ${imageCount} strings, no markdown, no explanation
+- Each string under ${ALT_TEXT_MAX_CHARS} characters
+- Each should sound like a plausible different image of this product (vary phrasing — main shot, detail/close-up, alternate angle, in-use, packaging — pick naturally), but do NOT invent specific colors/materials/scenes you can't know
+- Do NOT start any entry with "Image of" or "Picture of"
+- Don't just repeat the title verbatim in every entry — vary wording so entries don't look duplicated to search engines or screen readers
+
+Example output for 3 images:
+["Short alt text for image 1", "Short alt text for image 2", "Short alt text for image 3"]
+`;
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4.1-mini",
+    temperature: 0.6,
+    messages: [
+      {
+        role: "system",
+        content:
+          "You write concise, accessible image alt text for ecommerce. Always respond with a plain JSON array of strings only.",
+      },
+      { role: "user", content: prompt },
+    ],
+  });
+
+  const raw = completion.choices?.[0]?.message?.content ?? "[]";
+  const text = stripJsonFences(raw);
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    console.error("Bulk alt text parse error:", err, "Raw:", raw);
+    throw new Error("AI returned invalid alt text format");
+  }
+  if (!Array.isArray(parsed)) throw new Error("AI returned invalid alt text format");
+
+  const out = parsed.filter((x): x is string => typeof x === "string").map(clampAltText);
+
+  while (out.length < imageCount) out.push(clampAltText(title));
+  return out.slice(0, imageCount);
+}

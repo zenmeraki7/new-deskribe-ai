@@ -1,47 +1,19 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "8080a194096cb602f516d4bb1841df93"
-name = "test-meta-new"
-application_url = "https://fit-convertible-tobacco-attribute.trycloudflare.com"
+client_id = "966ecf2737d8dee020c04a0c80940dd3"
+application_url = "https://baby-nascar-commands-ensuring.trycloudflare.com"
 embedded = true
-handle = "test-meta-new"
-
-[build]
-automatically_update_urls_on_dev = true
+name = "development-app"
 
 [webhooks]
-api_version = "2025-04"
-
-  [[webhooks.subscriptions]]
-  topics = [ "bulk_operations/finish", "products/create" ]
-  uri = "https://a50e-2409-4073-307-d512-1554-bf40-8d5f-a82.ngrok-free.app/api/webhooks"
-
-  [[webhooks.subscriptions]]
-  uri = "https://contributing-cole-senate-dried.trycloudflare.com/gdpr/customer_data_erasure"
-  compliance_topics = [ "customers/redact" ]
-
-  [[webhooks.subscriptions]]
-  uri = "https://contributing-cole-senate-dried.trycloudflare.com/gdpr/customer_data_request"
-  compliance_topics = [ "customers/data_request" ]
-
-  [[webhooks.subscriptions]]
-  uri = "https://contributing-cole-senate-dried.trycloudflare.com/gdpr/shop_data_erasure"
-  compliance_topics = [ "shop/redact" ]
+api_version = "2026-07"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "read_locations,read_products,write_products"
-optional_scopes = [ ]
-use_legacy_install_flow = false
+scopes = "write_products"
 
 [auth]
-redirect_urls = [
-  "https://fit-convertible-tobacco-attribute.trycloudflare.com/auth/callback",
-  "https://fit-convertible-tobacco-attribute.trycloudflare.com/auth/shopify/callback",
-  "https://fit-convertible-tobacco-attribute.trycloudflare.com/auth/callback"
-]
+redirect_urls = [ "https://baby-nascar-commands-ensuring.trycloudflare.com/api/auth" ]
 
-[app_proxy]
-url = "https://automatic-learners-excluded-decorative.trycloudflare.com/storefront/subscription"
-subpath = "proxy"
-prefix = "apps"
+[build]
+automatically_update_urls_on_dev = true
