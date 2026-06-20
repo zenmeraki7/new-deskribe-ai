@@ -67,6 +67,7 @@ interface ShopifyProduct {
   productType: string;
   tags: string[];
   featuredImage: { url: string } | null;
+  images: { url: string; altText: string | null }[];
 }
 
 interface LoaderData {
@@ -115,15 +116,27 @@ export async function loader({ request }: LoaderFunctionArgs) {
             vendor
             productType
             tags
-            featuredImage { url }
+             featuredImage { url altText }
+      images(first: 10) {
+        nodes {
+          url
+          altText
+        }
+      }
           }
         }
       }
     `);
 
     const data = await resp.json();
-    const product: ShopifyProduct | null =
-      data?.data?.products?.nodes?.[0] ?? null;
+    const rawProduct = data?.data?.products?.nodes?.[0] ?? null;
+
+    const product: ShopifyProduct | null = rawProduct
+      ? {
+          ...rawProduct,
+          images: rawProduct.images?.nodes ?? [],
+        }
+      : null;
 
     return json<LoaderData>({
       product,
@@ -1311,6 +1324,34 @@ export default function IndexPage() {
                     />
                   </div>
                 </Box>
+
+                {/* ── Thumbnail gallery ── */}
+                {product.images.length > 1 && (
+                  <InlineStack gap="100" wrap>
+                    {product.images.slice(0, 6).map((img, i) => (
+                      <div
+                        key={img.url + i}
+                        style={{
+                          width: "48px",
+                          height: "48px",
+                          borderRadius: "6px",
+                          overflow: "hidden",
+                          border: "1px solid #e1e3e5",
+                        }}
+                      >
+                        <img
+                          src={img.url}
+                          alt={img.altText ?? product.title}
+                          style={{
+                            width: "100%",
+                            height: "100%",
+                            objectFit: "cover",
+                          }}
+                        />
+                      </div>
+                    ))}
+                  </InlineStack>
+                )}
 
                 <BlockStack gap="100">
                   <Text variant="headingMd" as="h3">

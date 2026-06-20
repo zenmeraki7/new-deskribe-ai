@@ -80,6 +80,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
             status
             totalInventory
             productType
+            featuredImage { url altText }
             collections(first: 10) {
               edges {
                 node {
@@ -447,21 +448,50 @@ export default function ProductsDashboard() {
           // Navigation is handled by the explicit button below
         }}
       >
-        <IndexTable.Cell>
-          <div
-            style={{
-              maxWidth: "300px",
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-            }}
-            title={product.title} // 👈 full title on hover
-          >
-            <Text variant="bodyMd" fontWeight="semibold" as="span">
-              {product.title}
-            </Text>
-          </div>
-        </IndexTable.Cell>
+  <IndexTable.Cell>
+  <InlineStack gap="200" blockAlign="center" wrap={false}>
+    <div
+      style={{
+        width: "40px",
+        height: "40px",
+        borderRadius: "6px",
+        overflow: "hidden",
+        flexShrink: 0,
+        background: "#f1f2f3",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <img
+        src={
+          product.featuredImage?.url ??
+          "https://static.vecteezy.com/system/resources/previews/048/910/778/original/default-image-missing-placeholder-free-vector.jpg"
+        }
+        alt={product.featuredImage?.altText ?? product.title}
+        style={{
+          width: "100%",
+          height: "100%",
+          objectFit: product.featuredImage?.url ? "cover" : "contain",
+          padding: product.featuredImage?.url ? "0" : "6px",
+        }}
+      />
+    </div>
+    <div
+      style={{
+        maxWidth: "260px",
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+      }}
+      title={product.title}
+    >
+      <Text variant="bodyMd" fontWeight="semibold" as="span">
+        {product.title}
+      </Text>
+    </div>
+  </InlineStack>
+</IndexTable.Cell>
         <IndexTable.Cell>
           <Badge
             tone={
