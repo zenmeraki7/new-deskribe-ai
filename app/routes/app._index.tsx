@@ -23,10 +23,7 @@ import {
 import { useLoaderData, useFetcher, useNavigate } from "@remix-run/react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { json, redirect } from "@remix-run/node";
-import {
-  suggestKeywords,
-  generateProductDescription,
-} from "../lib/ai.server";
+import { suggestKeywords, generateProductDescription } from "../lib/ai.server";
 import { requireAdminSession } from "../lib/auth.server";
 import {
   checkAndIncrementKeywordLimit,
@@ -96,10 +93,9 @@ export async function loader({ request }: LoaderFunctionArgs) {
     const { hasActivePayment, appSubscriptions } = await billing.check();
     plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
 
-   if (!hasActivePayment) {
-  return redirect("/app/billing");
-}
-
+    // if (!hasActivePayment) {
+    //   return redirect("/app/billing");
+    // }
   } catch (err) {
     if (err instanceof Response) throw err;
     console.error("[billing.check error]", err);
@@ -157,9 +153,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function action({ request }: ActionFunctionArgs) {
-  const { deductCredits, refundCredits } = await import(
-    "../lib/creditService.server"
-  );
+  const { deductCredits, refundCredits } =
+    await import("../lib/creditService.server");
   const { admin, billing, shopDomain } = await requireAdminSession(request);
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
@@ -490,13 +485,23 @@ export default function IndexPage() {
         ? creditCosts.keywordSuggestion
         : 0);
     return Math.max(0, credits.creditsRemaining - spent);
-  }, [credits.creditsRemaining, creditCosts, generateFetcher.data, suggestFetcher.data]);
+  }, [
+    credits.creditsRemaining,
+    creditCosts,
+    generateFetcher.data,
+    suggestFetcher.data,
+  ]);
 
   const isApplying = applyFetcher.state !== "idle";
   const canApply =
-    generationResult && generationResult.body_html && !isGenerating && !isApplying;
+    generationResult &&
+    generationResult.body_html &&
+    !isGenerating &&
+    !isApplying;
 
-  const timeSavedMins = Math.round((credits.creditsUsed * 37) / Math.max(credits.creditsLimit, 1));
+  const timeSavedMins = Math.round(
+    (credits.creditsUsed * 37) / Math.max(credits.creditsLimit, 1),
+  );
 
   const handleGenerate = useCallback(() => {
     if (!product) return;
@@ -513,7 +518,16 @@ export default function IndexPage() {
     fd.append("keywords", keywords);
     fd.append("includeSocials", String(includeSocials));
     generateFetcher.submit(fd, { method: "POST" });
-  }, [product, remainingCredits, creditCosts.generation, vibe, format, keywords, includeSocials, generateFetcher]);
+  }, [
+    product,
+    remainingCredits,
+    creditCosts.generation,
+    vibe,
+    format,
+    keywords,
+    includeSocials,
+    generateFetcher,
+  ]);
 
   const handleSuggestKeywords = useCallback(() => {
     if (!product) return;
@@ -529,7 +543,12 @@ export default function IndexPage() {
     fd.append("productType", product.productType);
     fd.append("tags", product.tags.join(","));
     suggestFetcher.submit(fd, { method: "POST" });
-  }, [product, remainingCredits, creditCosts.keywordSuggestion, suggestFetcher]);
+  }, [
+    product,
+    remainingCredits,
+    creditCosts.keywordSuggestion,
+    suggestFetcher,
+  ]);
 
   const handleKeywordTagRemove = useCallback((kw: string) => {
     setKeywords((prev) =>
@@ -556,7 +575,10 @@ export default function IndexPage() {
 
   const handleAddSuggestedKeyword = useCallback((kw: string) => {
     setKeywords((prev) => {
-      const existing = prev.split(",").map((k) => k.trim()).filter(Boolean);
+      const existing = prev
+        .split(",")
+        .map((k) => k.trim())
+        .filter(Boolean);
       if (existing.includes(kw)) return prev;
       return [...existing, kw].join(", ");
     });
@@ -571,7 +593,10 @@ export default function IndexPage() {
   }, [generateFetcher]);
 
   const imageUrl = product?.featuredImage?.url ?? DUMMY_IMAGE;
-  const keywordTags = keywords.split(",").map((k) => k.trim()).filter(Boolean);
+  const keywordTags = keywords
+    .split(",")
+    .map((k) => k.trim())
+    .filter(Boolean);
 
   if (error) {
     return (
@@ -607,7 +632,6 @@ export default function IndexPage() {
     <Page title="DescribeAI" subtitle="AI Product Description Generator">
       <Layout>
         <Layout.Section>
-
           {/* ── Stats Bar ─────────────────────────────────────────────────── */}
           <div
             style={{
@@ -627,9 +651,30 @@ export default function IndexPage() {
                 value: `${generationResult?.wordCount ?? 373} words`,
                 icon: (
                   <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <rect x="2" y="4" width="16" height="2" rx="1" fill="#5c6ac4"/>
-                    <rect x="2" y="9" width="12" height="2" rx="1" fill="#5c6ac4"/>
-                    <rect x="2" y="14" width="14" height="2" rx="1" fill="#5c6ac4"/>
+                    <rect
+                      x="2"
+                      y="4"
+                      width="16"
+                      height="2"
+                      rx="1"
+                      fill="#5c6ac4"
+                    />
+                    <rect
+                      x="2"
+                      y="9"
+                      width="12"
+                      height="2"
+                      rx="1"
+                      fill="#5c6ac4"
+                    />
+                    <rect
+                      x="2"
+                      y="14"
+                      width="14"
+                      height="2"
+                      rx="1"
+                      fill="#5c6ac4"
+                    />
                   </svg>
                 ),
               },
@@ -638,8 +683,23 @@ export default function IndexPage() {
                 value: String(remainingCredits),
                 icon: (
                   <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <circle cx="10" cy="10" r="7" stroke="#f59e0b" strokeWidth="2"/>
-                    <text x="10" y="14" textAnchor="middle" fontSize="9" fill="#f59e0b" fontWeight="bold">$</text>
+                    <circle
+                      cx="10"
+                      cy="10"
+                      r="7"
+                      stroke="#f59e0b"
+                      strokeWidth="2"
+                    />
+                    <text
+                      x="10"
+                      y="14"
+                      textAnchor="middle"
+                      fontSize="9"
+                      fill="#f59e0b"
+                      fontWeight="bold"
+                    >
+                      $
+                    </text>
                   </svg>
                 ),
               },
@@ -648,9 +708,24 @@ export default function IndexPage() {
                 value: credits.creditsLimit > 100 ? "PRO" : "FREE",
                 icon: (
                   <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <rect x="3" y="5" width="14" height="10" rx="2" stroke="#5c6ac4" strokeWidth="2"/>
-                    <path d="M3 9h14" stroke="#5c6ac4" strokeWidth="1.5"/>
-                    <rect x="6" y="12" width="4" height="1.5" rx="0.75" fill="#5c6ac4"/>
+                    <rect
+                      x="3"
+                      y="5"
+                      width="14"
+                      height="10"
+                      rx="2"
+                      stroke="#5c6ac4"
+                      strokeWidth="2"
+                    />
+                    <path d="M3 9h14" stroke="#5c6ac4" strokeWidth="1.5" />
+                    <rect
+                      x="6"
+                      y="12"
+                      width="4"
+                      height="1.5"
+                      rx="0.75"
+                      fill="#5c6ac4"
+                    />
                   </svg>
                 ),
               },
@@ -666,8 +741,24 @@ export default function IndexPage() {
                 }}
               >
                 <div>
-                  <div style={{ fontSize: "13px", color: "#6d7175", marginBottom: "4px" }}>{label}</div>
-                  <div style={{ fontSize: "18px", fontWeight: "600", color: "#202223" }}>{value}</div>
+                  <div
+                    style={{
+                      fontSize: "13px",
+                      color: "#6d7175",
+                      marginBottom: "4px",
+                    }}
+                  >
+                    {label}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: "18px",
+                      fontWeight: "600",
+                      color: "#202223",
+                    }}
+                  >
+                    {value}
+                  </div>
                 </div>
                 <div style={{ opacity: 0.85 }}>{icon}</div>
               </div>
@@ -714,28 +805,81 @@ export default function IndexPage() {
                     {
                       step: "1. Select Content Type",
                       icon: (
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                          <rect x="3" y="5" width="18" height="3" rx="1.5" fill="#5c6ac4"/>
-                          <rect x="3" y="11" width="14" height="3" rx="1.5" fill="#8c9196"/>
-                          <rect x="3" y="17" width="10" height="3" rx="1.5" fill="#8c9196"/>
+                        <svg
+                          width="24"
+                          height="24"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                        >
+                          <rect
+                            x="3"
+                            y="5"
+                            width="18"
+                            height="3"
+                            rx="1.5"
+                            fill="#5c6ac4"
+                          />
+                          <rect
+                            x="3"
+                            y="11"
+                            width="14"
+                            height="3"
+                            rx="1.5"
+                            fill="#8c9196"
+                          />
+                          <rect
+                            x="3"
+                            y="17"
+                            width="10"
+                            height="3"
+                            rx="1.5"
+                            fill="#8c9196"
+                          />
                         </svg>
                       ),
                     },
                     {
                       step: "2. Select Target",
                       icon: (
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                          <circle cx="12" cy="12" r="8" stroke="#5c6ac4" strokeWidth="2"/>
-                          <circle cx="12" cy="12" r="4" stroke="#5c6ac4" strokeWidth="1.5"/>
-                          <circle cx="12" cy="12" r="1.5" fill="#5c6ac4"/>
+                        <svg
+                          width="24"
+                          height="24"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                        >
+                          <circle
+                            cx="12"
+                            cy="12"
+                            r="8"
+                            stroke="#5c6ac4"
+                            strokeWidth="2"
+                          />
+                          <circle
+                            cx="12"
+                            cy="12"
+                            r="4"
+                            stroke="#5c6ac4"
+                            strokeWidth="1.5"
+                          />
+                          <circle cx="12" cy="12" r="1.5" fill="#5c6ac4" />
                         </svg>
                       ),
                     },
                     {
                       step: "3. Click Generate",
                       icon: (
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                          <path d="M12 3l2.5 6h6l-5 4 2 6.5L12 16l-5.5 3.5 2-6.5-5-4h6z" stroke="#5c6ac4" strokeWidth="1.5" fill="none"/>
+                        <svg
+                          width="24"
+                          height="24"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                        >
+                          <path
+                            d="M12 3l2.5 6h6l-5 4 2 6.5L12 16l-5.5 3.5 2-6.5-5-4h6z"
+                            stroke="#5c6ac4"
+                            strokeWidth="1.5"
+                            fill="none"
+                          />
                         </svg>
                       ),
                     },
@@ -750,8 +894,24 @@ export default function IndexPage() {
                         background: "#fafbfb",
                       }}
                     >
-                      <div style={{ display: "flex", justifyContent: "center", marginBottom: "8px" }}>{icon}</div>
-                      <div style={{ fontSize: "13px", color: "#202223", fontWeight: "500" }}>{step}</div>
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "center",
+                          marginBottom: "8px",
+                        }}
+                      >
+                        {icon}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: "13px",
+                          color: "#202223",
+                          fontWeight: "500",
+                        }}
+                      >
+                        {step}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -759,7 +919,8 @@ export default function IndexPage() {
                 <button
                   onClick={() => navigate("/app/products")}
                   style={{
-                    background: "linear-gradient(135deg, #5c6ac4 0%, #4355be 100%)",
+                    background:
+                      "linear-gradient(135deg, #5c6ac4 0%, #4355be 100%)",
                     color: "#fff",
                     border: "none",
                     borderRadius: "10px",
@@ -775,7 +936,10 @@ export default function IndexPage() {
                   }}
                 >
                   <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                    <path d="M8 2l2 4h4l-3.5 3 1.5 4.5L8 11l-4 2.5 1.5-4.5L2 6h4z" fill="#fff"/>
+                    <path
+                      d="M8 2l2 4h4l-3.5 3 1.5 4.5L8 11l-4 2.5 1.5-4.5L2 6h4z"
+                      fill="#fff"
+                    />
                   </svg>
                   Start Generating
                 </button>
@@ -798,7 +962,8 @@ export default function IndexPage() {
                   style={{
                     width: "100%",
                     height: "100%",
-                    background: "linear-gradient(135deg, #e8eaff 0%, #f0f4ff 100%)",
+                    background:
+                      "linear-gradient(135deg, #e8eaff 0%, #f0f4ff 100%)",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
@@ -807,10 +972,41 @@ export default function IndexPage() {
                   }}
                 >
                   {/* Simulated UI preview */}
-                  <div style={{ width: "80%", background: "#fff", borderRadius: "6px", padding: "10px", boxShadow: "0 2px 8px rgba(0,0,0,0.08)" }}>
-                    <div style={{ height: "8px", background: "#e1e3e5", borderRadius: "4px", marginBottom: "6px", width: "60%" }} />
-                    <div style={{ height: "6px", background: "#e1e3e5", borderRadius: "4px", marginBottom: "4px", width: "90%" }} />
-                    <div style={{ height: "6px", background: "#e1e3e5", borderRadius: "4px", width: "75%" }} />
+                  <div
+                    style={{
+                      width: "80%",
+                      background: "#fff",
+                      borderRadius: "6px",
+                      padding: "10px",
+                      boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
+                    }}
+                  >
+                    <div
+                      style={{
+                        height: "8px",
+                        background: "#e1e3e5",
+                        borderRadius: "4px",
+                        marginBottom: "6px",
+                        width: "60%",
+                      }}
+                    />
+                    <div
+                      style={{
+                        height: "6px",
+                        background: "#e1e3e5",
+                        borderRadius: "4px",
+                        marginBottom: "4px",
+                        width: "90%",
+                      }}
+                    />
+                    <div
+                      style={{
+                        height: "6px",
+                        background: "#e1e3e5",
+                        borderRadius: "4px",
+                        width: "75%",
+                      }}
+                    />
                   </div>
                   <div
                     style={{
@@ -826,11 +1022,20 @@ export default function IndexPage() {
                     }}
                   >
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                      <path d="M6 4l6 4-6 4V4z" fill="#fff"/>
+                      <path d="M6 4l6 4-6 4V4z" fill="#fff" />
                     </svg>
                   </div>
                   {/* Sparkle accent */}
-                  <div style={{ position: "absolute", bottom: "16px", right: "20px", fontSize: "20px" }}>✨</div>
+                  <div
+                    style={{
+                      position: "absolute",
+                      bottom: "16px",
+                      right: "20px",
+                      fontSize: "20px",
+                    }}
+                  >
+                    ✨
+                  </div>
                 </div>
               </div>
             </div>
@@ -854,11 +1059,45 @@ export default function IndexPage() {
                     title: "Select a Product",
                     desc: "Choose a product from the table to get started.",
                     icon: (
-                      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                        <rect x="2" y="3" width="16" height="14" rx="2" stroke="#5c6ac4" strokeWidth="1.5"/>
-                        <rect x="5" y="7" width="10" height="1.5" rx="0.75" fill="#5c6ac4"/>
-                        <rect x="5" y="10" width="7" height="1.5" rx="0.75" fill="#8c9196"/>
-                        <rect x="5" y="13" width="8" height="1.5" rx="0.75" fill="#8c9196"/>
+                      <svg
+                        width="20"
+                        height="20"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                      >
+                        <rect
+                          x="2"
+                          y="3"
+                          width="16"
+                          height="14"
+                          rx="2"
+                          stroke="#5c6ac4"
+                          strokeWidth="1.5"
+                        />
+                        <rect
+                          x="5"
+                          y="7"
+                          width="10"
+                          height="1.5"
+                          rx="0.75"
+                          fill="#5c6ac4"
+                        />
+                        <rect
+                          x="5"
+                          y="10"
+                          width="7"
+                          height="1.5"
+                          rx="0.75"
+                          fill="#8c9196"
+                        />
+                        <rect
+                          x="5"
+                          y="13"
+                          width="8"
+                          height="1.5"
+                          rx="0.75"
+                          fill="#8c9196"
+                        />
                       </svg>
                     ),
                   },
@@ -867,9 +1106,25 @@ export default function IndexPage() {
                     title: "Customize Settings",
                     desc: "Adjust tone, length, and other generation options to match your needs.",
                     icon: (
-                      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                        <circle cx="10" cy="10" r="3" stroke="#5c6ac4" strokeWidth="1.5"/>
-                        <path d="M10 2v2M10 16v2M2 10h2M16 10h2M4.22 4.22l1.42 1.42M14.36 14.36l1.42 1.42M4.22 15.78l1.42-1.42M14.36 5.64l1.42-1.42" stroke="#5c6ac4" strokeWidth="1.5" strokeLinecap="round"/>
+                      <svg
+                        width="20"
+                        height="20"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                      >
+                        <circle
+                          cx="10"
+                          cy="10"
+                          r="3"
+                          stroke="#5c6ac4"
+                          strokeWidth="1.5"
+                        />
+                        <path
+                          d="M10 2v2M10 16v2M2 10h2M16 10h2M4.22 4.22l1.42 1.42M14.36 14.36l1.42 1.42M4.22 15.78l1.42-1.42M14.36 5.64l1.42-1.42"
+                          stroke="#5c6ac4"
+                          strokeWidth="1.5"
+                          strokeLinecap="round"
+                        />
                       </svg>
                     ),
                   },
@@ -878,8 +1133,18 @@ export default function IndexPage() {
                     title: "Generate Draft",
                     desc: "Click the generate button to create your AI-powered product description.",
                     icon: (
-                      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                        <path d="M10 2l2 5h5l-4 3 1.5 5L10 12l-4.5 3L7 10 3 7h5z" stroke="#5c6ac4" strokeWidth="1.5" fill="none"/>
+                      <svg
+                        width="20"
+                        height="20"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                      >
+                        <path
+                          d="M10 2l2 5h5l-4 3 1.5 5L10 12l-4.5 3L7 10 3 7h5z"
+                          stroke="#5c6ac4"
+                          strokeWidth="1.5"
+                          fill="none"
+                        />
                       </svg>
                     ),
                   },
@@ -888,10 +1153,30 @@ export default function IndexPage() {
                     title: "Save to Shopify",
                     desc: "Review the draft and save it directly to your Shopify store with one click.",
                     icon: (
-                      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                        <path d="M14 8.5C14 5.46 11.54 3 8.5 3S3 5.46 3 8.5 5.46 14 8.5 14" stroke="#5c6ac4" strokeWidth="1.5" strokeLinecap="round"/>
-                        <path d="M11 13l6 6" stroke="#5c6ac4" strokeWidth="1.5" strokeLinecap="round"/>
-                        <path d="M8.5 6v5M6 8.5h5" stroke="#5c6ac4" strokeWidth="1.5" strokeLinecap="round"/>
+                      <svg
+                        width="20"
+                        height="20"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                      >
+                        <path
+                          d="M14 8.5C14 5.46 11.54 3 8.5 3S3 5.46 3 8.5 5.46 14 8.5 14"
+                          stroke="#5c6ac4"
+                          strokeWidth="1.5"
+                          strokeLinecap="round"
+                        />
+                        <path
+                          d="M11 13l6 6"
+                          stroke="#5c6ac4"
+                          strokeWidth="1.5"
+                          strokeLinecap="round"
+                        />
+                        <path
+                          d="M8.5 6v5M6 8.5h5"
+                          stroke="#5c6ac4"
+                          strokeWidth="1.5"
+                          strokeLinecap="round"
+                        />
                       </svg>
                     ),
                   },
@@ -917,7 +1202,8 @@ export default function IndexPage() {
                         style={{
                           width: "24px",
                           height: "24px",
-                          background: "linear-gradient(135deg, #5c6ac4 0%, #4355be 100%)",
+                          background:
+                            "linear-gradient(135deg, #5c6ac4 0%, #4355be 100%)",
                           borderRadius: "50%",
                           display: "flex",
                           alignItems: "center",
@@ -932,10 +1218,23 @@ export default function IndexPage() {
                       </div>
                       <div style={{ opacity: 0.85 }}>{icon}</div>
                     </div>
-                    <div style={{ fontSize: "13px", fontWeight: "600", color: "#202223", marginBottom: "4px" }}>
+                    <div
+                      style={{
+                        fontSize: "13px",
+                        fontWeight: "600",
+                        color: "#202223",
+                        marginBottom: "4px",
+                      }}
+                    >
                       {title}
                     </div>
-                    <div style={{ fontSize: "13px", color: "#6d7175", lineHeight: "1.5" }}>
+                    <div
+                      style={{
+                        fontSize: "13px",
+                        color: "#6d7175",
+                        lineHeight: "1.5",
+                      }}
+                    >
                       {desc}
                     </div>
                   </div>
@@ -952,7 +1251,8 @@ export default function IndexPage() {
               onDismiss={() => setShowSuccessBanner(false)}
             >
               <Text as="p">
-                The product description has been successfully updated in Shopify.
+                The product description has been successfully updated in
+                Shopify.
               </Text>
             </Banner>
           )}
@@ -1003,7 +1303,11 @@ export default function IndexPage() {
                     <img
                       src={imageUrl}
                       alt={product.title}
-                      style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                      style={{
+                        width: "100%",
+                        height: "100%",
+                        objectFit: "cover",
+                      }}
                     />
                   </div>
                 </Box>
@@ -1017,9 +1321,7 @@ export default function IndexPage() {
                       Vendor: {product.vendor}
                     </Text>
                   )}
-                  {product.productType && (
-                    <Badge>{product.productType}</Badge>
-                  )}
+                  {product.productType && <Badge>{product.productType}</Badge>}
                   {!product.featuredImage && (
                     <Badge tone="warning">Using placeholder image</Badge>
                   )}
@@ -1061,7 +1363,11 @@ export default function IndexPage() {
                   </InlineStack>
 
                   <BlockStack gap="200">
-                    <InlineStack gap="200" align="space-between" blockAlign="end">
+                    <InlineStack
+                      gap="200"
+                      align="space-between"
+                      blockAlign="end"
+                    >
                       <TextField
                         label="Keywords (comma-separated)"
                         value={keywords}
@@ -1091,7 +1397,10 @@ export default function IndexPage() {
                     {keywordTags.length > 0 && (
                       <InlineStack gap="100" wrap>
                         {keywordTags.map((kw) => (
-                          <Tag key={kw} onRemove={() => handleKeywordTagRemove(kw)}>
+                          <Tag
+                            key={kw}
+                            onRemove={() => handleKeywordTagRemove(kw)}
+                          >
                             {kw}
                           </Tag>
                         ))}
@@ -1219,13 +1528,17 @@ export default function IndexPage() {
                           </Text>
                         </BlockStack>
                         <BlockStack gap="050">
-                          <Text as="p" variant="headingMd">{vibe}</Text>
+                          <Text as="p" variant="headingMd">
+                            {vibe}
+                          </Text>
                           <Text as="p" variant="bodySm" tone="subdued">
                             Style
                           </Text>
                         </BlockStack>
                         <BlockStack gap="050">
-                          <Text as="p" variant="headingMd">{format}</Text>
+                          <Text as="p" variant="headingMd">
+                            {format}
+                          </Text>
                           <Text as="p" variant="bodySm" tone="subdued">
                             Format
                           </Text>
