@@ -628,20 +628,35 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
       );
     }
 
-    const rawHtml = typeof parsed.body_html === "string" ? parsed.body_html : "";
-    const cleanHtml = sanitiseHtml(rawHtml);
+   const rawHtml = typeof parsed.body_html === "string" ? parsed.body_html : "";
+const cleanHtml = sanitiseHtml(rawHtml);
 
-    const gql = await adminGraphqlWithRetry<any>(
-      admin.graphql,
-      `#graphql
-      mutation UpdateDescription($id: ID!, $descriptionHtml: String!) {
-        productUpdate(input: { id: $id, descriptionHtml: $descriptionHtml }) {
-          product { id }
-          userErrors { field message }
-        }
-      }`,
-      { id: productGid, descriptionHtml: cleanHtml },
-    );
+// SEO fields — Shopify enforces ~70 char title / ~320 char description limits
+const seoTitle = typeof parsed.meta_title === "string"
+  ? parsed.meta_title.slice(0, 70)
+  : undefined;
+const seoDescription = typeof parsed.meta_description === "string"
+  ? parsed.meta_description.slice(0, 320)
+  : undefined;
+
+const gql = await adminGraphqlWithRetry<any>(
+  admin.graphql,
+  `#graphql
+  mutation UpdateDescription($id: ID!, $descriptionHtml: String!, $seo: SEOInput) {
+    productUpdate(input: { id: $id, descriptionHtml: $descriptionHtml, seo: $seo }) {
+      product { id }
+      userErrors { field message }
+    }
+  }`,
+  {
+    id: productGid,
+    descriptionHtml: cleanHtml,
+    seo:
+      seoTitle || seoDescription
+        ? { title: seoTitle, description: seoDescription }
+        : null,
+  },
+);
 
     const userErrors = gql.data?.productUpdate?.userErrors ?? [];
     if (Array.isArray(userErrors) && userErrors.length > 0) {

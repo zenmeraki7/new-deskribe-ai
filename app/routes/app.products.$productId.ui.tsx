@@ -944,10 +944,19 @@ export default function ProductEditorModalRoute() {
             )}
 
             {applySuccess && (
-              <Banner tone="success" title="Applied to Shopify">
-                The draft description is now live on this product.
-              </Banner>
-            )}
+  <Banner tone="success" title="Applied to Shopify">
+    <BlockStack gap="100">
+      <Text as="p" variant="bodySm">
+        The draft description is now live on this product.
+      </Text>
+      {(draftResult?.meta_title || draftResult?.meta_description) && (
+        <Text as="p" variant="bodySm">
+          SEO title and meta description were also updated on Shopify.
+        </Text>
+      )}
+    </BlockStack>
+  </Banner>
+)}
 
             {/* ── Generation settings card ── */}
             <Card>
@@ -1150,9 +1159,12 @@ export default function ProductEditorModalRoute() {
 
             {/* ── SEO preview ── */}
             {draftResult && (
-              <Card>
-                <BlockStack gap="200">
-                  <Text as="h3" variant="headingSm">SEO Preview</Text>
+               <Card>
+    <BlockStack gap="200">
+      <InlineStack align="space-between" blockAlign="center">
+        <Text as="h3" variant="headingSm">SEO Preview</Text>
+        {applySuccess && <Badge tone="success">Synced to Shopify</Badge>}
+      </InlineStack>
                   <div
                     style={{
                       padding: 16,
