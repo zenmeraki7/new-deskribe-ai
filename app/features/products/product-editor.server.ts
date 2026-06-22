@@ -6,7 +6,7 @@ import { z } from "zod";
 import { db } from "../../lib/db.server";
 import { requireAdminSession, type AdminAuthContext } from "../../lib/auth.server";
 import { enqueueGenerationJobs } from "../../lib/enqueue.server";
-import { suggestKeywords } from "../../lib/ai.server";
+import { suggestKeywords, generateImageAltText, generateImageAltTextBulk } from "../../lib/ai.server";
 import { sanitiseHtml, stripHtml } from "../../lib/html.server";
 
 import {
@@ -17,6 +17,7 @@ import {
   SHOPIFY_GQL_RETRY,
   SHOPIFY_NUMERIC_ID_RE,
   UUID_V4_RE,
+  MEDIA_IMAGE_GID_RE,
 } from "../../routes/app.products.$productId.constants";
 import type { LoaderData, ProductMeta, DraftResult } from "../../routes/app.products.$productId.types";
 import { checkAndIncrementRateLimit, checkAndIncrementKeywordLimit } from "../../lib/rateLimiter.server";
@@ -57,7 +58,9 @@ function normalizeProductGid(raw: string): string | null {
 function isUuidV4(s: string): boolean {
   return UUID_V4_RE.test(s);
 }
-
+function isValidMediaImageGid(s: string): boolean {
+  return MEDIA_IMAGE_GID_RE.test(s);
+}
 function nowIso() {
   return new Date().toISOString();
 }
@@ -221,7 +224,16 @@ async function adminGraphqlWithRetry<T>(
 
 async function fetchProductMeta(adminGraphql: (query: string, opts?: any) => Promise<Response>, productGid: string) {
   const gql = await adminGraphqlWithRetry<{
-    data?: { product?: ProductMeta | null };
+    data?: {
+      product?: {
+        id: string;
+        title: string;
+        productType: string;
+        vendor: string;
+        tags: string[];
+        media?: { edges: { node: { id: string; alt: string | null; image?: { url: string } | null } }[] };
+      } | null;
+    };
     errors?: any[];
   }>(
     adminGraphql,
@@ -233,12 +245,38 @@ async function fetchProductMeta(adminGraphql: (query: string, opts?: any) => Pro
         productType
         vendor
         tags
+        media(first: 50) {
+          edges {
+            node {
+              id
+              alt
+              ... on MediaImage {
+                image { url }
+              }
+            }
+          }
+        }
       }
     }`,
     { id: productGid },
   );
 
-  return gql.data?.product ?? null;
+  const p = gql.data?.product;
+  if (!p) return null;
+
+  const images = (p.media?.edges ?? [])
+    .map((e) => e.node)
+    .filter((n) => n?.image?.url)
+    .map((n) => ({ id: n.id, url: n.image!.url, altText: n.alt ?? null }));
+
+  return {
+    id: p.id,
+    title: p.title,
+    productType: p.productType,
+    vendor: p.vendor,
+    tags: p.tags,
+    images,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -774,6 +812,215 @@ const gql = await adminGraphqlWithRetry<any>(
       fetchedAt: nowIso(),
     });
   }
+// ── Intent: generate_alt_text (single image) ────────────────────────────
+if (intent === "generate_alt_text") {
+  const imageId = String(form.get("imageId") ?? "");
+  const imageIndex = Number(form.get("imageIndex") ?? 0);
+  const totalImages = Number(form.get("totalImages") ?? 1);
+
+  if (!isValidMediaImageGid(imageId)) {
+    return json({ ok: false, kind: "error", error: "Invalid image ID", code: "INVALID_IMAGE_ID" }, { status: 400 });
+  }
+  if (!Number.isFinite(imageIndex) || imageIndex < 0 || !Number.isFinite(totalImages) || totalImages < 1) {
+    return json({ ok: false, kind: "error", error: "Invalid image position", code: "INVALID_INPUT" }, { status: 400 });
+  }
+
+  const plan = await getShopPlan(billing);
+  let creditRequestId: string | null = null;
+
+  try {
+    creditRequestId = crypto.randomUUID();
+    const credit = await deductCredits({
+      shopId: shopDomain,
+      plan,
+      amount: CREDIT_COSTS.altTextGeneration,
+      requestId: creditRequestId,
+      kind: "generation",
+      metadata: { intent: "generate_alt_text", productId: productGid, imageId },
+    });
+
+    if (!credit.allowed) {
+      return json(
+        {
+          ok: false, kind: "error", code: "INSUFFICIENT_CREDITS", error: "Not enough credits",
+          creditsRemaining: credit.creditsRemaining, creditsLimit: credit.creditsLimit,
+          resetDate: credit.resetDate.toISOString(), plan,
+        },
+        { status: 402 },
+      );
+    }
+
+    const product = await fetchProductMeta(admin.graphql, productGid);
+    if (!product) throw new Response("Product not found", { status: 404 });
+
+    const altText = await generateImageAltText({
+      title: product.title,
+      vendor: product.vendor,
+      productType: product.productType,
+      imageIndex,
+      totalImages,
+    });
+
+    return json({ ok: true, kind: "generate_alt_text", imageId, altText });
+  } catch (err) {
+    if (creditRequestId) {
+      await refundCredits({
+        shopId: shopDomain, plan, amount: CREDIT_COSTS.altTextGeneration,
+        requestId: `${creditRequestId}:alt-text-failed`,
+        metadata: { intent: "generate_alt_text", productId: productGid, imageId },
+      });
+    }
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return json({ ok: false, kind: "error", error: message, code: "ALT_TEXT_FAILED" }, { status: 500 });
+  }
+}
+
+// ── Intent: generate_alt_text_bulk (all images for this product) ────────
+if (intent === "generate_alt_text_bulk") {
+  let imageIds: string[];
+  try {
+    imageIds = JSON.parse(String(form.get("imageIds") ?? "[]"));
+  } catch {
+    return json({ ok: false, kind: "error", error: "Invalid imageIds", code: "INVALID_INPUT" }, { status: 400 });
+  }
+
+  if (!Array.isArray(imageIds) || imageIds.length === 0 || imageIds.length > 50) {
+    return json({ ok: false, kind: "error", error: "Invalid image list", code: "INVALID_INPUT" }, { status: 400 });
+  }
+  if (!imageIds.every((id) => typeof id === "string" && isValidMediaImageGid(id))) {
+    return json({ ok: false, kind: "error", error: "Invalid image ID in list", code: "INVALID_IMAGE_ID" }, { status: 400 });
+  }
+
+  const plan = await getShopPlan(billing);
+  const totalCost = CREDIT_COSTS.altTextGeneration * imageIds.length;
+  let creditRequestId: string | null = null;
+
+  try {
+    creditRequestId = crypto.randomUUID();
+    const credit = await deductCredits({
+      shopId: shopDomain,
+      plan,
+      amount: totalCost,
+      requestId: creditRequestId,
+      kind: "generation",
+      metadata: { intent: "generate_alt_text_bulk", productId: productGid, count: imageIds.length },
+    });
+
+    if (!credit.allowed) {
+      return json(
+        {
+          ok: false, kind: "error", code: "INSUFFICIENT_CREDITS", error: "Not enough credits",
+          creditsRemaining: credit.creditsRemaining, creditsLimit: credit.creditsLimit,
+          resetDate: credit.resetDate.toISOString(), plan,
+        },
+        { status: 402 },
+      );
+    }
+
+    const product = await fetchProductMeta(admin.graphql, productGid);
+    if (!product) throw new Response("Product not found", { status: 404 });
+
+    const altTexts = await generateImageAltTextBulk({
+      title: product.title,
+      vendor: product.vendor,
+      productType: product.productType,
+      imageCount: imageIds.length,
+    });
+
+    const results = imageIds.map((imageId, i) => ({ imageId, altText: altTexts[i] ?? "" }));
+    return json({ ok: true, kind: "generate_alt_text_bulk", results });
+  } catch (err) {
+    if (creditRequestId) {
+      await refundCredits({
+        shopId: shopDomain, plan, amount: totalCost,
+        requestId: `${creditRequestId}:alt-text-bulk-failed`,
+        metadata: { intent: "generate_alt_text_bulk", productId: productGid },
+      });
+    }
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return json({ ok: false, kind: "error", error: message, code: "ALT_TEXT_BULK_FAILED" }, { status: 500 });
+  }
+}
+
+// ── Intent: apply_alt_text (single image) ────────────────────────────────
+if (intent === "apply_alt_text") {
+  const imageId = String(form.get("imageId") ?? "");
+  const altText = String(form.get("altText") ?? "").trim().slice(0, 512);
+
+  if (!isValidMediaImageGid(imageId)) {
+    return json({ ok: false, kind: "error", error: "Invalid image ID", code: "INVALID_IMAGE_ID" }, { status: 400 });
+  }
+  if (!altText) {
+    return json({ ok: false, kind: "error", error: "Alt text cannot be empty", code: "INVALID_INPUT" }, { status: 400 });
+  }
+
+  const cleanAlt = stripHtml(altText);
+
+  const gql = await adminGraphqlWithRetry<any>(
+    admin.graphql,
+    `#graphql
+    mutation UpdateImageAlt($productId: ID!, $media: [UpdateMediaInput!]!) {
+      productUpdateMedia(productId: $productId, media: $media) {
+        media { id, alt }
+        mediaUserErrors { field, message }
+      }
+    }`,
+    { productId: productGid, media: [{ id: imageId, alt: cleanAlt }] },
+  );
+
+  const userErrors = gql.data?.productUpdateMedia?.mediaUserErrors ?? [];
+  if (Array.isArray(userErrors) && userErrors.length > 0) {
+    const msg = userErrors.map((e: { message: string }) => e.message).join("; ");
+    return json({ ok: false, kind: "error", error: msg, code: "SHOPIFY_USER_ERRORS" }, { status: 422 });
+  }
+
+  return json({ ok: true, kind: "apply_alt_text", imageId, applied: true });
+}
+
+// ── Intent: apply_alt_text_bulk ──────────────────────────────────────────
+if (intent === "apply_alt_text_bulk") {
+  let items: { imageId: string; altText: string }[];
+  try {
+    items = JSON.parse(String(form.get("items") ?? "[]"));
+  } catch {
+    return json({ ok: false, kind: "error", error: "Invalid items", code: "INVALID_INPUT" }, { status: 400 });
+  }
+
+  if (!Array.isArray(items) || items.length === 0 || items.length > 50) {
+    return json({ ok: false, kind: "error", error: "Invalid items list", code: "INVALID_INPUT" }, { status: 400 });
+  }
+
+  const media: { id: string; alt: string }[] = [];
+  for (const item of items) {
+    if (
+      !item || typeof item.imageId !== "string" || !isValidMediaImageGid(item.imageId) ||
+      typeof item.altText !== "string" || !item.altText.trim()
+    ) {
+      return json({ ok: false, kind: "error", error: "Invalid item in list", code: "INVALID_INPUT" }, { status: 400 });
+    }
+    media.push({ id: item.imageId, alt: stripHtml(item.altText.trim().slice(0, 512)) });
+  }
+
+  const gql = await adminGraphqlWithRetry<any>(
+    admin.graphql,
+    `#graphql
+    mutation UpdateImageAltBulk($productId: ID!, $media: [UpdateMediaInput!]!) {
+      productUpdateMedia(productId: $productId, media: $media) {
+        media { id, alt }
+        mediaUserErrors { field, message }
+      }
+    }`,
+    { productId: productGid, media },
+  );
+
+  const userErrors = gql.data?.productUpdateMedia?.mediaUserErrors ?? [];
+  if (Array.isArray(userErrors) && userErrors.length > 0) {
+    const msg = userErrors.map((e: { message: string }) => e.message).join("; ");
+    return json({ ok: false, kind: "error", error: msg, code: "SHOPIFY_USER_ERRORS" }, { status: 422 });
+  }
+
+  return json({ ok: true, kind: "apply_alt_text_bulk", applied: true, count: media.length });
+}
 
   return json({ ok: false, kind: "error", error: "Invalid intent", code: "INVALID_INTENT" }, { status: 400 });
 }

@@ -13,12 +13,19 @@
 export const JOB_STATUSES = ["PENDING", "PROCESSING", "COMPLETED", "FAILED", "CANCELLED"] as const;
 export type JobStatus = (typeof JOB_STATUSES)[number];
 
+export interface ProductImage {
+  id: string; // gid://shopify/MediaImage/...
+  url: string;
+  altText: string | null;
+}
+
 export interface ProductMeta {
   id: string; // gid://shopify/Product/...
   title: string;
   productType: string;
   vendor: string;
   tags: string[];
+  images: ProductImage[];
 }
 
 export interface ActiveJob {
@@ -55,6 +62,7 @@ export interface CustomTemplate {
 }
 
 
+
 export interface LoaderData {
   product: ProductMeta;
   descriptionHtml: string | null; // lazy-loaded by action intent fetch_description
@@ -78,7 +86,11 @@ export type ActionResult =
   | { ok: true; kind: "suggest_keywords"; keywords: string[] }
   | { ok: true; kind: "fetch_description"; descriptionHtml: string; descriptionText: string }
   | { ok: true; kind: "create_template"; template: CustomTemplate }
-  | { ok: true; kind: "delete_template" }  
+  | { ok: true; kind: "delete_template" }
+  | { ok: true; kind: "generate_alt_text"; imageId: string; altText: string }                       // NEW
+  | { ok: true; kind: "generate_alt_text_bulk"; results: { imageId: string; altText: string }[] }   // NEW
+  | { ok: true; kind: "apply_alt_text"; imageId: string; applied: true }                            // NEW
+  | { ok: true; kind: "apply_alt_text_bulk"; applied: true; count: number }                         // NEW
   | { ok: false; kind: "error"; error: string; code?: string };
 
 /**

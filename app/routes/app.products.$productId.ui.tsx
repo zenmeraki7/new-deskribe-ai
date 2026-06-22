@@ -105,6 +105,7 @@ function useJobPoll() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [lastCompletedJobId, setLastCompletedJobId] = useState<string | null>(null);
 
+
   const terminal = useMemo(
     () => new Set<PollStatus>(["COMPLETED", "FAILED", "CANCELLED"]),
     [],
@@ -432,6 +433,12 @@ export default function ProductEditorModalRoute() {
   const descFetcher = useFetcher<any>();
   const keywordFetcher = useFetcher<any>();
   const templateFetcher = useFetcher<any>();
+
+  const [altTextDrafts, setAltTextDrafts] = useState<Record<string, string>>({});
+  const altTextFetcher = useFetcher<any>();
+  const altTextBulkFetcher = useFetcher<any>();
+  const applyAltTextFetcher = useFetcher<any>();
+  const applyAltTextBulkFetcher = useFetcher<any>();
 
   // ── Polling ───────────────────────────────────────────────────────────────
   const {
@@ -786,6 +793,81 @@ export default function ProductEditorModalRoute() {
     credits.creditsRemaining,
     CREDIT_COSTS.keywordSuggestion,
   );
+
+  const handleGenerateAltText = useCallback((imageId: string, imageIndex: number, totalImages: number) => {
+  if (!hasCredits(credits.creditsRemaining, CREDIT_COSTS.altTextGeneration)) {
+    setLocalCreditError("Not enough credits");
+    return;
+  }
+  setLocalCreditError("");
+  const fd = new FormData();
+  fd.set("intent", "generate_alt_text");
+  fd.set("imageId", imageId);
+  fd.set("imageIndex", String(imageIndex));
+  fd.set("totalImages", String(totalImages));
+  altTextFetcher.submit(fd, { method: "post" });
+}, [altTextFetcher, credits.creditsRemaining]);
+
+useEffect(() => {
+  if (altTextFetcher.data?.ok && altTextFetcher.data?.kind === "generate_alt_text") {
+    const { imageId, altText } = altTextFetcher.data;
+    setAltTextDrafts((prev) => ({ ...prev, [imageId]: altText }));
+  }
+}, [altTextFetcher.data]);
+
+const handleGenerateAllAltText = useCallback(() => {
+  const totalCost = CREDIT_COSTS.altTextGeneration * product.images.length;
+  if (!hasCredits(credits.creditsRemaining, totalCost)) {
+    setLocalCreditError("Not enough credits");
+    return;
+  }
+  setLocalCreditError("");
+  const fd = new FormData();
+  fd.set("intent", "generate_alt_text_bulk");
+  fd.set("imageIds", JSON.stringify(product.images.map((img) => img.id)));
+  altTextBulkFetcher.submit(fd, { method: "post" });
+}, [altTextBulkFetcher, credits.creditsRemaining, product.images]);
+
+useEffect(() => {
+  if (altTextBulkFetcher.data?.ok && altTextBulkFetcher.data?.kind === "generate_alt_text_bulk") {
+    const results = altTextBulkFetcher.data.results as { imageId: string; altText: string }[];
+    setAltTextDrafts((prev) => {
+      const next = { ...prev };
+      for (const r of results) next[r.imageId] = r.altText;
+      return next;
+    });
+  }
+}, [altTextBulkFetcher.data]);
+
+const handleApplyAltText = useCallback((imageId: string) => {
+  const altText = altTextDrafts[imageId];
+  if (!altText?.trim()) return;
+  const fd = new FormData();
+  fd.set("intent", "apply_alt_text");
+  fd.set("imageId", imageId);
+  fd.set("altText", altText);
+  applyAltTextFetcher.submit(fd, { method: "post" });
+}, [altTextDrafts, applyAltTextFetcher]);
+
+const handleApplyAllAltText = useCallback(() => {
+  const items = product.images
+    .filter((img) => altTextDrafts[img.id]?.trim())
+    .map((img) => ({ imageId: img.id, altText: altTextDrafts[img.id] }));
+  if (items.length === 0) return;
+  const fd = new FormData();
+  fd.set("intent", "apply_alt_text_bulk");
+  fd.set("items", JSON.stringify(items));
+  applyAltTextBulkFetcher.submit(fd, { method: "post" });
+}, [altTextDrafts, product.images, applyAltTextBulkFetcher]);
+
+// Refresh loader data (so "Current:" text updates) after a successful apply
+useEffect(() => {
+  if (applyAltTextFetcher.data?.ok) revalidator.revalidate();
+}, [applyAltTextFetcher.data, revalidator]);
+
+useEffect(() => {
+  if (applyAltTextBulkFetcher.data?.ok) revalidator.revalidate();
+}, [applyAltTextBulkFetcher.data, revalidator]);
 
   const handleGenerate = useCallback(() => {
     if (isGenerationBusy) return;
@@ -1142,6 +1224,110 @@ export default function ProductEditorModalRoute() {
                 /> */}
               </BlockStack>
             </Card>
+
+            {product.images.length > 0 && (
+  <Card>
+    <BlockStack gap="300">
+      <InlineStack align="space-between" blockAlign="center">
+        <Text as="h3" variant="headingSm">Image Alt Text</Text>
+        <Button
+          onClick={handleGenerateAllAltText}
+          loading={altTextBulkFetcher.state !== "idle"}
+          disabled={!hasCredits(credits.creditsRemaining, CREDIT_COSTS.altTextGeneration * product.images.length)}
+          size="slim"
+        >
+          ✨ Generate all ({formatCredits(CREDIT_COSTS.altTextGeneration * product.images.length)} credits)
+        </Button>
+      </InlineStack>
+
+      {altTextFetcher.data?.ok === false && (
+        <Banner tone="critical" title="Generation failed">
+          {String(altTextFetcher.data.error ?? "")}
+        </Banner>
+      )}
+      {altTextBulkFetcher.data?.ok === false && (
+        <Banner tone="critical" title="Bulk generation failed">
+          {String(altTextBulkFetcher.data.error ?? "")}
+        </Banner>
+      )}
+      {(applyAltTextFetcher.data?.ok === false || applyAltTextBulkFetcher.data?.ok === false) && (
+        <Banner tone="critical" title="Failed to apply alt text">
+          {String(applyAltTextFetcher.data?.error ?? applyAltTextBulkFetcher.data?.error ?? "")}
+        </Banner>
+      )}
+
+      {product.images.map((img, idx) => {
+        const draft = altTextDrafts[img.id] ?? "";
+        const isGeneratingThis =
+          altTextFetcher.state !== "idle" && altTextFetcher.formData?.get("imageId") === img.id;
+        const isApplyingThis =
+          applyAltTextFetcher.state !== "idle" && applyAltTextFetcher.formData?.get("imageId") === img.id;
+        const hasDraft = draft.trim().length > 0;
+
+        return (
+          <InlineStack key={img.id} gap="300" blockAlign="start" wrap={false}>
+            <img
+              src={img.url}
+              alt=""
+              style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 8, border: "1px solid #e1e3e5", flexShrink: 0 }}
+            />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <BlockStack gap="150">
+                {img.altText && (
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    Current: {img.altText}
+                  </Text>
+                )}
+                <TextField
+                  label={`Image ${idx + 1} alt text`}
+                  labelHidden
+                  value={draft}
+                  onChange={(v) => setAltTextDrafts((prev) => ({ ...prev, [img.id]: clampTextInput(v, 200) }))}
+                  placeholder="No draft yet — click Generate"
+                  autoComplete="off"
+                  helpText={`${draft.length}/125 characters${draft.length > 125 ? " (longer than recommended)" : ""}`}
+                />
+                <InlineStack gap="200">
+                  <Button
+                    size="slim"
+                    onClick={() => handleGenerateAltText(img.id, idx, product.images.length)}
+                    loading={isGeneratingThis}
+                    disabled={!hasCredits(credits.creditsRemaining, CREDIT_COSTS.altTextGeneration)}
+                  >
+                    {hasDraft ? "Regenerate" : "Generate"}
+                  </Button>
+                  <Button
+                    size="slim"
+                    variant="primary"
+                    tone="success"
+                    disabled={!hasDraft}
+                    loading={isApplyingThis}
+                    onClick={() => handleApplyAltText(img.id)}
+                  >
+                    Apply
+                  </Button>
+                </InlineStack>
+              </BlockStack>
+            </div>
+          </InlineStack>
+        );
+      })}
+
+      {Object.values(altTextDrafts).some((v) => v?.trim()) && (
+        <InlineStack align="end">
+          <Button
+            variant="primary"
+            tone="success"
+            onClick={handleApplyAllAltText}
+            loading={applyAltTextBulkFetcher.state !== "idle"}
+          >
+            Apply all drafts to Shopify
+          </Button>
+        </InlineStack>
+      )}
+    </BlockStack>
+  </Card>
+)}
 
             {/* ── Generating progress ── */}
             {isGenerating && (
