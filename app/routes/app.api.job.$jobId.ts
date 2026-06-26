@@ -136,12 +136,26 @@ function shapeResult(raw: unknown): { result: Record<string, unknown> | null; co
 }
 
 export async function loader({ request, params }: LoaderFunctionArgs) {
-  // Hard requirement: every request authenticated and shop-scoped
-  const { shopDomain } = await requireAdminSession(request);
+  // ── Auth — handle token expiry gracefully during polling ──────────────────
+  let shopDomain: string;
+  try {
+    const session = await requireAdminSession(request);
+    shopDomain = session.shopDomain;
+  } catch (err) {
+    const res: PollResponse = {
+      status: "FAILED",
+      result: null,
+      errorMessage: "Session expired — please refresh the page.",
+      code: "AUTH_FAILED",
+    };
+    return json(res, {
+      status: 401,
+      headers: noStoreHeaders(),
+    });
+  }
 
   const jobId = params.jobId;
 
-  // Shape guard (fail closed)
   if (!jobId || !UUID_V4_RE.test(jobId)) {
     const res: PollResponse = {
       status: "FAILED",
@@ -155,33 +169,46 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     });
   }
 
-  // Single indexed read — shopDomain scoping is the security boundary
-  const job = await db.generationJob.findFirst({
-    where: { id: jobId, shopDomain },
-    select: {
-      status: true,
-      result: true,
-      errorMessage: true,
-    },
-  });
-
-  if (!job) {
+  let job;
+  try {
+    job = await db.generationJob.findFirst({
+      where: { id: jobId, shopDomain },
+      select: {
+        status: true,
+        result: true,
+        errorMessage: true,
+      },
+    });
+  } catch (err) {
     const res: PollResponse = {
       status: "FAILED",
       result: null,
-      errorMessage: "Job not found",
-      code: "JOB_NOT_FOUND",
+      errorMessage: "Database error — please try again.",
+      code: "DB_ERROR",
     };
     return json(res, {
-      status: 404,
+      status: 500,
       headers: noStoreHeaders(),
     });
   }
 
-  // Sanitize + shape the result payload defensively
-  const shaped = shapeResult(job.result);
+  if (!job) {
+    const res: PollResponse = {
+      status: "PENDING",  // Return PENDING instead of FAILED for not-found
+      result: null,       // so the poller keeps trying while job is queuing
+      errorMessage: null,
+      code: "JOB_NOT_FOUND",
+    };
+    return json(res, {
+      status: 200,        // 200 so Remix doesn't swallow the response
+      headers: noStoreHeaders(),
+    });
+  }
 
-  const safeError = job.errorMessage ? clampString(job.errorMessage, LIMITS.MAX_ERROR_CHARS) : null;
+  const shaped = shapeResult(job.result);
+  const safeError = job.errorMessage
+    ? clampString(job.errorMessage, LIMITS.MAX_ERROR_CHARS)
+    : null;
 
   const res: PollResponse = {
     status: String(job.status),
@@ -192,6 +219,5 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
 
   return json(res, {
     headers: noStoreHeaders(),
-    
   });
 }

@@ -390,3 +390,63 @@ Example output for 3 images:
   while (out.length < imageCount) out.push(clampAltText(title));
   return out.slice(0, imageCount);
 }
+
+// Add this new function to app/lib/ai.server.ts
+
+export async function generateMetaOnly(params: {
+  title: string;
+  vendor: string;
+  productType: string;
+  tags: string[];
+  keywords: string[];
+}): Promise<{ meta_title: string; meta_description: string }> {
+  const { title, vendor, productType, tags, keywords } = params;
+
+  const prompt = `
+You are an SEO expert for Shopify stores.
+
+Generate ONLY a meta title and meta description for this product.
+
+Product: ${title}
+Brand: ${vendor}
+Category: ${productType}
+Tags: ${tags.join(", ")}
+Keywords: ${keywords.join(", ")}
+
+Rules:
+- meta_title: under 60 characters, include primary keyword naturally
+- meta_description: under 155 characters, compelling and keyword-rich
+- Return ONLY valid JSON, no markdown
+
+{"meta_title": "...", "meta_description": "..."}
+`;
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4.1-mini",
+    temperature: 0.5,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: "You are an SEO copywriter. Always respond with valid JSON only." },
+      { role: "user", content: prompt },
+    ],
+  });
+
+  const raw = completion.choices?.[0]?.message?.content?.trim() ?? "";
+  const text = stripJsonFences(raw);
+
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error("AI returned invalid JSON for meta");
+  }
+
+  const schema = z.object({
+    meta_title: z.string().max(70),
+    meta_description: z.string().max(320),
+  });
+
+  const parsed = schema.safeParse(json);
+  if (!parsed.success) throw new Error("Invalid AI meta output");
+  return parsed.data;
+}

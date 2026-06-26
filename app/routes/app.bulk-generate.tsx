@@ -5,7 +5,7 @@ import type { ActionFunctionArgs } from "@remix-run/node";
 import crypto from "node:crypto";
 import { requireAdminSession } from "../lib/auth.server";
 import { enqueueGenerationJobs } from "../lib/enqueue.server";
-import { suggestKeywordsBulk } from "../lib/ai.server";
+import { suggestKeywordsBulk , generateMetaOnly, generateImageAltTextBulk } from "../lib/ai.server";
 import {
   checkAndIncrementKeywordLimit,
   checkAndIncrementRateLimit,
@@ -337,6 +337,324 @@ export async function action({ request }: ActionFunctionArgs) {
     );
     }
   }
+  // ── Intent: bulk_generate_meta ───────────────────────────────────────────
+if (intent === "bulk_generate_meta") {
+  let productIds: string[];
+  try {
+    productIds = JSON.parse(String(form.get("productIds") ?? "[]"));
+  } catch {
+    return json({ ok: false, error: "Invalid productIds", code: "INVALID_INPUT" }, { status: 400 });
+  }
 
+  if (!Array.isArray(productIds) || productIds.length === 0 || productIds.length > 50) {
+    return json({ ok: false, error: "Invalid product list", code: "INVALID_INPUT" }, { status: 400 });
+  }
+
+  const plan = await getShopPlan(billing);
+  const totalCost = CREDIT_COSTS.metaGeneration * productIds.length;
+  let creditRequestId: string | null = null;
+
+  try {
+    creditRequestId = crypto.randomUUID();
+    const credit = await deductCredits({
+      shopId: shopDomain,
+      plan,
+      amount: totalCost,
+      requestId: creditRequestId,
+      kind: "generation",
+      metadata: { intent: "bulk_generate_meta", count: productIds.length },
+    });
+
+    if (!credit.allowed) {
+      return json(
+        { ok: false, code: "INSUFFICIENT_CREDITS", error: "Not enough credits",
+          creditsRemaining: credit.creditsRemaining, plan },
+        { status: 402 },
+      );
+    }
+
+    const keywordsCsv = String(form.get("keywords") ?? "");
+    const keywords = normalizeKeywordList(keywordsCsv);
+
+    const results: { productId: string; meta_title: string; meta_description: string }[] = [];
+
+    for (const productGid of productIds) {
+      try {
+        const product = await fetchProductMeta(admin.graphql, productGid);
+        if (!product) continue;
+
+        const meta = await generateMetaOnly({
+          title: product.title,
+          vendor: product.vendor,
+          productType: product.productType,
+          tags: product.tags,
+          keywords,
+        });
+
+        results.push({ productId: productGid, ...meta });
+      } catch (err) {
+        console.error(`bulk_generate_meta: failed for ${productGid}`, err);
+      }
+    }
+
+    // Refund for any that failed
+    const failedCount = productIds.length - results.length;
+    if (failedCount > 0 && creditRequestId) {
+      await refundCredits({
+        shopId: shopDomain,
+        plan,
+        amount: CREDIT_COSTS.metaGeneration * failedCount,
+        requestId: `${creditRequestId}:partial-refund`,
+        metadata: { intent: "bulk_generate_meta", failedCount },
+      });
+    }
+
+    return json({ ok: true, kind: "bulk_generate_meta", results });
+  } catch (err) {
+    if (creditRequestId) {
+      await refundCredits({
+        shopId: shopDomain,
+        plan,
+        amount: totalCost,
+        requestId: `${creditRequestId}:failed`,
+        metadata: { intent: "bulk_generate_meta" },
+      });
+    }
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return json({ ok: false, error: message, code: "BULK_META_FAILED" }, { status: 500 });
+  }
+}
+
+// ── Intent: bulk_apply_meta ──────────────────────────────────────────────
+if (intent === "bulk_apply_meta") {
+  let items: { productId: string; meta_title: string; meta_description: string }[];
+  try {
+    items = JSON.parse(String(form.get("items") ?? "[]"));
+  } catch {
+    return json({ ok: false, error: "Invalid items", code: "INVALID_INPUT" }, { status: 400 });
+  }
+
+  if (!Array.isArray(items) || items.length === 0 || items.length > 50) {
+    return json({ ok: false, error: "Invalid items list", code: "INVALID_INPUT" }, { status: 400 });
+  }
+
+  let succeeded = 0;
+  let failed = 0;
+
+  for (const item of items) {
+    if (
+      !item ||
+      typeof item.productId !== "string" ||
+      !PRODUCT_GID_RE.test(item.productId)
+    ) {
+      failed++;
+      continue;
+    }
+
+    try {
+      const gql = await adminGraphqlWithRetry<any>(
+        admin.graphql,
+        `#graphql
+        mutation UpdateMeta($id: ID!, $seo: SEOInput) {
+          productUpdate(input: { id: $id, seo: $seo }) {
+            product { id }
+            userErrors { field message }
+          }
+        }`,
+        {
+          id: item.productId,
+          seo: {
+            ...(item.meta_title && { title: item.meta_title.slice(0, 70) }),
+            ...(item.meta_description && { description: item.meta_description.slice(0, 320) }),
+          },
+        },
+      );
+
+      const userErrors = gql.data?.productUpdate?.userErrors ?? [];
+      if (userErrors.length > 0) {
+        failed++;
+      } else {
+        succeeded++;
+      }
+    } catch (err) {
+      console.error(`bulk_apply_meta: failed for ${item.productId}`, err);
+      failed++;
+    }
+  }
+
+  return json({ ok: true, kind: "bulk_apply_meta", succeeded, failed, total: items.length });
+}
+
+// ── Intent: bulk_generate_alt_text ──────────────────────────────────────
+if (intent === "bulk_generate_alt_text") {
+  let productIds: string[];
+  try {
+    productIds = JSON.parse(String(form.get("productIds") ?? "[]"));
+  } catch {
+    return json({ ok: false, error: "Invalid productIds", code: "INVALID_INPUT" }, { status: 400 });
+  }
+
+  if (!Array.isArray(productIds) || productIds.length === 0 || productIds.length > 50) {
+    return json({ ok: false, error: "Invalid product list", code: "INVALID_INPUT" }, { status: 400 });
+  }
+
+  const plan = await getShopPlan(billing);
+
+  // Fetch all products first to know the total image count for credit deduction
+  const productMetas = await Promise.all(
+    productIds.map((id) => fetchProductMeta(admin.graphql, id).catch(() => null)),
+  );
+
+  const totalImages = productMetas.reduce(
+    (sum, p) => sum + (p?.images.length ?? 0),
+    0,
+  );
+
+  if (totalImages === 0) {
+    return json({ ok: true, kind: "bulk_generate_alt_text", results: [] });
+  }
+
+  const totalCost = CREDIT_COSTS.altTextGeneration * totalImages;
+  let creditRequestId: string | null = null;
+
+  try {
+    creditRequestId = crypto.randomUUID();
+    const credit = await deductCredits({
+      shopId: shopDomain,
+      plan,
+      amount: totalCost,
+      requestId: creditRequestId,
+      kind: "generation",
+      metadata: { intent: "bulk_generate_alt_text", totalImages },
+    });
+
+    if (!credit.allowed) {
+      return json(
+        { ok: false, code: "INSUFFICIENT_CREDITS", error: "Not enough credits",
+          creditsRemaining: credit.creditsRemaining, plan },
+        { status: 402 },
+      );
+    }
+
+    const results: { productId: string; imageId: string; altText: string }[] = [];
+    let processedImages = 0;
+
+    for (const product of productMetas) {
+      if (!product || product.images.length === 0) continue;
+
+      try {
+        const altTexts = await generateImageAltTextBulk({
+          title: product.title,
+          vendor: product.vendor,
+          productType: product.productType,
+          imageCount: product.images.length,
+        });
+
+        product.images.forEach((img, i) => {
+          results.push({
+            productId: product.id,
+            imageId: img.id,
+            altText: altTexts[i] ?? "",
+          });
+        });
+
+        processedImages += product.images.length;
+      } catch (err) {
+        console.error(`bulk_generate_alt_text: failed for ${product.id}`, err);
+      }
+    }
+
+    // Refund for unprocessed images
+    const unprocessed = totalImages - processedImages;
+    if (unprocessed > 0 && creditRequestId) {
+      await refundCredits({
+        shopId: shopDomain,
+        plan,
+        amount: CREDIT_COSTS.altTextGeneration * unprocessed,
+        requestId: `${creditRequestId}:partial-refund`,
+        metadata: { intent: "bulk_generate_alt_text", unprocessed },
+      });
+    }
+
+    return json({ ok: true, kind: "bulk_generate_alt_text", results });
+  } catch (err) {
+    if (creditRequestId) {
+      await refundCredits({
+        shopId: shopDomain,
+        plan,
+        amount: totalCost,
+        requestId: `${creditRequestId}:failed`,
+        metadata: { intent: "bulk_generate_alt_text" },
+      });
+    }
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return json({ ok: false, error: message, code: "BULK_ALT_TEXT_FAILED" }, { status: 500 });
+  }
+}
+
+// ── Intent: bulk_apply_alt_text ──────────────────────────────────────────
+if (intent === "bulk_apply_alt_text") {
+  let items: { productId: string; imageId: string; altText: string }[];
+  try {
+    items = JSON.parse(String(form.get("items") ?? "[]"));
+  } catch {
+    return json({ ok: false, error: "Invalid items", code: "INVALID_INPUT" }, { status: 400 });
+  }
+
+  if (!Array.isArray(items) || items.length === 0 || items.length > 500) {
+    return json({ ok: false, error: "Invalid items list", code: "INVALID_INPUT" }, { status: 400 });
+  }
+
+  // Group by productId so we can batch per product
+  const byProduct = new Map<string, { imageId: string; altText: string }[]>();
+  for (const item of items) {
+    if (
+      !item ||
+      typeof item.productId !== "string" ||
+      typeof item.imageId !== "string" ||
+      typeof item.altText !== "string" ||
+      !PRODUCT_GID_RE.test(item.productId) ||
+      !MEDIA_IMAGE_GID_RE.test(item.imageId)
+    ) continue;
+
+    const existing = byProduct.get(item.productId) ?? [];
+    existing.push({ imageId: item.imageId, altText: stripHtml(item.altText.trim().slice(0, 512)) });
+    byProduct.set(item.productId, existing);
+  }
+
+  let succeeded = 0;
+  let failed = 0;
+
+  for (const [productGid, mediaItems] of byProduct.entries()) {
+    try {
+      const gql = await adminGraphqlWithRetry<any>(
+        admin.graphql,
+        `#graphql
+        mutation UpdateImageAltBulk($productId: ID!, $media: [UpdateMediaInput!]!) {
+          productUpdateMedia(productId: $productId, media: $media) {
+            media { id alt }
+            mediaUserErrors { field message }
+          }
+        }`,
+        {
+          productId: productGid,
+          media: mediaItems.map((m) => ({ id: m.imageId, alt: m.altText })),
+        },
+      );
+
+      const userErrors = gql.data?.productUpdateMedia?.mediaUserErrors ?? [];
+      if (userErrors.length > 0) {
+        failed += mediaItems.length;
+      } else {
+        succeeded += mediaItems.length;
+      }
+    } catch (err) {
+      console.error(`bulk_apply_alt_text: failed for ${productGid}`, err);
+      failed += mediaItems.length;
+    }
+  }
+
+  return json({ ok: true, kind: "bulk_apply_alt_text", succeeded, failed, applied: succeeded });
+}
   return json({ ok: false, error: "Unknown intent" }, { status: 400 });
 }

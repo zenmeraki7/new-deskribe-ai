@@ -13,6 +13,7 @@ export const CREDIT_COSTS = {
   bulkProductGeneration: 1,
   keywordSuggestion: 0.5,
   altTextGeneration: 0.5,
+  metaGeneration: 0.5, 
 } as const;
 
 export const CREDIT_RULES = [
@@ -41,4 +42,41 @@ export function usageProgress(creditsUsed: number, creditsLimit: number) {
 
 export function hasCredits(creditsRemaining: number, cost: number) {
   return creditsRemaining >= cost;
+}
+
+
+export const PLAN_FEATURES: Record<CreditPlan, {
+  altText: boolean;
+  metaGeneration: boolean;
+  customTemplates: boolean;
+  bulkGeneration: boolean;
+}> = {
+  free: {
+    altText: false,
+    metaGeneration: false,
+    customTemplates: false,
+    bulkGeneration: false,
+  },
+  basic: {
+    altText: true,
+    metaGeneration: true,
+    customTemplates: false,
+    bulkGeneration: true,
+  },
+  advanced: {
+    altText: true,
+    metaGeneration: true,
+    customTemplates: true,
+    bulkGeneration: true,
+  },
+  pro: {
+    altText: true,
+    metaGeneration: true,
+    customTemplates: true,
+    bulkGeneration: true,
+  },
+};
+
+export function canUseFeature(plan: CreditPlan, feature: keyof typeof PLAN_FEATURES[CreditPlan]): boolean {
+  return PLAN_FEATURES[plan]?.[feature] ?? false;
 }

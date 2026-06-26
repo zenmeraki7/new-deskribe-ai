@@ -1,11 +1,9 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "8080a194096cb602f516d4bb1841df93"
-name = "test-meta-new"
-application_url = "https://background-witnesses-bars-angeles.trycloudflare.com"
-
+client_id = "edfa37793692fabbeabe10ec4f7e0151"
+name = "development"
+application_url = "https://checking-due-children-favour.trycloudflare.com"
 embedded = true
-name = "development-app"
 
 [webhooks]
 api_version = "2026-07"
@@ -15,12 +13,7 @@ api_version = "2026-07"
 scopes = "write_products"
 
 [auth]
-redirect_urls = [
-  "https://background-witnesses-bars-angeles.trycloudflare.com/auth/callback",
-  "https://background-witnesses-bars-angeles.trycloudflare.com/auth/shopify/callback",
-  "https://background-witnesses-bars-angeles.trycloudflare.com/auth/callback"
-]
-
+redirect_urls = [ "https://checking-due-children-favour.trycloudflare.com/api/auth" ]
 
 [build]
 automatically_update_urls_on_dev = true

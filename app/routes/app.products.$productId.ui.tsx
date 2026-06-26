@@ -18,7 +18,6 @@ import {
   Button,
   Badge,
   Spinner,
-  Checkbox,
   InlineGrid,
   Tooltip,
 } from "@shopify/polaris";
@@ -104,7 +103,6 @@ function useJobPoll() {
   const [result, setResult] = useState<DraftResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [lastCompletedJobId, setLastCompletedJobId] = useState<string | null>(null);
-
 
   const terminal = useMemo(
     () => new Set<PollStatus>(["COMPLETED", "FAILED", "CANCELLED"]),
@@ -423,9 +421,16 @@ export default function ProductEditorModalRoute() {
   const [isClosing, setIsClosing] = useState(false);
   const generationSubmitLockedRef = useRef(false);
 
+  // ── Tab state ─────────────────────────────────────────────────────────────
+  const [activeTab, setActiveTab] = useState<"description" | "meta" | "alttext">("description");
+
   // ── Custom template state ─────────────────────────────────────────────────
   const [showTemplateBuilder, setShowTemplateBuilder] = useState(false);
   const [activeCustomInstruction, setActiveCustomInstruction] = useState<string>("");
+
+  // ── Meta tab state ────────────────────────────────────────────────────────
+  const [metaTitle, setMetaTitle] = useState<string>("");
+  const [metaDescription, setMetaDescription] = useState<string>("");
 
   // ── Fetchers ──────────────────────────────────────────────────────────────
   const generateFetcher = useFetcher<any>();
@@ -433,6 +438,8 @@ export default function ProductEditorModalRoute() {
   const descFetcher = useFetcher<any>();
   const keywordFetcher = useFetcher<any>();
   const templateFetcher = useFetcher<any>();
+  const metaFetcher = useFetcher<any>();
+  const applyMetaFetcher = useFetcher<any>();
 
   const [altTextDrafts, setAltTextDrafts] = useState<Record<string, string>>({});
   const altTextFetcher = useFetcher<any>();
@@ -471,7 +478,6 @@ export default function ProductEditorModalRoute() {
           ]
         : [];
 
-    // ── FIXED: only show saved templates and "Create" option to advanced/pro ──
     const savedTemplates = canUseCustomTemplates
       ? customTemplates.map((t) => ({
           label: `★ ${t.name}`,
@@ -615,7 +621,7 @@ export default function ProductEditorModalRoute() {
     }
   }, [templateFetcher.data, credits.creditsRemaining, format, generateFetcher, includeSocials, keywords]);
 
-  // ── Other effects ─────────────────────────────────────────────────────────
+  // ── Generation effects ────────────────────────────────────────────────────
   useEffect(() => {
     const data = generateFetcher.data;
     const jobId = data?.jobId;
@@ -732,17 +738,16 @@ export default function ProductEditorModalRoute() {
       : "";
   const applySuccess =
     applyFetcher.data?.ok === true && applyFetcher.data?.applied === true;
+
   const modalSectionRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!applySuccess) return;
-
     const scrollContainer = (
       modalSectionRef.current?.closest(".Polaris-Scrollable") ??
       document.querySelector(".Polaris-Modal-Section") ??
       document.querySelector(".Polaris-Scrollable")
     ) as HTMLElement | null;
-
     scrollContainer?.scrollTo({ top: 0, behavior: "smooth" });
   }, [applySuccess, applyFetcher.data]);
 
@@ -794,81 +799,95 @@ export default function ProductEditorModalRoute() {
     CREDIT_COSTS.keywordSuggestion,
   );
 
+  // ── Alt text handlers ─────────────────────────────────────────────────────
   const handleGenerateAltText = useCallback((imageId: string, imageIndex: number, totalImages: number) => {
-  if (!hasCredits(credits.creditsRemaining, CREDIT_COSTS.altTextGeneration)) {
-    setLocalCreditError("Not enough credits");
-    return;
-  }
-  setLocalCreditError("");
-  const fd = new FormData();
-  fd.set("intent", "generate_alt_text");
-  fd.set("imageId", imageId);
-  fd.set("imageIndex", String(imageIndex));
-  fd.set("totalImages", String(totalImages));
-  altTextFetcher.submit(fd, { method: "post" });
-}, [altTextFetcher, credits.creditsRemaining]);
+    if (!hasCredits(credits.creditsRemaining, CREDIT_COSTS.altTextGeneration)) {
+      setLocalCreditError("Not enough credits");
+      return;
+    }
+    setLocalCreditError("");
+    const fd = new FormData();
+    fd.set("intent", "generate_alt_text");
+    fd.set("imageId", imageId);
+    fd.set("imageIndex", String(imageIndex));
+    fd.set("totalImages", String(totalImages));
+    altTextFetcher.submit(fd, { method: "post" });
+  }, [altTextFetcher, credits.creditsRemaining]);
 
-useEffect(() => {
-  if (altTextFetcher.data?.ok && altTextFetcher.data?.kind === "generate_alt_text") {
-    const { imageId, altText } = altTextFetcher.data;
-    setAltTextDrafts((prev) => ({ ...prev, [imageId]: altText }));
-  }
-}, [altTextFetcher.data]);
+  useEffect(() => {
+    if (altTextFetcher.data?.ok && altTextFetcher.data?.kind === "generate_alt_text") {
+      const { imageId, altText } = altTextFetcher.data;
+      setAltTextDrafts((prev) => ({ ...prev, [imageId]: altText }));
+    }
+  }, [altTextFetcher.data]);
 
-const handleGenerateAllAltText = useCallback(() => {
-  const totalCost = CREDIT_COSTS.altTextGeneration * product.images.length;
-  if (!hasCredits(credits.creditsRemaining, totalCost)) {
-    setLocalCreditError("Not enough credits");
-    return;
-  }
-  setLocalCreditError("");
-  const fd = new FormData();
-  fd.set("intent", "generate_alt_text_bulk");
-  fd.set("imageIds", JSON.stringify(product.images.map((img) => img.id)));
-  altTextBulkFetcher.submit(fd, { method: "post" });
-}, [altTextBulkFetcher, credits.creditsRemaining, product.images]);
+  const handleGenerateAllAltText = useCallback(() => {
+    const totalCost = CREDIT_COSTS.altTextGeneration * product.images.length;
+    if (!hasCredits(credits.creditsRemaining, totalCost)) {
+      setLocalCreditError("Not enough credits");
+      return;
+    }
+    setLocalCreditError("");
+    const fd = new FormData();
+    fd.set("intent", "generate_alt_text_bulk");
+    fd.set("imageIds", JSON.stringify(product.images.map((img) => img.id)));
+    altTextBulkFetcher.submit(fd, { method: "post" });
+  }, [altTextBulkFetcher, credits.creditsRemaining, product.images]);
 
-useEffect(() => {
-  if (altTextBulkFetcher.data?.ok && altTextBulkFetcher.data?.kind === "generate_alt_text_bulk") {
-    const results = altTextBulkFetcher.data.results as { imageId: string; altText: string }[];
-    setAltTextDrafts((prev) => {
-      const next = { ...prev };
-      for (const r of results) next[r.imageId] = r.altText;
-      return next;
-    });
-  }
-}, [altTextBulkFetcher.data]);
+  useEffect(() => {
+    if (altTextBulkFetcher.data?.ok && altTextBulkFetcher.data?.kind === "generate_alt_text_bulk") {
+      const results = altTextBulkFetcher.data.results as { imageId: string; altText: string }[];
+      setAltTextDrafts((prev) => {
+        const next = { ...prev };
+        for (const r of results) next[r.imageId] = r.altText;
+        return next;
+      });
+    }
+  }, [altTextBulkFetcher.data]);
 
-const handleApplyAltText = useCallback((imageId: string) => {
-  const altText = altTextDrafts[imageId];
-  if (!altText?.trim()) return;
-  const fd = new FormData();
-  fd.set("intent", "apply_alt_text");
-  fd.set("imageId", imageId);
-  fd.set("altText", altText);
-  applyAltTextFetcher.submit(fd, { method: "post" });
-}, [altTextDrafts, applyAltTextFetcher]);
+  const handleApplyAltText = useCallback((imageId: string) => {
+    const altText = altTextDrafts[imageId];
+    if (!altText?.trim()) return;
+    const fd = new FormData();
+    fd.set("intent", "apply_alt_text");
+    fd.set("imageId", imageId);
+    fd.set("altText", altText);
+    applyAltTextFetcher.submit(fd, { method: "post" });
+  }, [altTextDrafts, applyAltTextFetcher]);
 
-const handleApplyAllAltText = useCallback(() => {
-  const items = product.images
-    .filter((img) => altTextDrafts[img.id]?.trim())
-    .map((img) => ({ imageId: img.id, altText: altTextDrafts[img.id] }));
-  if (items.length === 0) return;
-  const fd = new FormData();
-  fd.set("intent", "apply_alt_text_bulk");
-  fd.set("items", JSON.stringify(items));
-  applyAltTextBulkFetcher.submit(fd, { method: "post" });
-}, [altTextDrafts, product.images, applyAltTextBulkFetcher]);
+  const handleApplyAllAltText = useCallback(() => {
+    const items = product.images
+      .filter((img) => altTextDrafts[img.id]?.trim())
+      .map((img) => ({ imageId: img.id, altText: altTextDrafts[img.id] }));
+    if (items.length === 0) return;
+    const fd = new FormData();
+    fd.set("intent", "apply_alt_text_bulk");
+    fd.set("items", JSON.stringify(items));
+    applyAltTextBulkFetcher.submit(fd, { method: "post" });
+  }, [altTextDrafts, product.images, applyAltTextBulkFetcher]);
 
-// Refresh loader data (so "Current:" text updates) after a successful apply
-useEffect(() => {
-  if (applyAltTextFetcher.data?.ok) revalidator.revalidate();
-}, [applyAltTextFetcher.data, revalidator]);
+  useEffect(() => {
+    if (applyAltTextFetcher.data?.ok) revalidator.revalidate();
+  }, [applyAltTextFetcher.data, revalidator]);
 
-useEffect(() => {
-  if (applyAltTextBulkFetcher.data?.ok) revalidator.revalidate();
-}, [applyAltTextBulkFetcher.data, revalidator]);
+  useEffect(() => {
+    if (applyAltTextBulkFetcher.data?.ok) revalidator.revalidate();
+  }, [applyAltTextBulkFetcher.data, revalidator]);
 
+  // ── Meta effects ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (draftResult?.meta_title && !metaTitle) setMetaTitle(draftResult.meta_title);
+    if (draftResult?.meta_description && !metaDescription) setMetaDescription(draftResult.meta_description);
+  }, [draftResult]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (metaFetcher.data?.ok && metaFetcher.data?.kind === "generate_meta") {
+      if (metaFetcher.data.meta_title) setMetaTitle(metaFetcher.data.meta_title);
+      if (metaFetcher.data.meta_description) setMetaDescription(metaFetcher.data.meta_description);
+    }
+  }, [metaFetcher.data]);
+
+  // ── Generate handler ──────────────────────────────────────────────────────
   const handleGenerate = useCallback(() => {
     if (isGenerationBusy) return;
     if (!canGenerateWithCredits) {
@@ -909,6 +928,10 @@ useEffect(() => {
     navigate("/app/products");
   }, [isClosing, navigate, resetPolling]);
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // Render
+  // ─────────────────────────────────────────────────────────────────────────
+
   return (
     <>
       {/* ── Template Builder Modal ── */}
@@ -927,6 +950,7 @@ useEffect(() => {
       <Modal
         open={!showTemplateBuilder && !isClosing}
         onClose={handleClose}
+        size="large"
         title={
           <InlineStack gap="200" blockAlign="center">
             <Text as="span" variant="headingMd">
@@ -936,538 +960,797 @@ useEffect(() => {
             {isGenerating && <Badge tone="attention">Generating…</Badge>}
           </InlineStack>
         }
-        primaryAction={{
-          content: isGenerating ? "Generating…" : "Generate Draft",
-          onAction: handleGenerate,
-          loading: isGenerating,
-          disabled: isGenerationBusy || !canGenerateWithCredits,
-        }}
+        primaryAction={
+          activeTab === "description"
+            ? {
+                content: isGenerating ? "Generating…" : "Generate Draft",
+                onAction: handleGenerate,
+                loading: isGenerating,
+                disabled: isGenerationBusy || !canGenerateWithCredits,
+              }
+            : activeTab === "meta"
+            ? {
+                content: applyMetaFetcher.state !== "idle" ? "Applying…" : "Apply to Shopify",
+                onAction: () => {
+                  const fd = new FormData();
+                  fd.set("intent", "apply_meta");
+                  fd.set("metaTitle", metaTitle);
+                  fd.set("metaDescription", metaDescription);
+                  applyMetaFetcher.submit(fd, { method: "post" });
+                },
+                loading: applyMetaFetcher.state !== "idle",
+                disabled: !metaTitle.trim() && !metaDescription.trim(),
+              }
+            : {
+                content: "Apply all to Shopify",
+                onAction: handleApplyAllAltText,
+                loading: applyAltTextBulkFetcher.state !== "idle",
+                disabled: !Object.values(altTextDrafts).some((v) => v?.trim()),
+              }
+        }
         secondaryActions={[{ content: "Close", onAction: handleClose }]}
       >
         <Modal.Section>
           <div ref={modalSectionRef}>
-          <BlockStack gap="400">
-            <CreditUsageCard
-              compact
-              title="Credits remaining"
-              creditsUsed={credits.creditsUsed}
-              creditsLimit={credits.creditsLimit}
-              creditsRemaining={credits.creditsRemaining}
-            />
+            <BlockStack gap="400">
 
-            <Card>
-              <BlockStack gap="200">
-                <InlineStack align="space-between">
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    Credit cost before generation
-                  </Text>
-                  <Text as="p" variant="bodySm" fontWeight="semibold">
-                    {formatCredits(CREDIT_COSTS.standardGeneration)} credit
-                  </Text>
-                </InlineStack>
-                <InlineStack align="space-between">
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    Remaining credits before action
-                  </Text>
-                  <Text as="p" variant="bodySm" fontWeight="semibold">
-                    {formatCredits(credits.creditsRemaining)}
-                  </Text>
-                </InlineStack>
-              </BlockStack>
-            </Card>
+              {/* ── Credits ── */}
+              <CreditUsageCard
+                compact
+                title="Credits remaining"
+                creditsUsed={credits.creditsUsed}
+                creditsLimit={credits.creditsLimit}
+                creditsRemaining={credits.creditsRemaining}
+              />
 
-            {/* ── Policy warnings ── */}
-            {policyWarnings.length > 0 && (
-              <Banner tone="warning" title="SEO Policy Warnings">
-                <ul>
-                  {policyWarnings.map((w) => (
-                    <li key={w}>{w}</li>
-                  ))}
-                </ul>
-              </Banner>
-            )}
-
-            {latestDraft?.isStale && (
-              <Banner tone="warning" title="Draft may be outdated">
-                <Text as="p" variant="bodySm">
-                  This draft was generated before the product was last updated.
-                </Text>
-              </Banner>
-            )}
-
-            {/* ── Generate error ── */}
-            {generateError && (
-              <Banner
-                tone={isRateLimited ? "warning" : "critical"}
-                title={isRateLimited ? "Generation unavailable" : "Generation failed"}
+              {/* ── Tab bar ── */}
+              <div
+                style={{
+                  display: "flex",
+                  borderBottom: "1px solid #e1e3e5",
+                  marginBottom: -16,
+                }}
               >
-                <BlockStack gap="100">
-                  <Text as="p" variant="bodySm">{generateError}</Text>
-                </BlockStack>
-              </Banner>
-            )}
-
-            {pollStatus === "FAILED" && (
-              <Banner tone="critical" title="Generation failed">
-                {pollErrorMessage ?? "The AI job failed. Please try again."}
-              </Banner>
-            )}
-
-            {pollStatus === "CANCELLED" && (
-              <Banner tone="warning" title="Generation cancelled">
-                The job was cancelled.
-              </Banner>
-            )}
-
-            {applyError && (
-              <Banner tone="critical" title="Apply failed">
-                {applyError}
-              </Banner>
-            )}
-
-            {applySuccess && (
-  <Banner tone="success" title="Applied to Shopify">
-    <BlockStack gap="100">
-      <Text as="p" variant="bodySm">
-        The draft description is now live on this product.
-      </Text>
-      {(draftResult?.meta_title || draftResult?.meta_description) && (
-        <Text as="p" variant="bodySm">
-          SEO title and meta description were also updated on Shopify.
-        </Text>
-      )}
-    </BlockStack>
-  </Banner>
-)}
-
-            {/* ── Generation settings card ── */}
-            <Card>
-              <BlockStack gap="300">
-                <Text as="h3" variant="headingSm">
-                  Generation Settings
-                </Text>
-
-                {shopPlan === "free" && (
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    ✦ Upgrade to Basic or higher to unlock all writing styles and formats (Luxury, Technical, Playful, Hybrid).
-                  </Text>
-                )}
-
-                {(shopPlan === "free" || shopPlan === "basic") && (
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    ✦ Upgrade to Advanced or Pro to create custom writing style templates.
-                  </Text>
-                )}
-
-                <InlineGrid columns={2} gap="300">
-                  {/* Writing style select + "+" button */}
-                  <div style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
-                    <div style={{ flex: 1 }}>
-                      <Select
-                        label="Writing style"
-                        options={vibeOptions}
-                        value={vibe}
-                        onChange={handleVibeChange}
-                        disabled={isGenerating}
-                      />
-                    </div>
-                    <div style={{ paddingBottom: 2 }}>
-                      <Tooltip
-                        content={
-                          canUseCustomTemplates
-                            ? "Create or manage custom writing styles"
-                            : "Upgrade to Advanced or Pro to create custom writing styles"
-                        }
-                      >
-                        <Button
-                          size="slim"
-                          onClick={() => canUseCustomTemplates && setShowTemplateBuilder(true)}
-                          disabled={isGenerating || !canUseCustomTemplates}
-                        >
-                          +
-                        </Button>
-                      </Tooltip>
-                    </div>
-                  </div>
-
-                  <Select
-                    label="Format"
-                    options={formatOptions}
-                    value={format}
-                    onChange={setFormat}
-                    disabled={isGenerating}
-                  />
-                </InlineGrid>
-
-                {/* Show active custom instruction preview */}
-                {isCustomVibeSelected && activeCustomInstruction && (
-                  <div
+                {(["description", "meta", "alttext"] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    onClick={() => setActiveTab(tab)}
                     style={{
-                      background: "#f0f4ff",
-                      border: "1px solid #c7d7fd",
-                      borderRadius: 8,
-                      padding: "10px 14px",
+                      padding: "10px 18px",
+                      fontSize: 13,
+                      cursor: "pointer",
+                      background: "none",
+                      border: "none",
+                      borderBottom: activeTab === tab ? "2px solid #202223" : "2px solid transparent",
+                      color: activeTab === tab ? "#202223" : "#6d7175",
+                      fontWeight: activeTab === tab ? 600 : 400,
+                      marginBottom: -1,
                     }}
                   >
-                    <BlockStack gap="050">
-                      <Text as="p" variant="bodySm" fontWeight="semibold" tone="subdued">
-                        Custom style instructions:
-                      </Text>
-                      <Text as="p" variant="bodySm">
-                        {activeCustomInstruction.slice(0, 150)}
-                        {activeCustomInstruction.length > 150 ? "…" : ""}
-                      </Text>
-                    </BlockStack>
-                  </div>
-                )}
+                    {tab === "description"
+                      ? "Description"
+                      : tab === "meta"
+                      ? "Meta title & description"
+                      : `Image alt text${product.images.length > 0 ? ` (${product.images.length})` : ""}`}
+                  </button>
+                ))}
+              </div>
 
-                {/* ── Keywords ── */}
-                <BlockStack gap="200">
-                  <InlineStack gap="200" blockAlign="end">
-                    <div style={{ flex: 1 }}>
-                      <TextField
-                        label="Keywords"
-                        value={keywords}
-                        onChange={(v) => setKeywords(clampTextInput(v, 2000))}
-                        placeholder="e.g. organic cotton, eco-friendly t-shirt"
-                        autoComplete="off"
-                        disabled={isGenerating}
-                        helpText="Comma-separated seed keywords for SEO targeting."
-                      />
-                    </div>
-                    <div style={{ paddingTop: 22 }}>
-                        <Button
-                          onClick={handleSuggestKeywords}
-                          loading={keywordFetcher.state !== "idle"}
-                          disabled={isGenerating || !canSuggestWithCredits}
-                          size="slim"
-                        >
-                          ✨ Suggest
-                        </Button>
-                    </div>
-                  </InlineStack>
+              {/* ══════════════════════════════════════════════
+                  TAB: Description
+              ══════════════════════════════════════════════ */}
+              {activeTab === "description" && (
+                <BlockStack gap="400">
 
-                  {parseKeywords(keywords).length > 0 && (
-                    <InlineStack gap="100" wrap>
-                      {parseKeywords(keywords).map((kw) => (
-                        <div
-                          key={kw}
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 4,
-                            background: "#f1f2f3",
-                            border: "1px solid #c9cccf",
-                            borderRadius: 4,
-                            padding: "2px 8px",
-                            fontSize: 13,
-                          }}
-                        >
-                          {kw}
-                          <button
-                            onClick={() =>
-                              setKeywords(
-                                parseKeywords(keywords)
-                                  .filter((k) => k !== kw)
-                                  .join(", "),
-                              )
-                            }
-                            style={{
-                              background: "none",
-                              border: "none",
-                              cursor: "pointer",
-                              padding: "0 2px",
-                              fontSize: 12,
-                              color: "#6d7175",
-                            }}
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))}
-                    </InlineStack>
-                  )}
-
-                  {suggestedKeywords.length > 0 && (
-                    <BlockStack gap="100">
-                      <Text as="p" variant="bodySm" tone="subdued">
-                        Suggested — click to add:
-                      </Text>
-                      <InlineStack gap="100" wrap>
-                        {suggestedKeywords.map((kw) => (
-                          <button
-                            key={kw}
-                            onClick={() => handleAddSuggestedKeyword(kw)}
-                            style={{
-                              background: "none",
-                              border: "1px solid #c9cccf",
-                              borderRadius: 4,
-                              padding: "2px 8px",
-                              cursor: "pointer",
-                              fontSize: 13,
-                              color: "#202223",
-                            }}
-                          >
-                            + {kw}
-                          </button>
-                        ))}
+                  <Card>
+                    <BlockStack gap="200">
+                      <InlineStack align="space-between">
+                        <Text as="p" variant="bodySm" tone="subdued">
+                          Credit cost before generation
+                        </Text>
+                        <Text as="p" variant="bodySm" fontWeight="semibold">
+                          {formatCredits(CREDIT_COSTS.standardGeneration)} credit
+                        </Text>
+                      </InlineStack>
+                      <InlineStack align="space-between">
+                        <Text as="p" variant="bodySm" tone="subdued">
+                          Remaining credits before action
+                        </Text>
+                        <Text as="p" variant="bodySm" fontWeight="semibold">
+                          {formatCredits(credits.creditsRemaining)}
+                        </Text>
                       </InlineStack>
                     </BlockStack>
-                  )}
-                </BlockStack>
+                  </Card>
 
-                {/* <Checkbox
-                  label="Include Instagram caption"
-                  checked={includeSocials}
-                  onChange={setIncludeSocials}
-                  disabled={isGenerating}
-                /> */}
-              </BlockStack>
-            </Card>
-
-            {product.images.length > 0 && (
-  <Card>
-    <BlockStack gap="300">
-      <InlineStack align="space-between" blockAlign="center">
-        <Text as="h3" variant="headingSm">Image Alt Text</Text>
-        <Button
-          onClick={handleGenerateAllAltText}
-          loading={altTextBulkFetcher.state !== "idle"}
-          disabled={!hasCredits(credits.creditsRemaining, CREDIT_COSTS.altTextGeneration * product.images.length)}
-          size="slim"
-        >
-          ✨ Generate all ({formatCredits(CREDIT_COSTS.altTextGeneration * product.images.length)} credits)
-        </Button>
-      </InlineStack>
-
-      {altTextFetcher.data?.ok === false && (
-        <Banner tone="critical" title="Generation failed">
-          {String(altTextFetcher.data.error ?? "")}
-        </Banner>
-      )}
-      {altTextBulkFetcher.data?.ok === false && (
-        <Banner tone="critical" title="Bulk generation failed">
-          {String(altTextBulkFetcher.data.error ?? "")}
-        </Banner>
-      )}
-      {(applyAltTextFetcher.data?.ok === false || applyAltTextBulkFetcher.data?.ok === false) && (
-        <Banner tone="critical" title="Failed to apply alt text">
-          {String(applyAltTextFetcher.data?.error ?? applyAltTextBulkFetcher.data?.error ?? "")}
-        </Banner>
-      )}
-
-      {product.images.map((img, idx) => {
-        const draft = altTextDrafts[img.id] ?? "";
-        const isGeneratingThis =
-          altTextFetcher.state !== "idle" && altTextFetcher.formData?.get("imageId") === img.id;
-        const isApplyingThis =
-          applyAltTextFetcher.state !== "idle" && applyAltTextFetcher.formData?.get("imageId") === img.id;
-        const hasDraft = draft.trim().length > 0;
-
-        return (
-          <InlineStack key={img.id} gap="300" blockAlign="start" wrap={false}>
-            <img
-              src={img.url}
-              alt=""
-              style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 8, border: "1px solid #e1e3e5", flexShrink: 0 }}
-            />
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <BlockStack gap="150">
-                {img.altText && (
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    Current: {img.altText}
-                  </Text>
-                )}
-                <TextField
-                  label={`Image ${idx + 1} alt text`}
-                  labelHidden
-                  value={draft}
-                  onChange={(v) => setAltTextDrafts((prev) => ({ ...prev, [img.id]: clampTextInput(v, 200) }))}
-                  placeholder="No draft yet — click Generate"
-                  autoComplete="off"
-                  helpText={`${draft.length}/125 characters${draft.length > 125 ? " (longer than recommended)" : ""}`}
-                />
-                <InlineStack gap="200">
-                  <Button
-                    size="slim"
-                    onClick={() => handleGenerateAltText(img.id, idx, product.images.length)}
-                    loading={isGeneratingThis}
-                    disabled={!hasCredits(credits.creditsRemaining, CREDIT_COSTS.altTextGeneration)}
-                  >
-                    {hasDraft ? "Regenerate" : "Generate"}
-                  </Button>
-                  <Button
-                    size="slim"
-                    variant="primary"
-                    tone="success"
-                    disabled={!hasDraft}
-                    loading={isApplyingThis}
-                    onClick={() => handleApplyAltText(img.id)}
-                  >
-                    Apply
-                  </Button>
-                </InlineStack>
-              </BlockStack>
-            </div>
-          </InlineStack>
-        );
-      })}
-
-      {Object.values(altTextDrafts).some((v) => v?.trim()) && (
-        <InlineStack align="end">
-          <Button
-            variant="primary"
-            tone="success"
-            onClick={handleApplyAllAltText}
-            loading={applyAltTextBulkFetcher.state !== "idle"}
-          >
-            Apply all drafts to Shopify
-          </Button>
-        </InlineStack>
-      )}
-    </BlockStack>
-  </Card>
-)}
-
-            {/* ── Generating progress ── */}
-            {isGenerating && (
-              <Card>
-                <InlineStack gap="300" blockAlign="center">
-                  <Spinner size="small" />
-                  <Text as="p">
-                    {pollStatus === "PROCESSING"
-                      ? "Deskribe AI is generating your product description…"
-                      : "Preparing to generate your product description…"}
-                  </Text>
-                </InlineStack>
-              </Card>
-            )}
-
-            {/* ── SEO preview ── */}
-            {draftResult && (
-               <Card>
-    <BlockStack gap="200">
-      <InlineStack align="space-between" blockAlign="center">
-        <Text as="h3" variant="headingSm">SEO Preview</Text>
-        {applySuccess && <Badge tone="success">Synced to Shopify</Badge>}
-      </InlineStack>
-                  <div
-                    style={{
-                      padding: 16,
-                      background: "#fff",
-                      border: "1px solid #dadce0",
-                      borderRadius: 8,
-                      fontFamily: "arial, sans-serif",
-                      maxWidth: 600,
-                    }}
-                  >
-                    <div
-                      style={{
-                        fontSize: 18,
-                        color: "#1a0dab",
-                        marginBottom: 4,
-                        overflow: "hidden",
-                        whiteSpace: "nowrap",
-                        textOverflow: "ellipsis",
-                      }}
-                    >
-                      {draftResult.meta_title ?? product.title}
-                    </div>
-                    <div style={{ fontSize: 13, color: "#006621", marginBottom: 4 }}>
-                      {product.vendor || "Shopify"} › products
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 14,
-                        color: "#545454",
-                        display: "-webkit-box",
-                        WebkitLineClamp: 2,
-                        WebkitBoxOrient: "vertical",
-                        overflow: "hidden",
-                      }}
-                    >
-                      {draftResult.meta_description ?? ""}
-                    </div>
-                  </div>
-
-                  {Array.isArray(draftResult.keywords) && draftResult.keywords.length > 0 && (
-                    <InlineStack gap="200" wrap>
-                      {draftResult.keywords
-                        .filter((kw) => typeof kw === "string" && kw.trim())
-                        .slice(0, 30)
-                        .map((kw) => (
-                          <Badge key={kw} tone="info">
-                            {kw}
-                          </Badge>
+                  {policyWarnings.length > 0 && (
+                    <Banner tone="warning" title="SEO Policy Warnings">
+                      <ul>
+                        {policyWarnings.map((w) => (
+                          <li key={w}>{w}</li>
                         ))}
+                      </ul>
+                    </Banner>
+                  )}
+
+                  {latestDraft?.isStale && (
+                    <Banner tone="warning" title="Draft may be outdated">
+                      <Text as="p" variant="bodySm">
+                        This draft was generated before the product was last updated.
+                      </Text>
+                    </Banner>
+                  )}
+
+                  {generateError && (
+                    <Banner
+                      tone={isRateLimited ? "warning" : "critical"}
+                      title={isRateLimited ? "Generation unavailable" : "Generation failed"}
+                    >
+                      <BlockStack gap="100">
+                        <Text as="p" variant="bodySm">{generateError}</Text>
+                      </BlockStack>
+                    </Banner>
+                  )}
+
+                  {pollStatus === "FAILED" && (
+                    <Banner tone="critical" title="Generation failed">
+                      {pollErrorMessage ?? "The AI job failed. Please try again."}
+                    </Banner>
+                  )}
+
+                  {pollStatus === "CANCELLED" && (
+                    <Banner tone="warning" title="Generation cancelled">
+                      The job was cancelled.
+                    </Banner>
+                  )}
+
+                  {applyError && (
+                    <Banner tone="critical" title="Apply failed">
+                      {applyError}
+                    </Banner>
+                  )}
+
+                  {applySuccess && (
+                    <Banner tone="success" title="Applied to Shopify">
+                      <BlockStack gap="100">
+                        <Text as="p" variant="bodySm">
+                          The draft description is now live on this product.
+                        </Text>
+                        {(draftResult?.meta_title || draftResult?.meta_description) && (
+                          <Text as="p" variant="bodySm">
+                            SEO title and meta description were also updated on Shopify.
+                          </Text>
+                        )}
+                      </BlockStack>
+                    </Banner>
+                  )}
+
+                  <Card>
+                    <BlockStack gap="300">
+                      <Text as="h3" variant="headingSm">Generation Settings</Text>
+
+                      {shopPlan === "free" && (
+                        <Text as="p" variant="bodySm" tone="subdued">
+                          ✦ Upgrade to Basic or higher to unlock all writing styles and formats (Luxury, Technical, Playful, Hybrid).
+                        </Text>
+                      )}
+
+                      {(shopPlan === "free" || shopPlan === "basic") && (
+                        <Text as="p" variant="bodySm" tone="subdued">
+                          ✦ Upgrade to Advanced or Pro to create custom writing style templates.
+                        </Text>
+                      )}
+
+                      <InlineGrid columns={2} gap="300">
+                        <div style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
+                          <div style={{ flex: 1 }}>
+                            <Select
+                              label="Writing style"
+                              options={vibeOptions}
+                              value={vibe}
+                              onChange={handleVibeChange}
+                              disabled={isGenerating}
+                            />
+                          </div>
+                          <div style={{ paddingBottom: 2 }}>
+                            <Tooltip
+                              content={
+                                canUseCustomTemplates
+                                  ? "Create or manage custom writing styles"
+                                  : "Upgrade to Advanced or Pro to create custom writing styles"
+                              }
+                            >
+                              <Button
+                                size="slim"
+                                onClick={() => canUseCustomTemplates && setShowTemplateBuilder(true)}
+                                disabled={isGenerating || !canUseCustomTemplates}
+                              >
+                                +
+                              </Button>
+                            </Tooltip>
+                          </div>
+                        </div>
+
+                        <Select
+                          label="Format"
+                          options={formatOptions}
+                          value={format}
+                          onChange={setFormat}
+                          disabled={isGenerating}
+                        />
+                      </InlineGrid>
+
+                      {isCustomVibeSelected && activeCustomInstruction && (
+                        <div
+                          style={{
+                            background: "#f0f4ff",
+                            border: "1px solid #c7d7fd",
+                            borderRadius: 8,
+                            padding: "10px 14px",
+                          }}
+                        >
+                          <BlockStack gap="050">
+                            <Text as="p" variant="bodySm" fontWeight="semibold" tone="subdued">
+                              Custom style instructions:
+                            </Text>
+                            <Text as="p" variant="bodySm">
+                              {activeCustomInstruction.slice(0, 150)}
+                              {activeCustomInstruction.length > 150 ? "…" : ""}
+                            </Text>
+                          </BlockStack>
+                        </div>
+                      )}
+
+                      <BlockStack gap="200">
+                        <InlineStack gap="200" blockAlign="end">
+                          <div style={{ flex: 1 }}>
+                            <TextField
+                              label="Keywords"
+                              value={keywords}
+                              onChange={(v) => setKeywords(clampTextInput(v, 2000))}
+                              placeholder="e.g. organic cotton, eco-friendly t-shirt"
+                              autoComplete="off"
+                              disabled={isGenerating}
+                              helpText="Comma-separated seed keywords for SEO targeting."
+                            />
+                          </div>
+                          <div style={{ paddingTop: 22 }}>
+                            <Button
+                              onClick={handleSuggestKeywords}
+                              loading={keywordFetcher.state !== "idle"}
+                              disabled={isGenerating || !canSuggestWithCredits}
+                              size="slim"
+                            >
+                              ✨ Suggest
+                            </Button>
+                          </div>
+                        </InlineStack>
+
+                        {parseKeywords(keywords).length > 0 && (
+                          <InlineStack gap="100" wrap>
+                            {parseKeywords(keywords).map((kw) => (
+                              <div
+                                key={kw}
+                                style={{
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  gap: 4,
+                                  background: "#f1f2f3",
+                                  border: "1px solid #c9cccf",
+                                  borderRadius: 4,
+                                  padding: "2px 8px",
+                                  fontSize: 13,
+                                }}
+                              >
+                                {kw}
+                                <button
+                                  onClick={() =>
+                                    setKeywords(
+                                      parseKeywords(keywords)
+                                        .filter((k) => k !== kw)
+                                        .join(", "),
+                                    )
+                                  }
+                                  style={{
+                                    background: "none",
+                                    border: "none",
+                                    cursor: "pointer",
+                                    padding: "0 2px",
+                                    fontSize: 12,
+                                    color: "#6d7175",
+                                  }}
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            ))}
+                          </InlineStack>
+                        )}
+
+                        {suggestedKeywords.length > 0 && (
+                          <BlockStack gap="100">
+                            <Text as="p" variant="bodySm" tone="subdued">
+                              Suggested — click to add:
+                            </Text>
+                            <InlineStack gap="100" wrap>
+                              {suggestedKeywords.map((kw) => (
+                                <button
+                                  key={kw}
+                                  onClick={() => handleAddSuggestedKeyword(kw)}
+                                  style={{
+                                    background: "none",
+                                    border: "1px solid #c9cccf",
+                                    borderRadius: 4,
+                                    padding: "2px 8px",
+                                    cursor: "pointer",
+                                    fontSize: 13,
+                                    color: "#202223",
+                                  }}
+                                >
+                                  + {kw}
+                                </button>
+                              ))}
+                            </InlineStack>
+                          </BlockStack>
+                        )}
+                      </BlockStack>
+                    </BlockStack>
+                  </Card>
+
+                  {isGenerating && (
+                    <Card>
+                      <InlineStack gap="300" blockAlign="center">
+                        <Spinner size="small" />
+                        <Text as="p">
+                          {pollStatus === "PROCESSING"
+                            ? "Deskribe AI is generating your product description…"
+                            : "Preparing to generate your product description…"}
+                        </Text>
+                      </InlineStack>
+                    </Card>
+                  )}
+
+                  {draftResult && (
+                    <Card>
+                      <BlockStack gap="200">
+                        <InlineStack align="space-between" blockAlign="center">
+                          <Text as="h3" variant="headingSm">SEO Preview</Text>
+                          {applySuccess && <Badge tone="success">Synced to Shopify</Badge>}
+                        </InlineStack>
+                        <div
+                          style={{
+                            padding: 16,
+                            background: "#fff",
+                            border: "1px solid #dadce0",
+                            borderRadius: 8,
+                            fontFamily: "arial, sans-serif",
+                            maxWidth: 600,
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontSize: 18,
+                              color: "#1a0dab",
+                              marginBottom: 4,
+                              overflow: "hidden",
+                              whiteSpace: "nowrap",
+                              textOverflow: "ellipsis",
+                            }}
+                          >
+                            {draftResult.meta_title ?? product.title}
+                          </div>
+                          <div style={{ fontSize: 13, color: "#006621", marginBottom: 4 }}>
+                            {product.vendor || "Shopify"} › products
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 14,
+                              color: "#545454",
+                              display: "-webkit-box",
+                              WebkitLineClamp: 2,
+                              WebkitBoxOrient: "vertical",
+                              overflow: "hidden",
+                            }}
+                          >
+                            {draftResult.meta_description ?? ""}
+                          </div>
+                        </div>
+
+                        {Array.isArray(draftResult.keywords) && draftResult.keywords.length > 0 && (
+                          <InlineStack gap="200" wrap>
+                            {draftResult.keywords
+                              .filter((kw) => typeof kw === "string" && kw.trim())
+                              .slice(0, 30)
+                              .map((kw) => (
+                                <Badge key={kw} tone="info">
+                                  {kw}
+                                </Badge>
+                              ))}
+                          </InlineStack>
+                        )}
+
+                        {draftResult.social_caption && (
+                          <BlockStack gap="100">
+                            <Text as="p" variant="bodySm" tone="subdued">
+                              Instagram caption:
+                            </Text>
+                            <Text as="p" variant="bodySm">
+                              {draftResult.social_caption}
+                            </Text>
+                          </BlockStack>
+                        )}
+                      </BlockStack>
+                    </Card>
+                  )}
+
+                  <Card>
+                    <BlockStack gap="300">
+                      <InlineStack align="space-between" blockAlign="center">
+                        <Text as="h3" variant="headingSm">Compare</Text>
+                        {!currentHtml && (
+                          <Button
+                            onClick={handleLoadComparison}
+                            loading={descFetcher.state !== "idle"}
+                            size="slim"
+                          >
+                            Load current description
+                          </Button>
+                        )}
+                      </InlineStack>
+                      <DiffViewer
+                        beforeHtml={currentHtml}
+                        afterHtml={draftHtml}
+                        keywords={highlightKeywords}
+                        isLoading={descFetcher.state !== "idle"}
+                      />
+                    </BlockStack>
+                  </Card>
+
+                  {hasCompletedDraft && (
+                    <InlineStack align="end" gap="300" blockAlign="center">
+                      {applySuccess && (
+                        <Text as="p" tone="success" fontWeight="semibold">
+                          Applied to Shopify ✓
+                        </Text>
+                      )}
+                      <Button
+                        variant="primary"
+                        tone="success"
+                        disabled={!canApply}
+                        loading={isApplying}
+                        onClick={() => {
+                          if (!applyJobId || !isUuidV4(applyJobId)) return;
+                          const fd = new FormData();
+                          fd.set("intent", "apply");
+                          fd.set("jobId", applyJobId);
+                          applyFetcher.submit(fd, { method: "post" });
+                        }}
+                      >
+                        Apply to Shopify
+                      </Button>
                     </InlineStack>
                   )}
 
-                  {draftResult.social_caption && (
-                    <BlockStack gap="100">
-                      <Text as="p" variant="bodySm" tone="subdued">
-                        Instagram caption:
-                      </Text>
-                      <Text as="p" variant="bodySm">
-                        {draftResult.social_caption}
-                      </Text>
-                    </BlockStack>
-                  )}
                 </BlockStack>
-              </Card>
-            )}
+              )}
 
-            {/* ── Diff viewer ── */}
-            <Card>
-              <BlockStack gap="300">
-                <InlineStack align="space-between" blockAlign="center">
-                  <Text as="h3" variant="headingSm">Compare</Text>
-                  {!currentHtml && (
+              {/* ══════════════════════════════════════════════
+                  TAB: Meta title & description
+              ══════════════════════════════════════════════ */}
+              {activeTab === "meta" && (
+                <BlockStack gap="400">
+
+                  {applyMetaFetcher.data?.ok === true && (
+                    <Banner tone="success" title="Applied to Shopify">
+                      <Text as="p" variant="bodySm">
+                        Meta title and description are now live on this product.
+                      </Text>
+                    </Banner>
+                  )}
+
+                  {applyMetaFetcher.data?.ok === false && (
+                    <Banner tone="critical" title="Apply failed">
+                      {String(applyMetaFetcher.data.error ?? "")}
+                    </Banner>
+                  )}
+
+                  {metaFetcher.data?.ok === false && (
+                    <Banner tone="critical" title="Generation failed">
+                      {String(metaFetcher.data.error ?? "")}
+                    </Banner>
+                  )}
+
+                  <Card>
+                    <BlockStack gap="300">
+                      <InlineStack align="space-between" blockAlign="center">
+                        <Text as="h3" variant="headingSm">Meta title</Text>
+                        <Text
+                          as="p"
+                          variant="bodySm"
+                          tone={metaTitle.length > 60 ? "critical" : "subdued"}
+                        >
+                          {metaTitle.length} / 60
+                        </Text>
+                      </InlineStack>
+                      <Text as="p" variant="bodySm" tone="subdued">
+                        Controls the blue headline in Google search results.
+                      </Text>
+                      <TextField
+                        label="Meta title"
+                        labelHidden
+                        value={metaTitle}
+                        onChange={(v) => setMetaTitle(clampTextInput(v, 70))}
+                        placeholder="e.g. Organic Cotton T-Shirt | Your Brand"
+                        autoComplete="off"
+                        helpText={
+                          metaTitle.length > 60
+                            ? "Over 60 characters — Google may truncate this."
+                            : "Keep under 60 characters for Google to display in full."
+                        }
+                      />
+                    </BlockStack>
+                  </Card>
+
+                  <Card>
+                    <BlockStack gap="300">
+                      <InlineStack align="space-between" blockAlign="center">
+                        <Text as="h3" variant="headingSm">Meta description</Text>
+                        <Text
+                          as="p"
+                          variant="bodySm"
+                          tone={metaDescription.length > 155 ? "critical" : "subdued"}
+                        >
+                          {metaDescription.length} / 155
+                        </Text>
+                      </InlineStack>
+                      <Text as="p" variant="bodySm" tone="subdued">
+                        The snippet shown below the title in search results.
+                      </Text>
+                      <TextField
+                        label="Meta description"
+                        labelHidden
+                        value={metaDescription}
+                        onChange={(v) => setMetaDescription(clampTextInput(v, 320))}
+                        placeholder="e.g. Shop our new arrival. Free shipping on orders over £50."
+                        multiline={3}
+                        autoComplete="off"
+                        helpText={
+                          metaDescription.length > 155
+                            ? "Over 155 characters — consider trimming for best results."
+                            : "Keep under 155 characters."
+                        }
+                      />
+                    </BlockStack>
+                  </Card>
+
+                  <InlineStack gap="300" blockAlign="center">
                     <Button
-                      onClick={handleLoadComparison}
-                      loading={descFetcher.state !== "idle"}
+                      onClick={() => {
+                        if (!hasCredits(credits.creditsRemaining, CREDIT_COSTS.metaGeneration)) {
+                          setLocalCreditError("Not enough credits");
+                          return;
+                        }
+                        setLocalCreditError("");
+                        const fd = new FormData();
+                        fd.set("intent", "generate_meta");
+                        fd.set("keywords", keywords);
+                        metaFetcher.submit(fd, { method: "post" });
+                      }}
+                      loading={metaFetcher.state !== "idle"}
+                      disabled={!hasCredits(credits.creditsRemaining, CREDIT_COSTS.metaGeneration)}
                       size="slim"
                     >
-                      Load current description
+                      ✨ AI generate ({formatCredits(CREDIT_COSTS.metaGeneration)} credits)
                     </Button>
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      or edit the fields above manually
+                    </Text>
+                  </InlineStack>
+
+                  {localCreditError && (
+                    <Banner tone="critical" title="Not enough credits">
+                      <Text as="p" variant="bodySm">{localCreditError}</Text>
+                    </Banner>
                   )}
-                </InlineStack>
-                <DiffViewer
-                  beforeHtml={currentHtml}
-                  afterHtml={draftHtml}
-                  keywords={highlightKeywords}
-                  isLoading={descFetcher.state !== "idle"}
-                />
-              </BlockStack>
-            </Card>
 
-            {/* ── Apply to Shopify ── */}
-            {hasCompletedDraft && (
-              <InlineStack align="end" gap="300" blockAlign="center">
-                {applySuccess && (
-                  <Text as="p" tone="success" fontWeight="semibold">
-                    Applied to Shopify ✓
-                  </Text>
-                )}
-                <Button
-                  variant="primary"
-                  tone="success"
-                  disabled={!canApply}
-                  loading={isApplying}
-                  onClick={() => {
-                    if (!applyJobId || !isUuidV4(applyJobId)) return;
-                    const fd = new FormData();
-                    fd.set("intent", "apply");
-                    fd.set("jobId", applyJobId);
-                    applyFetcher.submit(fd, { method: "post" });
-                  }}
-                >
-                  Apply to Shopify
-                </Button>
-              </InlineStack>
-            )}
+                  {(metaTitle || metaDescription) && (
+                    <Card>
+                      <BlockStack gap="200">
+                        <Text as="h3" variant="headingSm">Live preview</Text>
+                        <div
+                          style={{
+                            padding: 16,
+                            background: "#fff",
+                            border: "1px solid #dadce0",
+                            borderRadius: 8,
+                            fontFamily: "arial, sans-serif",
+                            maxWidth: 600,
+                          }}
+                        >
+                          <div
+                            style={{
+                              fontSize: 18,
+                              color: "#1a0dab",
+                              marginBottom: 4,
+                              overflow: "hidden",
+                              whiteSpace: "nowrap",
+                              textOverflow: "ellipsis",
+                            }}
+                          >
+                            {metaTitle || product.title}
+                          </div>
+                          <div style={{ fontSize: 13, color: "#006621", marginBottom: 4 }}>
+                            {product.vendor || "Shopify"} › products
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 14,
+                              color: "#545454",
+                              display: "-webkit-box",
+                              WebkitLineClamp: 2,
+                              WebkitBoxOrient: "vertical",
+                              overflow: "hidden",
+                            }}
+                          >
+                            {metaDescription || "No description yet."}
+                          </div>
+                        </div>
+                      </BlockStack>
+                    </Card>
+                  )}
 
-          </BlockStack>
+                </BlockStack>
+              )}
+
+              {/* ══════════════════════════════════════════════
+                  TAB: Image alt text
+              ══════════════════════════════════════════════ */}
+              {activeTab === "alttext" && (
+                <BlockStack gap="400">
+
+                  {product.images.length === 0 ? (
+                    <Banner tone="info" title="No images">
+                      <Text as="p" variant="bodySm">
+                        This product has no images to generate alt text for.
+                      </Text>
+                    </Banner>
+                  ) : (
+                    <Card>
+                      <BlockStack gap="300">
+                        <InlineStack align="space-between" blockAlign="center">
+                          <Text as="h3" variant="headingSm">Image Alt Text</Text>
+                          <Button
+                            onClick={handleGenerateAllAltText}
+                            loading={altTextBulkFetcher.state !== "idle"}
+                            disabled={!hasCredits(
+                              credits.creditsRemaining,
+                              CREDIT_COSTS.altTextGeneration * product.images.length,
+                            )}
+                            size="slim"
+                          >
+                            ✨ Generate all ({formatCredits(CREDIT_COSTS.altTextGeneration * product.images.length)} credits)
+                          </Button>
+                        </InlineStack>
+
+                        {altTextFetcher.data?.ok === false && (
+                          <Banner tone="critical" title="Generation failed">
+                            {String(altTextFetcher.data.error ?? "")}
+                          </Banner>
+                        )}
+                        {altTextBulkFetcher.data?.ok === false && (
+                          <Banner tone="critical" title="Bulk generation failed">
+                            {String(altTextBulkFetcher.data.error ?? "")}
+                          </Banner>
+                        )}
+                        {(applyAltTextFetcher.data?.ok === false ||
+                          applyAltTextBulkFetcher.data?.ok === false) && (
+                          <Banner tone="critical" title="Failed to apply alt text">
+                            {String(
+                              applyAltTextFetcher.data?.error ??
+                                applyAltTextBulkFetcher.data?.error ??
+                                "",
+                            )}
+                          </Banner>
+                        )}
+
+                        {product.images.map((img, idx) => {
+                          const draft = altTextDrafts[img.id] ?? "";
+                          const isGeneratingThis =
+                            altTextFetcher.state !== "idle" &&
+                            altTextFetcher.formData?.get("imageId") === img.id;
+                          const isApplyingThis =
+                            applyAltTextFetcher.state !== "idle" &&
+                            applyAltTextFetcher.formData?.get("imageId") === img.id;
+                          const hasDraft = draft.trim().length > 0;
+
+                          return (
+                            <InlineStack key={img.id} gap="300" blockAlign="start" wrap={false}>
+                              <img
+                                src={img.url}
+                                alt=""
+                                style={{
+                                  width: 64,
+                                  height: 64,
+                                  objectFit: "cover",
+                                  borderRadius: 8,
+                                  border: "1px solid #e1e3e5",
+                                  flexShrink: 0,
+                                }}
+                              />
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <BlockStack gap="150">
+                                  {img.altText && (
+                                    <Text as="p" variant="bodySm" tone="subdued">
+                                      Current: {img.altText}
+                                    </Text>
+                                  )}
+                                  <TextField
+                                    label={`Image ${idx + 1} alt text`}
+                                    labelHidden
+                                    value={draft}
+                                    onChange={(v) =>
+                                      setAltTextDrafts((prev) => ({
+                                        ...prev,
+                                        [img.id]: clampTextInput(v, 200),
+                                      }))
+                                    }
+                                    placeholder="No draft yet — click Generate"
+                                    autoComplete="off"
+                                    helpText={`${draft.length}/125 characters${
+                                      draft.length > 125 ? " (longer than recommended)" : ""
+                                    }`}
+                                  />
+                                  <InlineStack gap="200">
+                                    <Button
+                                      size="slim"
+                                      onClick={() =>
+                                        handleGenerateAltText(img.id, idx, product.images.length)
+                                      }
+                                      loading={isGeneratingThis}
+                                      disabled={!hasCredits(
+                                        credits.creditsRemaining,
+                                        CREDIT_COSTS.altTextGeneration,
+                                      )}
+                                    >
+                                      {hasDraft ? "Regenerate" : "Generate"}
+                                    </Button>
+                                    <Button
+                                      size="slim"
+                                      variant="primary"
+                                      tone="success"
+                                      disabled={!hasDraft}
+                                      loading={isApplyingThis}
+                                      onClick={() => handleApplyAltText(img.id)}
+                                    >
+                                      Apply
+                                    </Button>
+                                  </InlineStack>
+                                </BlockStack>
+                              </div>
+                            </InlineStack>
+                          );
+                        })}
+
+                        {Object.values(altTextDrafts).some((v) => v?.trim()) && (
+                          <InlineStack align="end">
+                            <Button
+                              variant="primary"
+                              tone="success"
+                              onClick={handleApplyAllAltText}
+                              loading={applyAltTextBulkFetcher.state !== "idle"}
+                            >
+                              Apply all drafts to Shopify
+                            </Button>
+                          </InlineStack>
+                        )}
+                      </BlockStack>
+                    </Card>
+                  )}
+
+                </BlockStack>
+              )}
+
+            </BlockStack>
           </div>
         </Modal.Section>
       </Modal>

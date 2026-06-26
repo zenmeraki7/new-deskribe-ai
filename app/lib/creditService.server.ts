@@ -125,12 +125,19 @@ async function ensureCycle(
   plan: Plan,
 ) {
   // Advisory lock prevents concurrent ensureCycle calls for the same shop
-  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${shopId}))`;
+  await tx.$executeRawUnsafe(
+    `SELECT pg_advisory_xact_lock(hashtext($1::text))`,
+    shopId,
+  );
 
   const now = new Date();
   const creditsLimit = toDecimal(PLAN_CREDITS[plan]);
 
   const existing = await tx.shopCredit.findUnique({ where: { shopId } });
+
+console.log("creditsLimit value:", existing.creditsLimit);
+console.log("typeof:", typeof existing.creditsLimit);
+console.log("constructor:", existing.creditsLimit?.constructor?.name);
 
   if (!existing) {
     const created = await tx.shopCredit.create({
@@ -162,7 +169,7 @@ async function ensureCycle(
 
   if (
     existing.plan !== plan ||
-    !existing.creditsLimit.equals(creditsLimit)
+    asNumber(existing.creditsLimit) !== asNumber(creditsLimit)
   ) {
     const updated = await tx.shopCredit.update({
       where: { shopId },
@@ -185,8 +192,6 @@ export async function getCreditBalance(shopId: string, plan: Plan) {
 
   const existing = await db.shopCredit.findUnique({ where: { shopId } });
 
-  // No row yet — return plan defaults without writing anything.
-  // ensureCycle will create the row on the first real action.
   if (!existing) {
     const creditsLimit = PLAN_CREDITS[plan];
     return {
@@ -201,8 +206,6 @@ export async function getCreditBalance(shopId: string, plan: Plan) {
 
   const now = new Date();
 
-  // Reset date has passed — show zeroed balance optimistically.
-  // The row will be properly reset by ensureCycle on the next action.
   if (existing.resetDate <= now) {
     const creditsLimit = PLAN_CREDITS[plan];
     return {
@@ -280,22 +283,30 @@ export async function deductCredits({
         } satisfies CreditResult;
       }
 
-      // Atomic deduction — only succeeds if enough credits remain
-      const updated = await tx.shopCredit.updateMany({
-        where: {
-          shopId,
-          creditsUsed: {
-            lte: new Prisma.Decimal(current.creditsLimit).minus(amount),
-          },
-        },
-        data: {
-          creditsUsed: { increment: toDecimal(amount) },
-          plan,
-          creditsLimit: toDecimal(PLAN_CREDITS[plan]),
-        },
-      });
+      // Atomic deduction via raw SQL — bypasses Prisma binary encoding issues
+      const maxAllowed = (asNumber(current.creditsLimit) - amount).toFixed(1);
+      const amountStr = amount.toFixed(1);
+      const newLimit = PLAN_CREDITS[plan].toFixed(1);
 
-      if (updated.count !== 1) {
+      const result = await tx.$queryRawUnsafe<{ id: string }[]>(
+        `UPDATE "ShopCredit"
+         SET "creditsUsed" = "creditsUsed" + $1::numeric,
+             "plan" = $2,
+             "creditsLimit" = $3::numeric,
+             "updatedAt" = now()
+         WHERE "shopId" = $4
+         AND "creditsUsed" <= $5::numeric
+         RETURNING "id"`,
+        amountStr,
+        plan,
+        newLimit,
+        shopId,
+        maxAllowed,
+      );
+
+      const updatedCount = result.length;
+
+      if (updatedCount !== 1) {
         const fresh = await tx.shopCredit.findUniqueOrThrow({
           where: { shopId },
         });
@@ -392,21 +403,22 @@ export async function refundCredits({
         };
       }
 
-      await tx.shopCredit.update({
-        where: { shopId },
-        data: {
-          creditsUsed: { decrement: toDecimal(amount) },
-          plan: effectivePlan,
-          creditsLimit: toDecimal(PLAN_CREDITS[effectivePlan]),
-        },
-      });
+      // Refund via raw SQL — same reason as deductCredits
+      const amountStr = amount.toFixed(1);
+      const newLimit = PLAN_CREDITS[effectivePlan].toFixed(1);
 
-      // Clamp to zero — creditsUsed must never go negative
-      await tx.$executeRaw`
-        UPDATE "ShopCredit"
-        SET "creditsUsed" = 0
-        WHERE "shopId" = ${shopId} AND "creditsUsed" < 0
-      `;
+      await tx.$executeRawUnsafe(
+        `UPDATE "ShopCredit"
+         SET "creditsUsed" = GREATEST(0, "creditsUsed" - $1::numeric),
+             "plan" = $2,
+             "creditsLimit" = $3::numeric,
+             "updatedAt" = now()
+         WHERE "shopId" = $4`,
+        amountStr,
+        effectivePlan,
+        newLimit,
+        shopId,
+      );
 
       await tx.creditTransaction.create({
         data: {

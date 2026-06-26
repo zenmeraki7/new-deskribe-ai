@@ -6,7 +6,7 @@ import { z } from "zod";
 import { db } from "../../lib/db.server";
 import { requireAdminSession, type AdminAuthContext } from "../../lib/auth.server";
 import { enqueueGenerationJobs } from "../../lib/enqueue.server";
-import { suggestKeywords, generateImageAltText, generateImageAltTextBulk } from "../../lib/ai.server";
+import { suggestKeywords, generateImageAltText, generateImageAltTextBulk, generateMetaOnly } from "../../lib/ai.server";
 import { sanitiseHtml, stripHtml } from "../../lib/html.server";
 
 import {
@@ -23,12 +23,12 @@ import type { LoaderData, ProductMeta, DraftResult } from "../../routes/app.prod
 import { checkAndIncrementRateLimit, checkAndIncrementKeywordLimit } from "../../lib/rateLimiter.server";
 import { resolvePlan, type Plan } from "../../lib/rateLimiter.server";
 import { CREDIT_COSTS, deductCredits, getCreditBalance, refundCredits } from "../../lib/creditService.server";
-
+import { canUseFeature, PLAN_FEATURES, type CreditPlan } from "../../lib/credits";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Product ID handling (defensive)
-// Supports route param being either numeric ID or full GID.
+// Helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
 async function getShopPlan(
   billing: AdminAuthContext["billing"],
 ): Promise<Plan> {
@@ -58,24 +58,19 @@ function normalizeProductGid(raw: string): string | null {
 function isUuidV4(s: string): boolean {
   return UUID_V4_RE.test(s);
 }
+
 function isValidMediaImageGid(s: string): boolean {
   return MEDIA_IMAGE_GID_RE.test(s);
 }
+
 function nowIso() {
   return new Date().toISOString();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Keyword normalization (server-owned validation)
-// ─────────────────────────────────────────────────────────────────────────────
-
 function normalizeKeywordList(input: unknown): string[] {
   const raw =
     typeof input === "string"
-      ? input
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean)
+      ? input.split(",").map((s) => s.trim()).filter(Boolean)
       : Array.isArray(input)
       ? input.filter((x) => typeof x === "string").map((s) => s.trim()).filter(Boolean)
       : [];
@@ -86,14 +81,11 @@ function normalizeKeywordList(input: unknown): string[] {
   for (const k of raw) {
     const kw = k.slice(0, KEYWORDS.MAX_EACH_CHARS);
     if (!kw) continue;
-
     const lower = kw.toLowerCase();
     if (out.some((x) => x.toLowerCase() === lower)) continue;
-
     total += kw.length;
     if (out.length >= KEYWORDS.MAX) break;
     if (total > KEYWORDS.MAX_TOTAL_CHARS) break;
-
     out.push(kw);
   }
 
@@ -105,7 +97,7 @@ function keywordCsvFromInput(input: unknown): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Strict DraftResult runtime validation (Zod)
+// Zod schema
 // ─────────────────────────────────────────────────────────────────────────────
 
 const DraftResultSchema = z
@@ -124,17 +116,12 @@ function parseDraftResultOrNull(value: unknown): DraftResult | null {
   const res = DraftResultSchema.safeParse(value);
   if (!res.success) return null;
   const r = res.data;
-
   const cappedKeywords = r.keywords ? normalizeKeywordList(r.keywords) : undefined;
-
-  return {
-    ...r,
-    keywords: cappedKeywords,
-  } as DraftResult;
+  return { ...r, keywords: cappedKeywords } as DraftResult;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Shopify GraphQL with retry/backoff + jitter
+// GraphQL helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
 function sleep(ms: number) {
@@ -155,18 +142,10 @@ function isThrottleError(payload: any): boolean {
       if (msg.includes("throttle") || msg.includes("throttled")) return true;
     }
   }
-
   const ts = payload?.extensions?.cost?.throttleStatus;
-  if (
-    ts &&
-    typeof ts.currentlyAvailable === "number" &&
-    typeof ts.maximumAvailable === "number" &&
-    ts.maximumAvailable > 0
-  ) {
-    const ratio = ts.currentlyAvailable / ts.maximumAvailable;
-    if (ratio < 0.05) return true;
+  if (ts && typeof ts.currentlyAvailable === "number" && typeof ts.maximumAvailable === "number" && ts.maximumAvailable > 0) {
+    if (ts.currentlyAvailable / ts.maximumAvailable < 0.05) return true;
   }
-
   return false;
 }
 
@@ -184,29 +163,23 @@ async function adminGraphqlWithRetry<T>(
 
   while (attempt < SHOPIFY_GQL_RETRY.MAX_ATTEMPTS) {
     attempt++;
-
     try {
       const resp = await adminGraphql(query, { variables });
-
       if (isRetryableHttpStatus(resp.status) && attempt < SHOPIFY_GQL_RETRY.MAX_ATTEMPTS) {
         await sleep(jitter(Math.min(delay, SHOPIFY_GQL_RETRY.MAX_DELAY_MS)));
         delay *= 2;
         continue;
       }
-
       if (!resp.ok) {
         const text = await resp.text().catch(() => "");
         throw new Error(`Shopify GraphQL HTTP ${resp.status}: ${text.slice(0, 300)}`);
       }
-
       const payload = await resp.json();
-
       if (isThrottleError(payload) && attempt < SHOPIFY_GQL_RETRY.MAX_ATTEMPTS) {
         await sleep(jitter(Math.min(delay, SHOPIFY_GQL_RETRY.MAX_DELAY_MS)));
         delay *= 2;
         continue;
       }
-
       return payload as T;
     } catch (err) {
       if (attempt >= SHOPIFY_GQL_RETRY.MAX_ATTEMPTS) throw err;
@@ -214,12 +187,11 @@ async function adminGraphqlWithRetry<T>(
       delay *= 2;
     }
   }
-
   throw new Error("Shopify GraphQL retry attempts exhausted");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Shopify product meta fetch
+// Product meta fetch
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function fetchProductMeta(adminGraphql: (query: string, opts?: any) => Promise<Response>, productGid: string) {
@@ -240,21 +212,9 @@ async function fetchProductMeta(adminGraphql: (query: string, opts?: any) => Pro
     `#graphql
     query ProductMeta($id: ID!) {
       product(id: $id) {
-        id
-        title
-        productType
-        vendor
-        tags
+        id title productType vendor tags
         media(first: 50) {
-          edges {
-            node {
-              id
-              alt
-              ... on MediaImage {
-                image { url }
-              }
-            }
-          }
+          edges { node { id alt ... on MediaImage { image { url } } } }
         }
       }
     }`,
@@ -269,14 +229,7 @@ async function fetchProductMeta(adminGraphql: (query: string, opts?: any) => Pro
     .filter((n) => n?.image?.url)
     .map((n) => ({ id: n.id, url: n.image!.url, altText: n.alt ?? null }));
 
-  return {
-    id: p.id,
-    title: p.title,
-    productType: p.productType,
-    vendor: p.vendor,
-    tags: p.tags,
-    images,
-  };
+  return { id: p.id, title: p.title, productType: p.productType, vendor: p.vendor, tags: p.tags, images };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -288,14 +241,10 @@ export async function loader({ request, params }: LoaderFunctionArgs): Promise<R
 
   const rawId = params.productId ?? "";
   const productGid = normalizeProductGid(rawId);
-  if (!productGid) {
-    throw new Response("Invalid product ID", { status: 400 });
-  }
+  if (!productGid) throw new Response("Invalid product ID", { status: 400 });
 
   const product = await fetchProductMeta(admin.graphql, productGid);
-  if (!product) {
-    throw new Response("Product not found", { status: 404 });
-  }
+  if (!product) throw new Response("Product not found", { status: 404 });
 
   const tenMinutesAgo = new Date(Date.now() - ACTIVE_JOB_LOOKBACK_MS);
 
@@ -311,16 +260,11 @@ export async function loader({ request, params }: LoaderFunctionArgs): Promise<R
   });
 
   const latestDraft = await db.generationJob.findFirst({
-    where: {
-      shopDomain,
-      productId: productGid,
-      status: "COMPLETED",
-    },
+    where: { shopDomain, productId: productGid, status: "COMPLETED" },
     orderBy: { createdAt: "desc" },
     select: { id: true, result: true, createdAt: true, isStale: true },
   });
 
-  // Policy warnings (keyword cannibalization check)
   const policyWarnings: string[] = [];
   if (latestDraft?.result) {
     const parsed = parseDraftResultOrNull(latestDraft.result);
@@ -335,11 +279,8 @@ export async function loader({ request, params }: LoaderFunctionArgs): Promise<R
         },
         select: { productId: true },
       });
-
       if (conflict) {
-        policyWarnings.push(
-          `Keyword "${pk}" is already used by another product — risk of SEO cannibalization.`,
-        );
+        policyWarnings.push(`Keyword "${pk}" is already used by another product — risk of SEO cannibalization.`);
       }
     }
   }
@@ -348,28 +289,20 @@ export async function loader({ request, params }: LoaderFunctionArgs): Promise<R
     ? {
         id: latestDraft.id,
         createdAt: latestDraft.createdAt.toISOString(),
-         isStale: latestDraft.isStale,
+        isStale: latestDraft.isStale,
         result: (() => {
           const parsed = parseDraftResultOrNull(latestDraft.result);
           if (!parsed) return null;
-
           const body = typeof parsed.body_html === "string" ? sanitiseHtml(parsed.body_html) : undefined;
           const kw = parsed.keywords ? normalizeKeywordList(parsed.keywords) : undefined;
-
-          return {
-            ...parsed,
-            body_html: body,
-            keywords: kw,
-          } as DraftResult;
+          return { ...parsed, body_html: body, keywords: kw } as DraftResult;
         })(),
       }
     : null;
 
-  // ── Fetch shop plan ─────────────────────────────────────────────────────
   const shopPlan = await getShopPlan(billing);
   const credits = await getCreditBalance(shopDomain, shopPlan);
 
-  // ── Fetch custom templates for this shop ────────────────────────────────
   const customTemplates = await db.customTemplate.findMany({
     where: { shopDomain },
     orderBy: { createdAt: "desc" },
@@ -377,19 +310,23 @@ export async function loader({ request, params }: LoaderFunctionArgs): Promise<R
     select: { id: true, name: true, instruction: true, createdAt: true },
   });
 
+  // ── Plan feature flags ──────────────────────────────────────────────────
+  const planFeatures = {
+    altText: PLAN_FEATURES[shopPlan as CreditPlan]?.altText ?? false,
+    metaGeneration: PLAN_FEATURES[shopPlan as CreditPlan]?.metaGeneration ?? false,
+  };
+
   return json<LoaderData>({
     product,
     descriptionHtml: null,
     activeJob: activeJob
-  ? {
-      id: activeJob.id,
-      status: activeJob.status as LoaderData["activeJob"] extends infer T
-        ? T extends { status: infer S }
-          ? S
-          : never
-        : never,
-    }
-  : null,
+      ? {
+          id: activeJob.id,
+          status: activeJob.status as LoaderData["activeJob"] extends infer T
+            ? T extends { status: infer S } ? S : never
+            : never,
+        }
+      : null,
     latestDraft: sanitizedLatestDraft,
     policyWarnings,
     shopPlan,
@@ -399,10 +336,8 @@ export async function loader({ request, params }: LoaderFunctionArgs): Promise<R
       creditsRemaining: credits.creditsRemaining,
       resetDate: credits.resetDate.toISOString(),
     },
-    customTemplates: customTemplates.map((t) => ({
-      ...t,
-      createdAt: t.createdAt.toISOString(),
-    })),
+    customTemplates: customTemplates.map((t) => ({ ...t, createdAt: t.createdAt.toISOString() })),
+    planFeatures,
   });
 }
 
@@ -415,67 +350,38 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
 
   const rawId = params.productId ?? "";
   const productGid = normalizeProductGid(rawId);
-  if (!productGid) {
-    throw new Response("Invalid product ID", { status: 400 });
-  }
+  if (!productGid) throw new Response("Invalid product ID", { status: 400 });
 
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
 
   // ── Intent: create_template ─────────────────────────────────────────────
-   if (intent === "create_template") {
+  if (intent === "create_template") {
     const name = String(form.get("name") ?? "").trim().slice(0, 80);
     const instruction = String(form.get("instruction") ?? "").trim().slice(0, 1000);
 
     if (!name || !instruction) {
-      return json(
-        { ok: false, kind: "error", error: "Name and instruction are required", code: "INVALID_INPUT" },
-        { status: 400 },
-      );
+      return json({ ok: false, kind: "error", error: "Name and instruction are required", code: "INVALID_INPUT" }, { status: 400 });
     }
 
-    // ── Plan gate: custom templates require advanced or pro ──────────────
     const templatePlan = await getShopPlan(billing);
     if (templatePlan === "free" || templatePlan === "basic") {
       return json(
-        {
-          ok: false,
-          kind: "error",
-          error: "Custom writing styles require an Advanced or Pro plan. Upgrade to unlock this feature.",
-          code: "PLAN_UPGRADE_REQUIRED",
-          plan: templatePlan,
-        },
+        { ok: false, kind: "error", error: "Custom writing styles require an Advanced or Pro plan.", code: "PLAN_UPGRADE_REQUIRED", plan: templatePlan },
         { status: 403 },
       );
     }
 
     const count = await db.customTemplate.count({ where: { shopDomain } });
-
     if (count >= 10) {
-      return json(
-        {
-          ok: false,
-          kind: "error",
-          error: "Maximum 10 custom templates allowed. Delete one to add more.",
-          code: "TEMPLATE_LIMIT",
-        },
-        { status: 400 },
-      );
+      return json({ ok: false, kind: "error", error: "Maximum 10 custom templates allowed.", code: "TEMPLATE_LIMIT" }, { status: 400 });
     }
 
-    const template = await db.customTemplate.create({
-      data: { shopDomain, name, instruction },
-    });
-
+    const template = await db.customTemplate.create({ data: { shopDomain, name, instruction } });
     return json({
       ok: true,
       kind: "create_template",
-      template: {
-        id: template.id,
-        name: template.name,
-        instruction: template.instruction,
-        createdAt: template.createdAt.toISOString(),
-      },
+      template: { id: template.id, name: template.name, instruction: template.instruction, createdAt: template.createdAt.toISOString() },
     });
   }
 
@@ -483,28 +389,17 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
   if (intent === "delete_template") {
     const templateId = String(form.get("templateId") ?? "").trim();
     if (!templateId) {
-      return json(
-        { ok: false, kind: "error", error: "Missing templateId", code: "INVALID_INPUT" },
-        { status: 400 },
-      );
+      return json({ ok: false, kind: "error", error: "Missing templateId", code: "INVALID_INPUT" }, { status: 400 });
     }
 
-    // ── Plan gate: only advanced/pro can manage custom templates ─────────
     const deletePlan = await getShopPlan(billing);
     if (deletePlan === "free" || deletePlan === "basic") {
       return json(
-        {
-          ok: false,
-          kind: "error",
-          error: "Custom writing styles require an Advanced or Pro plan.",
-          code: "PLAN_UPGRADE_REQUIRED",
-          plan: deletePlan,
-        },
+        { ok: false, kind: "error", error: "Custom writing styles require an Advanced or Pro plan.", code: "PLAN_UPGRADE_REQUIRED", plan: deletePlan },
         { status: 403 },
       );
     }
 
-    // shopDomain in where clause prevents deleting another shop's template
     await db.customTemplate.deleteMany({ where: { id: templateId, shopDomain } });
     return json({ ok: true, kind: "delete_template" });
   }
@@ -518,12 +413,9 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
       const isGlobal = limitResult.reason === "global_limit";
       return json(
         {
-          ok: false,
-          kind: "error",
+          ok: false, kind: "error",
           code: isGlobal ? "GLOBAL_LIMIT_REACHED" : "RATE_LIMIT_EXCEEDED",
-          error: isGlobal
-            ? "Service is temporarily at capacity. Please try again in a few hours."
-            : "Too many generation requests. Please try again in a minute.",
+          error: isGlobal ? "Service is temporarily at capacity." : "Too many generation requests. Please try again in a minute.",
           plan,
         },
         { status: 429 },
@@ -531,120 +423,72 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     }
 
     const rawVibe = String(form.get("vibe") ?? "casual").slice(0, 40);
-  const format = String(form.get("format") ?? "paragraph").slice(0, 40);
-  const includeSocials = form.get("includeSocials") === "true";
-  const keywordsCsv = keywordCsvFromInput(form.get("keywords"));
-
-    // ── Custom template instruction ──────────────────────────────────────
-    // When vibe starts with "custom:", the client sends the instruction text.
-    // We sanitize it server-side: plain text only, no HTML.
-    const customInstruction = String(form.get("customInstruction") ?? "")
-    .trim()
-    .slice(0, 1000);
-
-    // Normalize vibe: strip "custom:" prefix for storage, use "custom" as the vibe value
+    const format = String(form.get("format") ?? "paragraph").slice(0, 40);
+    const includeSocials = form.get("includeSocials") === "true";
+    const keywordsCsv = keywordCsvFromInput(form.get("keywords"));
+    const customInstruction = String(form.get("customInstruction") ?? "").trim().slice(0, 1000);
     const vibe = rawVibe.startsWith("custom:") ? "custom" : rawVibe;
 
-    // Idempotency: if a matching active job exists within lookback, return it
-     const lookback = new Date(Date.now() - ACTIVE_JOB_LOOKBACK_MS);
-  const existing = await db.generationJob.findFirst({
-    where: {
-      shopDomain,
-      productId: productGid,
-      status: { in: [...ACTIVE_JOB_STATUSES] as any },
-      createdAt: { gte: lookback },
-      vibe,
-      format,
-      keywords: keywordsCsv,
-      includeSocials,
-      customInstruction: customInstruction || null,
-    },
-    orderBy: { createdAt: "desc" },
-    select: { id: true, status: true },
-  });
+    const lookback = new Date(Date.now() - ACTIVE_JOB_LOOKBACK_MS);
+    const existing = await db.generationJob.findFirst({
+      where: {
+        shopDomain, productId: productGid,
+        status: { in: [...ACTIVE_JOB_STATUSES] as any },
+        createdAt: { gte: lookback },
+        vibe, format, keywords: keywordsCsv, includeSocials,
+        customInstruction: customInstruction || null,
+      },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, status: true },
+    });
 
     if (existing) {
-      return json({
-        ok: true,
-        kind: "generate",
-        jobId: existing.id,
-        status: existing.status,
-        alreadyQueued: true,
-      });
+      return json({ ok: true, kind: "generate", jobId: existing.id, status: existing.status, alreadyQueued: true });
     }
 
     const creditRequestId = crypto.randomUUID();
     const credit = await deductCredits({
-      shopId: shopDomain,
-      plan,
-      amount: CREDIT_COSTS.standardGeneration,
-      requestId: creditRequestId,
-      kind: "generation",
+      shopId: shopDomain, plan, amount: CREDIT_COSTS.standardGeneration,
+      requestId: creditRequestId, kind: "generation",
       metadata: { intent: "generate", productId: productGid },
     });
 
     if (!credit.allowed) {
       return json(
-        {
-          ok: false,
-          kind: "error",
-          code: "INSUFFICIENT_CREDITS",
-          error: "Not enough credits",
-          creditsRemaining: credit.creditsRemaining,
-          creditsLimit: credit.creditsLimit,
-          resetDate: credit.resetDate.toISOString(),
-          plan,
-        },
+        { ok: false, kind: "error", code: "INSUFFICIENT_CREDITS", error: "Not enough credits",
+          creditsRemaining: credit.creditsRemaining, creditsLimit: credit.creditsLimit,
+          resetDate: credit.resetDate.toISOString(), plan },
         { status: 402 },
       );
     }
 
-     try {
-    const { jobIds, skipped } = await enqueueGenerationJobs({
-      shopDomain,
-      productIds: [productGid],
-      vibe,
-      format,
-      keywords: keywordsCsv,
-      includeSocials,
-      customInstruction: customInstruction || undefined,
-      creditRequestId,
-      creditCost: CREDIT_COSTS.standardGeneration,
-      adminGraphql: admin.graphql,
-    });
+    try {
+      const { jobIds, skipped } = await enqueueGenerationJobs({
+        shopDomain, productIds: [productGid], vibe, format, keywords: keywordsCsv,
+        includeSocials, customInstruction: customInstruction || undefined,
+        creditRequestId, creditCost: CREDIT_COSTS.standardGeneration, adminGraphql: admin.graphql,
+      });
 
-    // Product wasn't found or access was denied — no job was created.
-    if (skipped.includes(productGid) || jobIds.length === 0) {
+      if (skipped.includes(productGid) || jobIds.length === 0) {
+        await refundCredits({
+          shopId: shopDomain, plan, amount: CREDIT_COSTS.standardGeneration,
+          requestId: `${creditRequestId}:enqueue-empty`,
+          metadata: { intent: "generate", productId: productGid },
+        });
+        return json({ ok: false, kind: "error", error: "Product not found or access denied", code: "NOT_FOUND_OR_DENIED" }, { status: 403 });
+      }
+
+      return json({ ok: true, kind: "generate", jobId: jobIds[0], status: "PENDING" });
+    } catch (err) {
       await refundCredits({
-        shopId: shopDomain,
-        plan,
-        amount: CREDIT_COSTS.standardGeneration,
-        requestId: `${creditRequestId}:enqueue-empty`,
+        shopId: shopDomain, plan, amount: CREDIT_COSTS.standardGeneration,
+        requestId: `${creditRequestId}:enqueue-error`,
         metadata: { intent: "generate", productId: productGid },
       });
-      return json(
-        { ok: false, kind: "error", error: "Product not found or access denied", code: "NOT_FOUND_OR_DENIED" },
-        { status: 403 },
-      );
+      const message = err instanceof Error ? err.message : "Unknown error";
+      return json({ ok: false, kind: "error", error: message, code: "GENERATE_FAILED" }, { status: 500 });
     }
-
-    return json({ ok: true, kind: "generate", jobId: jobIds[0], status: "PENDING" });
-
-  } catch (err) {
-    await refundCredits({
-      shopId: shopDomain,
-      plan,
-      amount: CREDIT_COSTS.standardGeneration,
-      requestId: `${creditRequestId}:enqueue-error`,
-      metadata: { intent: "generate", productId: productGid },
-    });
-    const message = err instanceof Error ? err.message : "Unknown error";
-    return json(
-      { ok: false, kind: "error", error: message, code: "GENERATE_FAILED" },
-      { status: 500 },
-    );
   }
-}
 
   // ── Intent: apply ────────────────────────────────────────────────────────
   if (intent === "apply") {
@@ -660,41 +504,25 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
 
     const parsed = job?.result ? parseDraftResultOrNull(job.result) : null;
     if (!parsed) {
-      return json(
-        { ok: false, kind: "error", error: "Draft not found or invalid", code: "DRAFT_NOT_FOUND" },
-        { status: 404 },
-      );
+      return json({ ok: false, kind: "error", error: "Draft not found or invalid", code: "DRAFT_NOT_FOUND" }, { status: 404 });
     }
 
-   const rawHtml = typeof parsed.body_html === "string" ? parsed.body_html : "";
-const cleanHtml = sanitiseHtml(rawHtml);
+    const rawHtml = typeof parsed.body_html === "string" ? parsed.body_html : "";
+    const cleanHtml = sanitiseHtml(rawHtml);
+    const seoTitle = typeof parsed.meta_title === "string" ? parsed.meta_title.slice(0, 70) : undefined;
+    const seoDescription = typeof parsed.meta_description === "string" ? parsed.meta_description.slice(0, 320) : undefined;
 
-// SEO fields — Shopify enforces ~70 char title / ~320 char description limits
-const seoTitle = typeof parsed.meta_title === "string"
-  ? parsed.meta_title.slice(0, 70)
-  : undefined;
-const seoDescription = typeof parsed.meta_description === "string"
-  ? parsed.meta_description.slice(0, 320)
-  : undefined;
-
-const gql = await adminGraphqlWithRetry<any>(
-  admin.graphql,
-  `#graphql
-  mutation UpdateDescription($id: ID!, $descriptionHtml: String!, $seo: SEOInput) {
-    productUpdate(input: { id: $id, descriptionHtml: $descriptionHtml, seo: $seo }) {
-      product { id }
-      userErrors { field message }
-    }
-  }`,
-  {
-    id: productGid,
-    descriptionHtml: cleanHtml,
-    seo:
-      seoTitle || seoDescription
-        ? { title: seoTitle, description: seoDescription }
-        : null,
-  },
-);
+    const gql = await adminGraphqlWithRetry<any>(
+      admin.graphql,
+      `#graphql
+      mutation UpdateDescription($id: ID!, $descriptionHtml: String!, $seo: SEOInput) {
+        productUpdate(input: { id: $id, descriptionHtml: $descriptionHtml, seo: $seo }) {
+          product { id }
+          userErrors { field message }
+        }
+      }`,
+      { id: productGid, descriptionHtml: cleanHtml, seo: seoTitle || seoDescription ? { title: seoTitle, description: seoDescription } : null },
+    );
 
     const userErrors = gql.data?.productUpdate?.userErrors ?? [];
     if (Array.isArray(userErrors) && userErrors.length > 0) {
@@ -716,13 +544,9 @@ const gql = await adminGraphqlWithRetry<any>(
       if (!limitResult.allowed) {
         return json(
           {
-            ok: false,
-            kind: "error",
+            ok: false, kind: "error",
             code: limitResult.reason === "global_limit" ? "GLOBAL_LIMIT_REACHED" : "RATE_LIMIT_EXCEEDED",
-            error:
-              limitResult.reason === "global_limit"
-                ? "Service is temporarily at capacity. Please try again in a few hours."
-                : "Too many keyword requests. Please try again in a minute.",
+            error: limitResult.reason === "global_limit" ? "Service is temporarily at capacity." : "Too many keyword requests.",
             plan: keywordPlan,
           },
           { status: 429 },
@@ -731,62 +555,39 @@ const gql = await adminGraphqlWithRetry<any>(
 
       keywordCreditRequestId = crypto.randomUUID();
       const credit = await deductCredits({
-        shopId: shopDomain,
-        plan: keywordPlan,
-        amount: CREDIT_COSTS.keywordSuggestion,
-        requestId: keywordCreditRequestId,
-        kind: "generation",
+        shopId: shopDomain, plan: keywordPlan, amount: CREDIT_COSTS.keywordSuggestion,
+        requestId: keywordCreditRequestId, kind: "generation",
         metadata: { intent: "suggest_keywords", productId: productGid },
       });
 
       if (!credit.allowed) {
         return json(
-          {
-            ok: false,
-            kind: "error",
-            code: "INSUFFICIENT_CREDITS",
-            error: "Not enough credits",
-            creditsRemaining: credit.creditsRemaining,
-            creditsLimit: credit.creditsLimit,
-            resetDate: credit.resetDate.toISOString(),
-            plan: keywordPlan,
-          },
+          { ok: false, kind: "error", code: "INSUFFICIENT_CREDITS", error: "Not enough credits",
+            creditsRemaining: credit.creditsRemaining, creditsLimit: credit.creditsLimit,
+            resetDate: credit.resetDate.toISOString(), plan: keywordPlan },
           { status: 402 },
         );
       }
 
       const product = await fetchProductMeta(admin.graphql, productGid);
-      if (!product) {
-        throw new Response("Product not found", { status: 404 });
-      }
+      if (!product) throw new Response("Product not found", { status: 404 });
 
       const keywords = await suggestKeywords(
-        String(product.title ?? ""),
-        String(product.vendor ?? ""),
-        String(product.productType ?? ""),
-        Array.isArray(product.tags)
-          ? product.tags.filter((t) => typeof t === "string")
-          : [],
+        String(product.title ?? ""), String(product.vendor ?? ""), String(product.productType ?? ""),
+        Array.isArray(product.tags) ? product.tags.filter((t) => typeof t === "string") : [],
       );
 
-      const safe = normalizeKeywordList(keywords).slice(0, 20);
-
-      return json({ ok: true, kind: "suggest_keywords", keywords: safe });
+      return json({ ok: true, kind: "suggest_keywords", keywords: normalizeKeywordList(keywords).slice(0, 20) });
     } catch (err) {
       if (keywordCreditRequestId) {
         await refundCredits({
-          shopId: shopDomain,
-          plan: keywordPlan,
-          amount: CREDIT_COSTS.keywordSuggestion,
+          shopId: shopDomain, plan: keywordPlan, amount: CREDIT_COSTS.keywordSuggestion,
           requestId: `${keywordCreditRequestId}:suggest-failed`,
           metadata: { intent: "suggest_keywords", productId: productGid },
         });
       }
       const message = err instanceof Error ? err.message : "Unknown error";
-      return json(
-        { ok: false, kind: "error", error: message, code: "SUGGEST_FAILED" },
-        { status: 500 },
-      );
+      return json({ ok: false, kind: "error", error: message, code: "SUGGEST_FAILED" }, { status: 500 });
     }
   }
 
@@ -794,233 +595,295 @@ const gql = await adminGraphqlWithRetry<any>(
   if (intent === "fetch_description") {
     const gql = await adminGraphqlWithRetry<any>(
       admin.graphql,
-      `#graphql
-      query ProductDesc($id: ID!) {
-        product(id: $id) { descriptionHtml }
-      }`,
+      `#graphql query ProductDesc($id: ID!) { product(id: $id) { descriptionHtml } }`,
       { id: productGid },
     );
-
     const descriptionHtml: string = String(gql.data?.product?.descriptionHtml ?? "");
     const sanitized = sanitiseHtml(descriptionHtml);
-
-    return json({
-      ok: true,
-      kind: "fetch_description",
-      descriptionHtml: sanitized,
-      descriptionText: stripHtml(descriptionHtml),
-      fetchedAt: nowIso(),
-    });
-  }
-// ── Intent: generate_alt_text (single image) ────────────────────────────
-if (intent === "generate_alt_text") {
-  const imageId = String(form.get("imageId") ?? "");
-  const imageIndex = Number(form.get("imageIndex") ?? 0);
-  const totalImages = Number(form.get("totalImages") ?? 1);
-
-  if (!isValidMediaImageGid(imageId)) {
-    return json({ ok: false, kind: "error", error: "Invalid image ID", code: "INVALID_IMAGE_ID" }, { status: 400 });
-  }
-  if (!Number.isFinite(imageIndex) || imageIndex < 0 || !Number.isFinite(totalImages) || totalImages < 1) {
-    return json({ ok: false, kind: "error", error: "Invalid image position", code: "INVALID_INPUT" }, { status: 400 });
+    return json({ ok: true, kind: "fetch_description", descriptionHtml: sanitized, descriptionText: stripHtml(descriptionHtml), fetchedAt: nowIso() });
   }
 
-  const plan = await getShopPlan(billing);
-  let creditRequestId: string | null = null;
+  // ── Intent: generate_alt_text ────────────────────────────────────────────
+  if (intent === "generate_alt_text") {
+    const plan = await getShopPlan(billing);
 
-  try {
-    creditRequestId = crypto.randomUUID();
-    const credit = await deductCredits({
-      shopId: shopDomain,
-      plan,
-      amount: CREDIT_COSTS.altTextGeneration,
-      requestId: creditRequestId,
-      kind: "generation",
-      metadata: { intent: "generate_alt_text", productId: productGid, imageId },
-    });
-
-    if (!credit.allowed) {
+    if (!canUseFeature(plan, "altText")) {
       return json(
-        {
-          ok: false, kind: "error", code: "INSUFFICIENT_CREDITS", error: "Not enough credits",
-          creditsRemaining: credit.creditsRemaining, creditsLimit: credit.creditsLimit,
-          resetDate: credit.resetDate.toISOString(), plan,
-        },
-        { status: 402 },
+        { ok: false, kind: "error", error: "Image alt text generation requires a Basic plan or higher.", code: "PLAN_UPGRADE_REQUIRED", plan },
+        { status: 403 },
       );
     }
 
-    const product = await fetchProductMeta(admin.graphql, productGid);
-    if (!product) throw new Response("Product not found", { status: 404 });
+    const imageId = String(form.get("imageId") ?? "");
+    const imageIndex = Number(form.get("imageIndex") ?? 0);
+    const totalImages = Number(form.get("totalImages") ?? 1);
 
-    const altText = await generateImageAltText({
-      title: product.title,
-      vendor: product.vendor,
-      productType: product.productType,
-      imageIndex,
-      totalImages,
-    });
+    if (!isValidMediaImageGid(imageId)) {
+      return json({ ok: false, kind: "error", error: "Invalid image ID", code: "INVALID_IMAGE_ID" }, { status: 400 });
+    }
+    if (!Number.isFinite(imageIndex) || imageIndex < 0 || !Number.isFinite(totalImages) || totalImages < 1) {
+      return json({ ok: false, kind: "error", error: "Invalid image position", code: "INVALID_INPUT" }, { status: 400 });
+    }
 
-    return json({ ok: true, kind: "generate_alt_text", imageId, altText });
-  } catch (err) {
-    if (creditRequestId) {
-      await refundCredits({
+    let creditRequestId: string | null = null;
+    try {
+      creditRequestId = crypto.randomUUID();
+      const credit = await deductCredits({
         shopId: shopDomain, plan, amount: CREDIT_COSTS.altTextGeneration,
-        requestId: `${creditRequestId}:alt-text-failed`,
+        requestId: creditRequestId, kind: "generation",
         metadata: { intent: "generate_alt_text", productId: productGid, imageId },
       });
+
+      if (!credit.allowed) {
+        return json(
+          { ok: false, kind: "error", code: "INSUFFICIENT_CREDITS", error: "Not enough credits",
+            creditsRemaining: credit.creditsRemaining, creditsLimit: credit.creditsLimit,
+            resetDate: credit.resetDate.toISOString(), plan },
+          { status: 402 },
+        );
+      }
+
+      const product = await fetchProductMeta(admin.graphql, productGid);
+      if (!product) throw new Response("Product not found", { status: 404 });
+
+      const altText = await generateImageAltText({ title: product.title, vendor: product.vendor, productType: product.productType, imageIndex, totalImages });
+      return json({ ok: true, kind: "generate_alt_text", imageId, altText });
+    } catch (err) {
+      if (creditRequestId) {
+        await refundCredits({
+          shopId: shopDomain, plan, amount: CREDIT_COSTS.altTextGeneration,
+          requestId: `${creditRequestId}:alt-text-failed`,
+          metadata: { intent: "generate_alt_text", productId: productGid, imageId },
+        });
+      }
+      const message = err instanceof Error ? err.message : "Unknown error";
+      return json({ ok: false, kind: "error", error: message, code: "ALT_TEXT_FAILED" }, { status: 500 });
     }
-    const message = err instanceof Error ? err.message : "Unknown error";
-    return json({ ok: false, kind: "error", error: message, code: "ALT_TEXT_FAILED" }, { status: 500 });
-  }
-}
-
-// ── Intent: generate_alt_text_bulk (all images for this product) ────────
-if (intent === "generate_alt_text_bulk") {
-  let imageIds: string[];
-  try {
-    imageIds = JSON.parse(String(form.get("imageIds") ?? "[]"));
-  } catch {
-    return json({ ok: false, kind: "error", error: "Invalid imageIds", code: "INVALID_INPUT" }, { status: 400 });
   }
 
-  if (!Array.isArray(imageIds) || imageIds.length === 0 || imageIds.length > 50) {
-    return json({ ok: false, kind: "error", error: "Invalid image list", code: "INVALID_INPUT" }, { status: 400 });
-  }
-  if (!imageIds.every((id) => typeof id === "string" && isValidMediaImageGid(id))) {
-    return json({ ok: false, kind: "error", error: "Invalid image ID in list", code: "INVALID_IMAGE_ID" }, { status: 400 });
-  }
+  // ── Intent: generate_alt_text_bulk ───────────────────────────────────────
+  if (intent === "generate_alt_text_bulk") {
+    const plan = await getShopPlan(billing);
 
-  const plan = await getShopPlan(billing);
-  const totalCost = CREDIT_COSTS.altTextGeneration * imageIds.length;
-  let creditRequestId: string | null = null;
-
-  try {
-    creditRequestId = crypto.randomUUID();
-    const credit = await deductCredits({
-      shopId: shopDomain,
-      plan,
-      amount: totalCost,
-      requestId: creditRequestId,
-      kind: "generation",
-      metadata: { intent: "generate_alt_text_bulk", productId: productGid, count: imageIds.length },
-    });
-
-    if (!credit.allowed) {
+    if (!canUseFeature(plan, "altText")) {
       return json(
-        {
-          ok: false, kind: "error", code: "INSUFFICIENT_CREDITS", error: "Not enough credits",
-          creditsRemaining: credit.creditsRemaining, creditsLimit: credit.creditsLimit,
-          resetDate: credit.resetDate.toISOString(), plan,
-        },
-        { status: 402 },
+        { ok: false, kind: "error", error: "Image alt text generation requires a Basic plan or higher.", code: "PLAN_UPGRADE_REQUIRED", plan },
+        { status: 403 },
       );
     }
 
-    const product = await fetchProductMeta(admin.graphql, productGid);
-    if (!product) throw new Response("Product not found", { status: 404 });
+    let imageIds: string[];
+    try {
+      imageIds = JSON.parse(String(form.get("imageIds") ?? "[]"));
+    } catch {
+      return json({ ok: false, kind: "error", error: "Invalid imageIds", code: "INVALID_INPUT" }, { status: 400 });
+    }
 
-    const altTexts = await generateImageAltTextBulk({
-      title: product.title,
-      vendor: product.vendor,
-      productType: product.productType,
-      imageCount: imageIds.length,
-    });
+    if (!Array.isArray(imageIds) || imageIds.length === 0 || imageIds.length > 50) {
+      return json({ ok: false, kind: "error", error: "Invalid image list", code: "INVALID_INPUT" }, { status: 400 });
+    }
+    if (!imageIds.every((id) => typeof id === "string" && isValidMediaImageGid(id))) {
+      return json({ ok: false, kind: "error", error: "Invalid image ID in list", code: "INVALID_IMAGE_ID" }, { status: 400 });
+    }
 
-    const results = imageIds.map((imageId, i) => ({ imageId, altText: altTexts[i] ?? "" }));
-    return json({ ok: true, kind: "generate_alt_text_bulk", results });
-  } catch (err) {
-    if (creditRequestId) {
-      await refundCredits({
+    const totalCost = CREDIT_COSTS.altTextGeneration * imageIds.length;
+    let creditRequestId: string | null = null;
+    try {
+      creditRequestId = crypto.randomUUID();
+      const credit = await deductCredits({
         shopId: shopDomain, plan, amount: totalCost,
-        requestId: `${creditRequestId}:alt-text-bulk-failed`,
-        metadata: { intent: "generate_alt_text_bulk", productId: productGid },
+        requestId: creditRequestId, kind: "generation",
+        metadata: { intent: "generate_alt_text_bulk", productId: productGid, count: imageIds.length },
       });
-    }
-    const message = err instanceof Error ? err.message : "Unknown error";
-    return json({ ok: false, kind: "error", error: message, code: "ALT_TEXT_BULK_FAILED" }, { status: 500 });
-  }
-}
 
-// ── Intent: apply_alt_text (single image) ────────────────────────────────
-if (intent === "apply_alt_text") {
-  const imageId = String(form.get("imageId") ?? "");
-  const altText = String(form.get("altText") ?? "").trim().slice(0, 512);
-
-  if (!isValidMediaImageGid(imageId)) {
-    return json({ ok: false, kind: "error", error: "Invalid image ID", code: "INVALID_IMAGE_ID" }, { status: 400 });
-  }
-  if (!altText) {
-    return json({ ok: false, kind: "error", error: "Alt text cannot be empty", code: "INVALID_INPUT" }, { status: 400 });
-  }
-
-  const cleanAlt = stripHtml(altText);
-
-  const gql = await adminGraphqlWithRetry<any>(
-    admin.graphql,
-    `#graphql
-    mutation UpdateImageAlt($productId: ID!, $media: [UpdateMediaInput!]!) {
-      productUpdateMedia(productId: $productId, media: $media) {
-        media { id, alt }
-        mediaUserErrors { field, message }
+      if (!credit.allowed) {
+        return json(
+          { ok: false, kind: "error", code: "INSUFFICIENT_CREDITS", error: "Not enough credits",
+            creditsRemaining: credit.creditsRemaining, creditsLimit: credit.creditsLimit,
+            resetDate: credit.resetDate.toISOString(), plan },
+          { status: 402 },
+        );
       }
-    }`,
-    { productId: productGid, media: [{ id: imageId, alt: cleanAlt }] },
-  );
 
-  const userErrors = gql.data?.productUpdateMedia?.mediaUserErrors ?? [];
-  if (Array.isArray(userErrors) && userErrors.length > 0) {
-    const msg = userErrors.map((e: { message: string }) => e.message).join("; ");
-    return json({ ok: false, kind: "error", error: msg, code: "SHOPIFY_USER_ERRORS" }, { status: 422 });
-  }
+      const product = await fetchProductMeta(admin.graphql, productGid);
+      if (!product) throw new Response("Product not found", { status: 404 });
 
-  return json({ ok: true, kind: "apply_alt_text", imageId, applied: true });
-}
-
-// ── Intent: apply_alt_text_bulk ──────────────────────────────────────────
-if (intent === "apply_alt_text_bulk") {
-  let items: { imageId: string; altText: string }[];
-  try {
-    items = JSON.parse(String(form.get("items") ?? "[]"));
-  } catch {
-    return json({ ok: false, kind: "error", error: "Invalid items", code: "INVALID_INPUT" }, { status: 400 });
-  }
-
-  if (!Array.isArray(items) || items.length === 0 || items.length > 50) {
-    return json({ ok: false, kind: "error", error: "Invalid items list", code: "INVALID_INPUT" }, { status: 400 });
-  }
-
-  const media: { id: string; alt: string }[] = [];
-  for (const item of items) {
-    if (
-      !item || typeof item.imageId !== "string" || !isValidMediaImageGid(item.imageId) ||
-      typeof item.altText !== "string" || !item.altText.trim()
-    ) {
-      return json({ ok: false, kind: "error", error: "Invalid item in list", code: "INVALID_INPUT" }, { status: 400 });
-    }
-    media.push({ id: item.imageId, alt: stripHtml(item.altText.trim().slice(0, 512)) });
-  }
-
-  const gql = await adminGraphqlWithRetry<any>(
-    admin.graphql,
-    `#graphql
-    mutation UpdateImageAltBulk($productId: ID!, $media: [UpdateMediaInput!]!) {
-      productUpdateMedia(productId: $productId, media: $media) {
-        media { id, alt }
-        mediaUserErrors { field, message }
+      const altTexts = await generateImageAltTextBulk({ title: product.title, vendor: product.vendor, productType: product.productType, imageCount: imageIds.length });
+      const results = imageIds.map((imageId, i) => ({ imageId, altText: altTexts[i] ?? "" }));
+      return json({ ok: true, kind: "generate_alt_text_bulk", results });
+    } catch (err) {
+      if (creditRequestId) {
+        await refundCredits({
+          shopId: shopDomain, plan, amount: totalCost,
+          requestId: `${creditRequestId}:alt-text-bulk-failed`,
+          metadata: { intent: "generate_alt_text_bulk", productId: productGid },
+        });
       }
-    }`,
-    { productId: productGid, media },
-  );
-
-  const userErrors = gql.data?.productUpdateMedia?.mediaUserErrors ?? [];
-  if (Array.isArray(userErrors) && userErrors.length > 0) {
-    const msg = userErrors.map((e: { message: string }) => e.message).join("; ");
-    return json({ ok: false, kind: "error", error: msg, code: "SHOPIFY_USER_ERRORS" }, { status: 422 });
+      const message = err instanceof Error ? err.message : "Unknown error";
+      return json({ ok: false, kind: "error", error: message, code: "ALT_TEXT_BULK_FAILED" }, { status: 500 });
+    }
   }
 
-  return json({ ok: true, kind: "apply_alt_text_bulk", applied: true, count: media.length });
-}
+  // ── Intent: apply_alt_text ───────────────────────────────────────────────
+  if (intent === "apply_alt_text") {
+    const plan = await getShopPlan(billing);
+    if (!canUseFeature(plan, "altText")) {
+      return json({ ok: false, kind: "error", error: "Upgrade required.", code: "PLAN_UPGRADE_REQUIRED", plan }, { status: 403 });
+    }
+
+    const imageId = String(form.get("imageId") ?? "");
+    const altText = String(form.get("altText") ?? "").trim().slice(0, 512);
+
+    if (!isValidMediaImageGid(imageId)) {
+      return json({ ok: false, kind: "error", error: "Invalid image ID", code: "INVALID_IMAGE_ID" }, { status: 400 });
+    }
+    if (!altText) {
+      return json({ ok: false, kind: "error", error: "Alt text cannot be empty", code: "INVALID_INPUT" }, { status: 400 });
+    }
+
+    const cleanAlt = stripHtml(altText);
+    const gql = await adminGraphqlWithRetry<any>(
+      admin.graphql,
+      `#graphql
+      mutation UpdateImageAlt($productId: ID!, $media: [UpdateMediaInput!]!) {
+        productUpdateMedia(productId: $productId, media: $media) {
+          media { id alt }
+          mediaUserErrors { field message }
+        }
+      }`,
+      { productId: productGid, media: [{ id: imageId, alt: cleanAlt }] },
+    );
+
+    const userErrors = gql.data?.productUpdateMedia?.mediaUserErrors ?? [];
+    if (Array.isArray(userErrors) && userErrors.length > 0) {
+      return json({ ok: false, kind: "error", error: userErrors.map((e: { message: string }) => e.message).join("; "), code: "SHOPIFY_USER_ERRORS" }, { status: 422 });
+    }
+    return json({ ok: true, kind: "apply_alt_text", imageId, applied: true });
+  }
+
+  // ── Intent: apply_alt_text_bulk ──────────────────────────────────────────
+  if (intent === "apply_alt_text_bulk") {
+    const plan = await getShopPlan(billing);
+    if (!canUseFeature(plan, "altText")) {
+      return json({ ok: false, kind: "error", error: "Upgrade required.", code: "PLAN_UPGRADE_REQUIRED", plan }, { status: 403 });
+    }
+
+    let items: { imageId: string; altText: string }[];
+    try {
+      items = JSON.parse(String(form.get("items") ?? "[]"));
+    } catch {
+      return json({ ok: false, kind: "error", error: "Invalid items", code: "INVALID_INPUT" }, { status: 400 });
+    }
+
+    if (!Array.isArray(items) || items.length === 0 || items.length > 50) {
+      return json({ ok: false, kind: "error", error: "Invalid items list", code: "INVALID_INPUT" }, { status: 400 });
+    }
+
+    const media: { id: string; alt: string }[] = [];
+    for (const item of items) {
+      if (!item || typeof item.imageId !== "string" || !isValidMediaImageGid(item.imageId) || typeof item.altText !== "string" || !item.altText.trim()) {
+        return json({ ok: false, kind: "error", error: "Invalid item in list", code: "INVALID_INPUT" }, { status: 400 });
+      }
+      media.push({ id: item.imageId, alt: stripHtml(item.altText.trim().slice(0, 512)) });
+    }
+
+    const gql = await adminGraphqlWithRetry<any>(
+      admin.graphql,
+      `#graphql
+      mutation UpdateImageAltBulk($productId: ID!, $media: [UpdateMediaInput!]!) {
+        productUpdateMedia(productId: $productId, media: $media) {
+          media { id alt }
+          mediaUserErrors { field message }
+        }
+      }`,
+      { productId: productGid, media },
+    );
+
+    const userErrors = gql.data?.productUpdateMedia?.mediaUserErrors ?? [];
+    if (Array.isArray(userErrors) && userErrors.length > 0) {
+      return json({ ok: false, kind: "error", error: userErrors.map((e: { message: string }) => e.message).join("; "), code: "SHOPIFY_USER_ERRORS" }, { status: 422 });
+    }
+    return json({ ok: true, kind: "apply_alt_text_bulk", applied: true, count: media.length });
+  }
+
+  // ── Intent: generate_meta ────────────────────────────────────────────────
+  if (intent === "generate_meta") {
+    const plan = await getShopPlan(billing);
+
+    if (!canUseFeature(plan, "metaGeneration")) {
+      return json(
+        { ok: false, kind: "error", error: "Meta title & description generation requires a Basic plan or higher.", code: "PLAN_UPGRADE_REQUIRED", plan },
+        { status: 403 },
+      );
+    }
+
+    let creditRequestId: string | null = null;
+    try {
+      creditRequestId = crypto.randomUUID();
+      const credit = await deductCredits({
+        shopId: shopDomain, plan, amount: CREDIT_COSTS.metaGeneration,
+        requestId: creditRequestId, kind: "generation",
+        metadata: { intent: "generate_meta", productId: productGid },
+      });
+
+      if (!credit.allowed) {
+        return json(
+          { ok: false, kind: "error", code: "INSUFFICIENT_CREDITS", error: "Not enough credits", creditsRemaining: credit.creditsRemaining, plan },
+          { status: 402 },
+        );
+      }
+
+      const product = await fetchProductMeta(admin.graphql, productGid);
+      if (!product) throw new Response("Product not found", { status: 404 });
+
+      const keywords = normalizeKeywordList(String(form.get("keywords") ?? ""));
+      const result = await generateMetaOnly({ title: product.title, vendor: product.vendor, productType: product.productType, tags: product.tags, keywords });
+      return json({ ok: true, kind: "generate_meta", ...result });
+    } catch (err) {
+      if (creditRequestId) {
+        await refundCredits({
+          shopId: shopDomain, plan, amount: CREDIT_COSTS.metaGeneration,
+          requestId: `${creditRequestId}:meta-failed`,
+          metadata: { intent: "generate_meta", productId: productGid },
+        });
+      }
+      const message = err instanceof Error ? err.message : "Unknown error";
+      return json({ ok: false, kind: "error", error: message, code: "META_FAILED" }, { status: 500 });
+    }
+  }
+
+  // ── Intent: apply_meta ───────────────────────────────────────────────────
+  if (intent === "apply_meta") {
+    const plan = await getShopPlan(billing);
+    if (!canUseFeature(plan, "metaGeneration")) {
+      return json({ ok: false, kind: "error", error: "Upgrade required.", code: "PLAN_UPGRADE_REQUIRED", plan }, { status: 403 });
+    }
+
+    const metaTitle = String(form.get("metaTitle") ?? "").trim().slice(0, 70);
+    const metaDescription = String(form.get("metaDescription") ?? "").trim().slice(0, 320);
+
+    if (!metaTitle && !metaDescription) {
+      return json({ ok: false, kind: "error", error: "Nothing to apply", code: "INVALID_INPUT" }, { status: 400 });
+    }
+
+    const gql = await adminGraphqlWithRetry<any>(
+      admin.graphql,
+      `#graphql
+      mutation UpdateMeta($id: ID!, $seo: SEOInput) {
+        productUpdate(input: { id: $id, seo: $seo }) {
+          product { id }
+          userErrors { field message }
+        }
+      }`,
+      { id: productGid, seo: { ...(metaTitle && { title: metaTitle }), ...(metaDescription && { description: metaDescription }) } },
+    );
+
+    const userErrors = gql.data?.productUpdate?.userErrors ?? [];
+    if (userErrors.length > 0) {
+      return json({ ok: false, kind: "error", error: userErrors.map((e: { message: string }) => e.message).join("; "), code: "SHOPIFY_USER_ERRORS" }, { status: 422 });
+    }
+    return json({ ok: true, kind: "apply_meta", applied: true });
+  }
 
   return json({ ok: false, kind: "error", error: "Invalid intent", code: "INVALID_INTENT" }, { status: 400 });
 }
