@@ -302,8 +302,7 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
       const idem = idempotencyKey({ shop: shopDomain, action: "retry", material: `${jobRecord.id}:${failureVersion}` });
       const short = idem.slice(0, 24);
       const newTraceId = `trace_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
-      const newBullJobId = `${shopDomain}:${jobRecord.id}:retry_${short}`;
-
+      const newBullJobId = `${shopDomain}_${jobRecord.id}_retry_${short}`;
       await tx.generationJob.update({
         where: { id: jobRecord.id },
         data: { status: "PENDING", errorMessage: null, progress: 0, traceId: newTraceId, bullJobId: newBullJobId },
@@ -467,7 +466,7 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
         },
       });
 
-      const bullJobId = `${shopDomain}:${job.id}`;
+     const bullJobId = `${shopDomain}_${job.id}`;
       await db.generationJob.update({ where: { id: job.id }, data: { bullJobId } });
       await generationQueue.add(
         `generate:${productId}`,

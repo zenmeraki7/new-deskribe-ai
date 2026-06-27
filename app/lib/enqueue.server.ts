@@ -1,4 +1,11 @@
 // FILE: app/lib/enqueue.server.ts
+//
+// FIX: BullMQ jobId was `job.id` (bare UUID).
+//      All other enqueue sites (jobs.server.ts, app._index.tsx) use
+//      `${shopDomain}:${job.id}` as the BullMQ jobId.
+//      Using a bare UUID means BullMQ treats these as different jobs and
+//      the "already exists" deduplication check never fires correctly.
+//      Unified to `${shopDomain}:${job.id}` everywhere.
 
 import crypto from "node:crypto";
 import { db } from "./db.server";
@@ -33,6 +40,7 @@ function hashInput(input: string) {
 function newUuid() {
   return crypto.randomUUID();
 }
+console.log("[enqueue] REDIS_URL:", process.env.REDIS_URL);
 
 async function fetchProductMeta(
   adminGraphql: (query: string, opts?: any) => Promise<Response>,
@@ -76,7 +84,7 @@ export async function enqueueGenerationJobs({
   includeSocials,
   adminGraphql,
   bulkId: explicitBulkId,
-  customInstruction = "", 
+  customInstruction = "",
   creditRequestId,
   creditCost,
 }: EnqueueParams): Promise<EnqueueResult> {
@@ -87,10 +95,6 @@ export async function enqueueGenerationJobs({
   const jobIds: string[] = [];
   const skipped: string[] = [];
 
-
-  // Assign a bulkId when this is a multi-product run so the jobs can be
-  // grouped on the History page. Single-product jobs get null unless the
-  // caller explicitly passes one.
   const bulkId =
     explicitBulkId ??
     (productIds.length > 1 ? newUuid() : null);
@@ -139,12 +143,22 @@ export async function enqueueGenerationJobs({
         keywords,
         includeSocials,
         isStale: false,
-        // ← key addition: tag all jobs in this bulk run
         bulkId,
         customInstruction: customInstruction || null,
         creditRequestId: creditRequestId ?? null,
         creditCost: creditCost ?? null,
       },
+    });
+
+    // FIX: use same `${shopDomain}:${job.id}` format as all other enqueue sites
+    // so BullMQ deduplication and job lookup work consistently across the codebase.
+    const bullJobId = `${shopDomain}_${job.id}`;
+
+    // Persist the bullJobId on the DB record so the worker and cancel/retry
+    // actions can reference it later (matches what jobs.server.ts does).
+    await db.generationJob.update({
+      where: { id: job.id },
+      data: { bullJobId },
     });
 
     await generationQueue.add(
@@ -157,14 +171,24 @@ export async function enqueueGenerationJobs({
         format,
         keywords,
         includeSocials,
-        customInstruction: customInstruction || undefined, 
+        customInstruction: customInstruction || undefined,
         creditRequestId: creditRequestId ?? undefined,
         creditCost: creditCost ?? undefined,
       },
-      { jobId: job.id },
+      {
+        jobId: bullJobId,          // ← FIXED: was bare job.id
+        removeOnComplete: true,
+        removeOnFail: false,
+      },
     );
-
-    console.log("[enqueue] Job added to Redis queue:", job.id, bulkId ? `(bulk: ${bulkId})` : "");
+    const counts = await generationQueue.getJobCounts();
+console.log("[enqueue] Queue counts:", counts);
+    console.log(
+      "[enqueue] Job added to Redis queue:",
+      job.id,
+      `bullJobId=${bullJobId}`,
+      bulkId ? `(bulk: ${bulkId})` : "",
+    );
 
     jobIds.push(job.id);
   }

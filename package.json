@@ -10,7 +10,7 @@
     "config:use": "shopify app config use",
     "env": "shopify app env",
     "start": "remix-serve ./build/server/index.js",
-    "worker:generation": "tsx app/workers/start-generation-worker.ts",
+    "worker:generation": "tsx app/worker/start-generation-worker.ts",
     "check:redis": "tsx scripts/check-redis.ts",
     "docker-start": "npm run setup && npm run start",
     "setup": "prisma generate && prisma migrate deploy",

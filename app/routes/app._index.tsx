@@ -1,6 +1,15 @@
-//app/routes/app._index.tsx
+// app/routes/app._index.tsx
+//
+// Priority 1 fix: generate action no longer calls generateProductDescription() inline.
+// It creates a GenerationJob + enqueues to BullMQ and returns {ok, jobId} immediately.
+// The UI then polls /app/api/job/:jobId (same endpoint used by app.products.$productId)
+// until COMPLETED / FAILED / CANCELLED, then displays the result.
+//
+// suggest_keywords  — stays synchronous (fast, correct as-is)
+// apply             — stays synchronous (Shopify write, no AI)
+
 import crypto from "node:crypto";
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import {
   Page,
   Layout,
@@ -17,13 +26,12 @@ import {
   Box,
   Banner,
   Tag,
-  List,
 } from "@shopify/polaris";
 
 import { useLoaderData, useFetcher, useNavigate } from "@remix-run/react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { json, redirect } from "@remix-run/node";
-import { suggestKeywords, generateProductDescription } from "../lib/ai.server";
+import { json } from "@remix-run/node";
+import { suggestKeywords } from "../lib/ai.server";
 import { requireAdminSession } from "../lib/auth.server";
 import {
   checkAndIncrementKeywordLimit,
@@ -33,6 +41,8 @@ import {
 import { CREDIT_COSTS } from "../lib/credits";
 import { CreditUsageCard } from "../components/CreditUsageCard";
 import { formatCredits, hasCredits } from "../lib/credits";
+import { db } from "../lib/db.server";
+import { generationQueue } from "../lib/queue.server";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -54,6 +64,12 @@ const FORMAT_OPTIONS = [
   { label: "Bullets", value: "bullets" },
   { label: "Hybrid", value: "hybrid" },
 ];
+
+// Poll every 2.5 s ± 20 % jitter — same rhythm as app.products.$productId
+const POLL_INTERVAL_MS = 2500;
+const POLL_JITTER_RATIO = 0.2;
+// Abandon polling after 5 minutes
+const POLL_TIMEOUT_MS = 5 * 60 * 1000;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -81,6 +97,22 @@ interface LoaderData {
   error?: string;
 }
 
+type PollStatus =
+  | "IDLE"
+  | "PENDING"
+  | "PROCESSING"
+  | "COMPLETED"
+  | "FAILED"
+  | "CANCELLED";
+
+interface DraftResult {
+  body_html: string;
+  meta_title: string;
+  meta_description: string;
+  keywords: string[];
+  social_caption?: string;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Loader — plain read, no transaction, no lock
 // ─────────────────────────────────────────────────────────────────────────────
@@ -91,12 +123,8 @@ export async function loader({ request }: LoaderFunctionArgs) {
   let plan = resolvePlan(null);
 
   try {
-    const { hasActivePayment, appSubscriptions } = await billing.check();
+    const { appSubscriptions } = await billing.check();
     plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
-
-    // if (!hasActivePayment) {
-    //   return redirect("/app/billing");
-    // }
   } catch (err) {
     if (err instanceof Response) throw err;
     console.error("[billing.check error]", err);
@@ -116,13 +144,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
             vendor
             productType
             tags
-             featuredImage { url altText }
-      images(first: 10) {
-        nodes {
-          url
-          altText
-        }
-      }
+            featuredImage { url altText }
+            images(first: 10) {
+              nodes { url altText }
+            }
           }
         }
       }
@@ -132,10 +157,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     const rawProduct = data?.data?.products?.nodes?.[0] ?? null;
 
     const product: ShopifyProduct | null = rawProduct
-      ? {
-          ...rawProduct,
-          images: rawProduct.images?.nodes ?? [],
-        }
+      ? { ...rawProduct, images: rawProduct.images?.nodes ?? [] }
       : null;
 
     return json<LoaderData>({
@@ -172,7 +194,7 @@ export async function action({ request }: ActionFunctionArgs) {
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
 
-  // ── suggest_keywords ──────────────────────────────────────────────────────
+  // ── suggest_keywords — unchanged, stays synchronous ───────────────────────
   if (intent === "suggest_keywords") {
     const title = String(form.get("title") ?? "");
     const vendor = String(form.get("vendor") ?? "");
@@ -253,7 +275,13 @@ export async function action({ request }: ActionFunctionArgs) {
     }
   }
 
-  // ── generate ──────────────────────────────────────────────────────────────
+  // ── generate — FIXED: authenticate → validate → enqueue → return jobId ────
+  //
+  // Previously: called generateProductDescription() here, blocking for 5-15 s.
+  // Now:        creates a GenerationJob record, enqueues it to BullMQ, and
+  //             returns { ok: true, jobId } in < 500 ms.
+  //             The UI polls /app/api/job/:jobId until terminal status.
+  //
   if (intent === "generate") {
     let creditRequestId: string | null = null;
     let plan = resolvePlan(null);
@@ -261,8 +289,8 @@ export async function action({ request }: ActionFunctionArgs) {
     try {
       const { appSubscriptions } = await billing.check();
       plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
-      const rate = await checkAndIncrementRateLimit(shopDomain, plan);
 
+      const rate = await checkAndIncrementRateLimit(shopDomain, plan);
       if (!rate.allowed) {
         return json(
           {
@@ -281,29 +309,22 @@ export async function action({ request }: ActionFunctionArgs) {
         );
       }
 
+      // ── 1. Read + validate form fields ──────────────────────────────────
       const productId = String(form.get("productId") ?? "");
+      const productTitle = String(form.get("productTitle") ?? "");
       const vibe = String(form.get("vibe") ?? "casual");
       const format = String(form.get("format") ?? "paragraph");
       const keywords = String(form.get("keywords") ?? "");
       const includeSocials = form.get("includeSocials") === "true";
 
-      const resp = await admin.graphql(
-        `query ProductTitle($id: ID!) {
-          product(id: $id) { title vendor productType tags }
-        }`,
-        { variables: { id: productId } },
-      );
-
-      const data = await resp.json();
-      const p = data?.data?.product;
-
-      if (!p) {
+      if (!productId) {
         return json(
-          { ok: false, kind: "error", error: "Product not found." },
-          { status: 404 },
+          { ok: false, kind: "error", error: "Missing product ID." },
+          { status: 400 },
         );
       }
 
+      // ── 2. Deduct credits before enqueueing ──────────────────────────────
       creditRequestId = crypto.randomUUID();
       const credit = await deductCredits({
         shopId: shopDomain,
@@ -329,38 +350,95 @@ export async function action({ request }: ActionFunctionArgs) {
         );
       }
 
-      const result = await generateProductDescription({
-        title: p.title,
-        vendor: p.vendor,
-        productType: p.productType,
-        tags: p.tags,
-        vibe,
-        format,
-        keywords: keywords
-          .split(",")
-          .map((k: string) => k.trim())
-          .filter(Boolean),
-        includeSocials,
-      });
+      // ── 3. Create the GenerationJob DB record ────────────────────────────
+      const traceId = crypto.randomUUID();
+      const inputHash = crypto
+        .createHash("sha256")
+        .update(`${shopDomain}:${productId}:${vibe}:${format}:${keywords}`)
+        .digest("hex");
 
-      const wordCount = result.body_html
-        .replace(/<[^>]+>/g, " ")
-        .trim()
-        .split(/\s+/).length;
-      const charCount = result.body_html.replace(/<[^>]+>/g, "").length;
-
-      return json({
-        ok: true,
-        kind: "generate",
-        result: {
-          ...result,
-          headline: `${p.title} — ${vibe}`,
-          wordCount,
-          charCount,
-          primary_keyword: result.keywords?.[0] ?? "",
+      const job = await db.generationJob.create({
+        data: {
+          shopDomain,
+          productId,
+          productTitle: productTitle || "Unknown product",
+          vibe,
+          format,
+          keywords,
+          includeSocials,
+          status: "PENDING",
+          progress: 0,
+          traceId,
+          inputHash,
+          creditRequestId,
+          creditCost: CREDIT_COSTS.standardGeneration,
         },
       });
+
+      // ── 4. Derive bullJobId and update record ────────────────────────────
+      const bullJobId = `${shopDomain}_${job.id}`;
+      await db.generationJob.update({
+        where: { id: job.id },
+        data: { bullJobId },
+      });
+
+      // ── 5. Enqueue to BullMQ — if this fails, refund and surface error ───
+      try {
+        await generationQueue.add(
+          `generate:${productId}`,
+          {
+            traceId,
+            jobId: job.id,
+            bulkId: crypto.randomUUID(),
+            shopDomain,
+            productId,
+            productTitle: productTitle || "Unknown product",
+            vibe,
+            format,
+            keywords,
+            includeSocials,
+            creditRequestId,
+            creditCost: CREDIT_COSTS.standardGeneration,
+            isStale: false,
+          },
+          {
+            jobId: bullJobId,
+            removeOnComplete: true,
+            removeOnFail: false,
+          },
+        );
+      } catch (enqueueErr: any) {
+        // BullMQ "already exists" is safe to swallow — job is already queued
+        const msg =
+          typeof enqueueErr?.message === "string" ? enqueueErr.message : "";
+        if (!(msg.includes("Job") && msg.includes("already exists"))) {
+          // Real enqueue failure — refund credits and mark job failed
+          await refundCredits({
+            shopId: shopDomain,
+            plan,
+            amount: CREDIT_COSTS.standardGeneration,
+            requestId: `${creditRequestId}:enqueue-failed`,
+            metadata: { intent: "index_generate", productId },
+          });
+          await db.generationJob.update({
+            where: { id: job.id },
+            data: {
+              status: "FAILED",
+              errorMessage: "Enqueue failed. Please try again.",
+            },
+          });
+          console.error("[index generate] BullMQ enqueue failed:", enqueueErr);
+          return json(
+            { ok: false, kind: "error", error: "Failed to queue generation. Please try again." },
+            { status: 503 },
+          );
+        }
+      }
+
+      // ── 6. Return jobId immediately — UI will poll ────────────────────────
+      return json({ ok: true, kind: "generate", jobId: job.id });
     } catch (err) {
+      // Unexpected error — refund if we already deducted
       if (creditRequestId) {
         await refundCredits({
           shopId: shopDomain,
@@ -368,9 +446,9 @@ export async function action({ request }: ActionFunctionArgs) {
           amount: CREDIT_COSTS.standardGeneration,
           requestId: `${creditRequestId}:failed`,
           metadata: { intent: "index_generate" },
-        });
+        }).catch(() => {});
       }
-      console.error("Generation error:", err);
+      console.error("[index generate] Unexpected error:", err);
       return json(
         {
           ok: false,
@@ -385,7 +463,7 @@ export async function action({ request }: ActionFunctionArgs) {
     }
   }
 
-  // ── apply ─────────────────────────────────────────────────────────────────
+  // ── apply — unchanged, stays synchronous (just a Shopify write) ───────────
   if (intent === "apply") {
     const productId = String(form.get("productId") ?? "");
     const bodyHtml = String(form.get("bodyHtml") ?? "");
@@ -440,6 +518,125 @@ export async function action({ request }: ActionFunctionArgs) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Polling hook — mirrors the one in app.products.$productId.ui.tsx
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface PollPayload {
+  status: PollStatus;
+  result: DraftResult | null;
+  errorMessage: string | null;
+}
+
+function useJobPoll() {
+  const fetcher = useFetcher<PollPayload>();
+  const timerRef = useRef<number | null>(null);
+  const startedAtRef = useRef<number | null>(null);
+  const inFlightRef = useRef(false);
+
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [status, setStatus] = useState<PollStatus>("IDLE");
+  const [result, setResult] = useState<DraftResult | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const TERMINAL = new Set<PollStatus>(["COMPLETED", "FAILED", "CANCELLED"]);
+
+  const clearTimer = useCallback(() => {
+    if (timerRef.current) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
+  const stop = useCallback(() => {
+    clearTimer();
+    inFlightRef.current = false;
+    startedAtRef.current = null;
+    setJobId(null);
+  }, [clearTimer]);
+
+  const scheduleMs = () => {
+    const jitter = POLL_INTERVAL_MS * POLL_JITTER_RATIO;
+    return Math.max(750, Math.floor(POLL_INTERVAL_MS + (Math.random() * 2 - 1) * jitter));
+  };
+
+  useEffect(() => {
+    clearTimer();
+    if (!jobId) return;
+
+    let stopped = false;
+    const tick = () => {
+      if (stopped) return;
+      if (startedAtRef.current && Date.now() - startedAtRef.current > POLL_TIMEOUT_MS) {
+        setStatus("FAILED");
+        setErrorMessage("Generation timed out. Make sure the worker is running and try again.");
+        stop();
+        return;
+      }
+      if (typeof document !== "undefined" && document.hidden) {
+        timerRef.current = window.setTimeout(tick, scheduleMs());
+        return;
+      }
+      if (!inFlightRef.current) {
+        inFlightRef.current = true;
+        fetcher.load(`/app/api/job/${jobId}`);
+      }
+      timerRef.current = window.setTimeout(tick, scheduleMs());
+    };
+    tick();
+    return () => {
+      stopped = true;
+      clearTimer();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobId, clearTimer]);
+
+  useEffect(() => {
+    if (fetcher.state !== "idle") return;
+    inFlightRef.current = false;
+    if (!fetcher.data) return;
+
+    const next: PollStatus = fetcher.data.status ?? "IDLE";
+    setStatus(next);
+    setErrorMessage(fetcher.data.errorMessage ?? null);
+    if (fetcher.data.result) setResult(fetcher.data.result);
+    if (TERMINAL.has(next)) stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetcher.data, fetcher.state]);
+
+  const startPolling = useCallback(
+    (id: string) => {
+      clearTimer();
+      inFlightRef.current = false;
+      setResult(null);
+      setErrorMessage(null);
+      setStatus("PENDING");
+      startedAtRef.current = Date.now();
+      setJobId(id);
+    },
+    [clearTimer],
+  );
+
+  const reset = useCallback(() => {
+    clearTimer();
+    inFlightRef.current = false;
+    setJobId(null);
+    setStatus("IDLE");
+    setResult(null);
+    setErrorMessage(null);
+    startedAtRef.current = null;
+  }, [clearTimer]);
+
+  return {
+    startPolling,
+    reset,
+    status,
+    result,
+    errorMessage,
+    isPolling: !!jobId && !TERMINAL.has(status),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Component
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -448,6 +645,7 @@ export default function IndexPage() {
   const navigate = useNavigate();
 
   const suggestFetcher = useFetcher<any>();
+  // generateFetcher now only carries the enqueue response { ok, jobId }
   const generateFetcher = useFetcher<any>();
   const applyFetcher = useFetcher<any>();
 
@@ -457,14 +655,46 @@ export default function IndexPage() {
   const [includeSocials, setIncludeSocials] = useState(false);
   const [localCreditError, setLocalCreditError] = useState<string | null>(null);
   const [showSuccessBanner, setShowSuccessBanner] = useState(false);
+  // Track optimistic credit spend for the UI counter
+  const [creditSpent, setCreditSpent] = useState(0);
 
-  const isGenerating = generateFetcher.state !== "idle";
+  const {
+    startPolling,
+    reset: resetPolling,
+    status: pollStatus,
+    result: generationResult,
+    errorMessage: pollErrorMessage,
+    isPolling,
+  } = useJobPoll();
+
+  // ── Wire generate fetcher → start polling ──────────────────────────────────
+  useEffect(() => {
+    const data = generateFetcher.data;
+    if (data?.ok && typeof data?.jobId === "string") {
+      startPolling(data.jobId);
+      // Optimistically subtract the credit cost so the counter updates instantly
+      setCreditSpent((prev) => prev + CREDIT_COSTS.standardGeneration);
+    }
+  }, [generateFetcher.data?.jobId, startPolling]);
+
+  const isGenerating =
+    generateFetcher.state !== "idle" || isPolling;
+
   const isSuggestingKeywords = suggestFetcher.state !== "idle";
+  const isApplying = applyFetcher.state !== "idle";
 
-  const generationResult =
-    generateFetcher.data?.kind === "generate" && generateFetcher.data?.ok
-      ? generateFetcher.data.result
-      : null;
+  const remainingCredits = Math.max(
+    0,
+    credits.creditsRemaining -
+      creditSpent -
+      (suggestFetcher.data?.ok === true &&
+      suggestFetcher.data?.kind === "suggest_keywords"
+        ? CREDIT_COSTS.keywordSuggestion
+        : 0),
+  );
+
+  const canApply =
+    generationResult?.body_html && !isGenerating && !isApplying;
 
   const actionError =
     localCreditError ??
@@ -473,78 +703,55 @@ export default function IndexPage() {
         ? "Not enough credits"
         : generateFetcher.data.error
       : null) ??
+    (pollStatus === "FAILED" ? pollErrorMessage ?? "Generation failed" : null) ??
     (suggestFetcher.data?.ok === false
       ? suggestFetcher.data.code === "INSUFFICIENT_CREDITS"
         ? "Not enough credits"
         : suggestFetcher.data.error
       : null);
 
-  const creditCosts = useMemo(
-    () => ({
-      generation: CREDIT_COSTS.standardGeneration,
-      keywordSuggestion: CREDIT_COSTS.keywordSuggestion,
-    }),
-    [],
-  );
+  const suggestedKeywords: string[] =
+    suggestFetcher.data?.kind === "suggest_keywords" && suggestFetcher.data?.ok
+      ? suggestFetcher.data.keywords
+      : [];
 
-  const remainingCredits = useMemo(() => {
-    const spent =
-      (generateFetcher.data?.ok === true &&
-      generateFetcher.data?.kind === "generate"
-        ? creditCosts.generation
-        : 0) +
-      (suggestFetcher.data?.ok === true &&
-      suggestFetcher.data?.kind === "suggest_keywords"
-        ? creditCosts.keywordSuggestion
-        : 0);
-    return Math.max(0, credits.creditsRemaining - spent);
-  }, [
-    credits.creditsRemaining,
-    creditCosts,
-    generateFetcher.data,
-    suggestFetcher.data,
-  ]);
+  const keywordTags = keywords
+    .split(",")
+    .map((k) => k.trim())
+    .filter(Boolean);
 
-  const isApplying = applyFetcher.state !== "idle";
-  const canApply =
-    generationResult &&
-    generationResult.body_html &&
-    !isGenerating &&
-    !isApplying;
+  const wordCount = generationResult?.body_html
+    ? generationResult.body_html.replace(/<[^>]+>/g, " ").trim().split(/\s+/).length
+    : 0;
 
-  const timeSavedMins = Math.round(
-    (credits.creditsUsed * 37) / Math.max(credits.creditsLimit, 1),
-  );
+  // ── Handlers ───────────────────────────────────────────────────────────────
 
   const handleGenerate = useCallback(() => {
-    if (!product) return;
-    if (!hasCredits(remainingCredits, creditCosts.generation)) {
+    if (!product || isGenerating) return;
+    if (!hasCredits(remainingCredits, CREDIT_COSTS.standardGeneration)) {
       setLocalCreditError("Not enough credits");
       return;
     }
     setLocalCreditError(null);
+    resetPolling();
+
     const fd = new FormData();
     fd.append("intent", "generate");
     fd.append("productId", product.id);
+    fd.append("productTitle", product.title);
     fd.append("vibe", vibe);
     fd.append("format", format);
     fd.append("keywords", keywords);
     fd.append("includeSocials", String(includeSocials));
     generateFetcher.submit(fd, { method: "POST" });
   }, [
-    product,
-    remainingCredits,
-    creditCosts.generation,
-    vibe,
-    format,
-    keywords,
-    includeSocials,
-    generateFetcher,
+    product, isGenerating, remainingCredits, vibe, format, keywords,
+    includeSocials, generateFetcher, resetPolling,
   ]);
 
   const handleSuggestKeywords = useCallback(() => {
-    if (!product) return;
-    if (!hasCredits(remainingCredits, creditCosts.keywordSuggestion)) {
+    if (!product || isSuggestingKeywords) return;
+    if (!hasCredits(remainingCredits, CREDIT_COSTS.keywordSuggestion)) {
       setLocalCreditError("Not enough credits");
       return;
     }
@@ -556,61 +763,52 @@ export default function IndexPage() {
     fd.append("productType", product.productType);
     fd.append("tags", product.tags.join(","));
     suggestFetcher.submit(fd, { method: "POST" });
-  }, [
-    product,
-    remainingCredits,
-    creditCosts.keywordSuggestion,
-    suggestFetcher,
-  ]);
-
-  const handleKeywordTagRemove = useCallback((kw: string) => {
-    setKeywords((prev) =>
-      prev
-        .split(",")
-        .map((k) => k.trim())
-        .filter((k) => k && k !== kw)
-        .join(", "),
-    );
-  }, []);
-
-  useEffect(() => {
-    if (applyFetcher.data?.ok && applyFetcher.data?.applied) {
-      setShowSuccessBanner(true);
-      const timer = setTimeout(() => setShowSuccessBanner(false), 4000);
-      return () => clearTimeout(timer);
-    }
-  }, [applyFetcher.data]);
-
-  const suggestedKeywords: string[] =
-    suggestFetcher.data?.kind === "suggest_keywords" && suggestFetcher.data?.ok
-      ? suggestFetcher.data.keywords
-      : [];
+  }, [product, isSuggestingKeywords, remainingCredits, suggestFetcher]);
 
   const handleAddSuggestedKeyword = useCallback((kw: string) => {
     setKeywords((prev) => {
-      const existing = prev
-        .split(",")
-        .map((k) => k.trim())
-        .filter(Boolean);
+      const existing = prev.split(",").map((k) => k.trim()).filter(Boolean);
       if (existing.includes(kw)) return prev;
       return [...existing, kw].join(", ");
     });
   }, []);
+
+  const handleKeywordTagRemove = useCallback((kw: string) => {
+    setKeywords((prev) =>
+      prev.split(",").map((k) => k.trim()).filter((k) => k && k !== kw).join(", "),
+    );
+  }, []);
+
+  const handleApply = useCallback(() => {
+    if (!product || !generationResult) return;
+    const fd = new FormData();
+    fd.append("intent", "apply");
+    fd.append("productId", product.id);
+    fd.append("bodyHtml", generationResult.body_html);
+    applyFetcher.submit(fd, { method: "POST" });
+  }, [product, generationResult, applyFetcher]);
 
   const handleClear = useCallback(() => {
     setVibe("casual");
     setFormat("paragraph");
     setKeywords("");
     setIncludeSocials(false);
-    generateFetcher.load(window.location.pathname);
-  }, [generateFetcher]);
+    setLocalCreditError(null);
+    setCreditSpent(0);
+    resetPolling();
+  }, [resetPolling]);
+
+  useEffect(() => {
+    if (applyFetcher.data?.ok && applyFetcher.data?.applied) {
+      setShowSuccessBanner(true);
+      const t = setTimeout(() => setShowSuccessBanner(false), 4000);
+      return () => clearTimeout(t);
+    }
+  }, [applyFetcher.data]);
 
   const imageUrl = product?.featuredImage?.url ?? DUMMY_IMAGE;
-  const keywordTags = keywords
-    .split(",")
-    .map((k) => k.trim())
-    .filter(Boolean);
 
+  // ── Error state ─────────────────────────────────────────────────────────────
   if (error) {
     return (
       <Page title="DescribeAI" subtitle="AI Product Description Generator">
@@ -641,10 +839,12 @@ export default function IndexPage() {
     );
   }
 
+  // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <Page title="DescribeAI" subtitle="AI Product Description Generator">
       <Layout>
         <Layout.Section>
+
           {/* ── Stats Bar ─────────────────────────────────────────────────── */}
           <div
             style={{
@@ -661,33 +861,12 @@ export default function IndexPage() {
             {[
               {
                 label: "Generated",
-                value: `${generationResult?.wordCount ?? 373} words`,
+                value: wordCount ? `${wordCount} words` : "—",
                 icon: (
                   <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <rect
-                      x="2"
-                      y="4"
-                      width="16"
-                      height="2"
-                      rx="1"
-                      fill="#5c6ac4"
-                    />
-                    <rect
-                      x="2"
-                      y="9"
-                      width="12"
-                      height="2"
-                      rx="1"
-                      fill="#5c6ac4"
-                    />
-                    <rect
-                      x="2"
-                      y="14"
-                      width="14"
-                      height="2"
-                      rx="1"
-                      fill="#5c6ac4"
-                    />
+                    <rect x="2" y="4" width="16" height="2" rx="1" fill="#5c6ac4" />
+                    <rect x="2" y="9" width="12" height="2" rx="1" fill="#5c6ac4" />
+                    <rect x="2" y="14" width="14" height="2" rx="1" fill="#5c6ac4" />
                   </svg>
                 ),
               },
@@ -696,23 +875,8 @@ export default function IndexPage() {
                 value: String(remainingCredits),
                 icon: (
                   <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <circle
-                      cx="10"
-                      cy="10"
-                      r="7"
-                      stroke="#f59e0b"
-                      strokeWidth="2"
-                    />
-                    <text
-                      x="10"
-                      y="14"
-                      textAnchor="middle"
-                      fontSize="9"
-                      fill="#f59e0b"
-                      fontWeight="bold"
-                    >
-                      $
-                    </text>
+                    <circle cx="10" cy="10" r="7" stroke="#f59e0b" strokeWidth="2" />
+                    <text x="10" y="14" textAnchor="middle" fontSize="9" fill="#f59e0b" fontWeight="bold">$</text>
                   </svg>
                 ),
               },
@@ -721,24 +885,9 @@ export default function IndexPage() {
                 value: credits.creditsLimit > 100 ? "PRO" : "FREE",
                 icon: (
                   <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <rect
-                      x="3"
-                      y="5"
-                      width="14"
-                      height="10"
-                      rx="2"
-                      stroke="#5c6ac4"
-                      strokeWidth="2"
-                    />
+                    <rect x="3" y="5" width="14" height="10" rx="2" stroke="#5c6ac4" strokeWidth="2" />
                     <path d="M3 9h14" stroke="#5c6ac4" strokeWidth="1.5" />
-                    <rect
-                      x="6"
-                      y="12"
-                      width="4"
-                      height="1.5"
-                      rx="0.75"
-                      fill="#5c6ac4"
-                    />
+                    <rect x="6" y="12" width="4" height="1.5" rx="0.75" fill="#5c6ac4" />
                   </svg>
                 ),
               },
@@ -754,24 +903,8 @@ export default function IndexPage() {
                 }}
               >
                 <div>
-                  <div
-                    style={{
-                      fontSize: "13px",
-                      color: "#6d7175",
-                      marginBottom: "4px",
-                    }}
-                  >
-                    {label}
-                  </div>
-                  <div
-                    style={{
-                      fontSize: "18px",
-                      fontWeight: "600",
-                      color: "#202223",
-                    }}
-                  >
-                    {value}
-                  </div>
+                  <div style={{ fontSize: "13px", color: "#6d7175", marginBottom: "4px" }}>{label}</div>
+                  <div style={{ fontSize: "18px", fontWeight: "600", color: "#202223" }}>{value}</div>
                 </div>
                 <div style={{ opacity: 0.85 }}>{icon}</div>
               </div>
@@ -791,7 +924,6 @@ export default function IndexPage() {
               gap: "24px",
             }}
           >
-            {/* Top row: steps + preview */}
             <div
               style={{
                 display: "grid",
@@ -800,7 +932,7 @@ export default function IndexPage() {
                 alignItems: "center",
               }}
             >
-              {/* Left: steps + controls */}
+              {/* Left: steps + CTA */}
               <div>
                 <Text as="h2" variant="headingMd" fontWeight="semibold">
                   What do you want to generate?
@@ -815,88 +947,10 @@ export default function IndexPage() {
                   }}
                 >
                   {[
-                    {
-                      step: "1. Select Content Type",
-                      icon: (
-                        <svg
-                          width="24"
-                          height="24"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                        >
-                          <rect
-                            x="3"
-                            y="5"
-                            width="18"
-                            height="3"
-                            rx="1.5"
-                            fill="#5c6ac4"
-                          />
-                          <rect
-                            x="3"
-                            y="11"
-                            width="14"
-                            height="3"
-                            rx="1.5"
-                            fill="#8c9196"
-                          />
-                          <rect
-                            x="3"
-                            y="17"
-                            width="10"
-                            height="3"
-                            rx="1.5"
-                            fill="#8c9196"
-                          />
-                        </svg>
-                      ),
-                    },
-                    {
-                      step: "2. Select Target",
-                      icon: (
-                        <svg
-                          width="24"
-                          height="24"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                        >
-                          <circle
-                            cx="12"
-                            cy="12"
-                            r="8"
-                            stroke="#5c6ac4"
-                            strokeWidth="2"
-                          />
-                          <circle
-                            cx="12"
-                            cy="12"
-                            r="4"
-                            stroke="#5c6ac4"
-                            strokeWidth="1.5"
-                          />
-                          <circle cx="12" cy="12" r="1.5" fill="#5c6ac4" />
-                        </svg>
-                      ),
-                    },
-                    {
-                      step: "3. Click Generate",
-                      icon: (
-                        <svg
-                          width="24"
-                          height="24"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                        >
-                          <path
-                            d="M12 3l2.5 6h6l-5 4 2 6.5L12 16l-5.5 3.5 2-6.5-5-4h6z"
-                            stroke="#5c6ac4"
-                            strokeWidth="1.5"
-                            fill="none"
-                          />
-                        </svg>
-                      ),
-                    },
-                  ].map(({ step, icon }) => (
+                    { step: "1. Select Content Type" },
+                    { step: "2. Select Target" },
+                    { step: "3. Click Generate" },
+                  ].map(({ step }) => (
                     <div
                       key={step}
                       style={{
@@ -905,35 +959,19 @@ export default function IndexPage() {
                         padding: "16px 12px",
                         textAlign: "center",
                         background: "#fafbfb",
+                        fontSize: "13px",
+                        color: "#202223",
+                        fontWeight: "500",
                       }}
                     >
-                      <div
-                        style={{
-                          display: "flex",
-                          justifyContent: "center",
-                          marginBottom: "8px",
-                        }}
-                      >
-                        {icon}
-                      </div>
-                      <div
-                        style={{
-                          fontSize: "13px",
-                          color: "#202223",
-                          fontWeight: "500",
-                        }}
-                      >
-                        {step}
-                      </div>
+                      {step}
                     </div>
                   ))}
                 </div>
-
                 <button
                   onClick={() => navigate("/app/products")}
                   style={{
-                    background:
-                      "linear-gradient(135deg, #5c6ac4 0%, #4355be 100%)",
+                    background: "linear-gradient(135deg, #5c6ac4 0%, #4355be 100%)",
                     color: "#fff",
                     border: "none",
                     borderRadius: "10px",
@@ -945,25 +983,17 @@ export default function IndexPage() {
                     alignItems: "center",
                     gap: "8px",
                     boxShadow: "0 2px 8px rgba(92,106,196,0.35)",
-                    letterSpacing: "0.01em",
                   }}
                 >
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                    <path
-                      d="M8 2l2 4h4l-3.5 3 1.5 4.5L8 11l-4 2.5 1.5-4.5L2 6h4z"
-                      fill="#fff"
-                    />
-                  </svg>
-                  Start Generating
+                  ✦ Start Generating
                 </button>
               </div>
 
-              {/* Right: preview thumbnail placeholder */}
+              {/* Right: preview placeholder */}
               <div
                 style={{
-                  background: "#f6f6f7",
+                  background: "linear-gradient(135deg, #e8eaff 0%, #f0f4ff 100%)",
                   borderRadius: "10px",
-                  overflow: "hidden",
                   aspectRatio: "16/9",
                   display: "flex",
                   alignItems: "center",
@@ -973,91 +1003,33 @@ export default function IndexPage() {
               >
                 <div
                   style={{
-                    width: "100%",
-                    height: "100%",
-                    background:
-                      "linear-gradient(135deg, #e8eaff 0%, #f0f4ff 100%)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    flexDirection: "column",
-                    gap: "8px",
+                    width: "80%",
+                    background: "#fff",
+                    borderRadius: "6px",
+                    padding: "10px",
+                    boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
                   }}
                 >
-                  {/* Simulated UI preview */}
-                  <div
-                    style={{
-                      width: "80%",
-                      background: "#fff",
-                      borderRadius: "6px",
-                      padding: "10px",
-                      boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
-                    }}
-                  >
+                  {[60, 90, 75].map((w, i) => (
                     <div
+                      key={i}
                       style={{
-                        height: "8px",
+                        height: i === 0 ? "8px" : "6px",
                         background: "#e1e3e5",
                         borderRadius: "4px",
-                        marginBottom: "6px",
-                        width: "60%",
+                        marginBottom: i < 2 ? "6px" : 0,
+                        width: `${w}%`,
                       }}
                     />
-                    <div
-                      style={{
-                        height: "6px",
-                        background: "#e1e3e5",
-                        borderRadius: "4px",
-                        marginBottom: "4px",
-                        width: "90%",
-                      }}
-                    />
-                    <div
-                      style={{
-                        height: "6px",
-                        background: "#e1e3e5",
-                        borderRadius: "4px",
-                        width: "75%",
-                      }}
-                    />
-                  </div>
-                  <div
-                    style={{
-                      width: "44px",
-                      height: "44px",
-                      background: "rgba(0,0,0,0.35)",
-                      borderRadius: "50%",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      cursor: "pointer",
-                      position: "absolute",
-                    }}
-                  >
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                      <path d="M6 4l6 4-6 4V4z" fill="#fff" />
-                    </svg>
-                  </div>
-                  {/* Sparkle accent */}
-                  <div
-                    style={{
-                      position: "absolute",
-                      bottom: "16px",
-                      right: "20px",
-                      fontSize: "20px",
-                    }}
-                  >
-                    ✨
-                  </div>
+                  ))}
                 </div>
+                <div style={{ position: "absolute", bottom: "16px", right: "20px", fontSize: "20px" }}>✨</div>
               </div>
             </div>
 
-            {/* ── How It Works — inside the panel ──────────────────────────── */}
+            {/* How It Works */}
             <div style={{ borderTop: "1px solid #e1e3e5", paddingTop: "24px" }}>
-              <Text as="h2" variant="headingMd" fontWeight="semibold">
-                🚀 How It Works
-              </Text>
+              <Text as="h2" variant="headingMd" fontWeight="semibold">🚀 How It Works</Text>
               <div
                 style={{
                   display: "grid",
@@ -1067,133 +1039,11 @@ export default function IndexPage() {
                 }}
               >
                 {[
-                  {
-                    num: "1",
-                    title: "Select a Product",
-                    desc: "Choose a product from the table to get started.",
-                    icon: (
-                      <svg
-                        width="20"
-                        height="20"
-                        viewBox="0 0 20 20"
-                        fill="none"
-                      >
-                        <rect
-                          x="2"
-                          y="3"
-                          width="16"
-                          height="14"
-                          rx="2"
-                          stroke="#5c6ac4"
-                          strokeWidth="1.5"
-                        />
-                        <rect
-                          x="5"
-                          y="7"
-                          width="10"
-                          height="1.5"
-                          rx="0.75"
-                          fill="#5c6ac4"
-                        />
-                        <rect
-                          x="5"
-                          y="10"
-                          width="7"
-                          height="1.5"
-                          rx="0.75"
-                          fill="#8c9196"
-                        />
-                        <rect
-                          x="5"
-                          y="13"
-                          width="8"
-                          height="1.5"
-                          rx="0.75"
-                          fill="#8c9196"
-                        />
-                      </svg>
-                    ),
-                  },
-                  {
-                    num: "2",
-                    title: "Customize Settings",
-                    desc: "Adjust tone, length, and other generation options to match your needs.",
-                    icon: (
-                      <svg
-                        width="20"
-                        height="20"
-                        viewBox="0 0 20 20"
-                        fill="none"
-                      >
-                        <circle
-                          cx="10"
-                          cy="10"
-                          r="3"
-                          stroke="#5c6ac4"
-                          strokeWidth="1.5"
-                        />
-                        <path
-                          d="M10 2v2M10 16v2M2 10h2M16 10h2M4.22 4.22l1.42 1.42M14.36 14.36l1.42 1.42M4.22 15.78l1.42-1.42M14.36 5.64l1.42-1.42"
-                          stroke="#5c6ac4"
-                          strokeWidth="1.5"
-                          strokeLinecap="round"
-                        />
-                      </svg>
-                    ),
-                  },
-                  {
-                    num: "3",
-                    title: "Generate Draft",
-                    desc: "Click the generate button to create your AI-powered product description.",
-                    icon: (
-                      <svg
-                        width="20"
-                        height="20"
-                        viewBox="0 0 20 20"
-                        fill="none"
-                      >
-                        <path
-                          d="M10 2l2 5h5l-4 3 1.5 5L10 12l-4.5 3L7 10 3 7h5z"
-                          stroke="#5c6ac4"
-                          strokeWidth="1.5"
-                          fill="none"
-                        />
-                      </svg>
-                    ),
-                  },
-                  {
-                    num: "4",
-                    title: "Save to Shopify",
-                    desc: "Review the draft and save it directly to your Shopify store with one click.",
-                    icon: (
-                      <svg
-                        width="20"
-                        height="20"
-                        viewBox="0 0 20 20"
-                        fill="none"
-                      >
-                        <path
-                          d="M14 8.5C14 5.46 11.54 3 8.5 3S3 5.46 3 8.5 5.46 14 8.5 14"
-                          stroke="#5c6ac4"
-                          strokeWidth="1.5"
-                          strokeLinecap="round"
-                        />
-                        <path
-                          d="M11 13l6 6"
-                          stroke="#5c6ac4"
-                          strokeWidth="1.5"
-                          strokeLinecap="round"
-                        />
-                        <path
-                          d="M8.5 6v5M6 8.5h5"
-                          stroke="#5c6ac4"
-                          strokeWidth="1.5"
-                          strokeLinecap="round"
-                        />
-                      </svg>
-                    ),
-                  },
-                ].map(({ num, title, desc, icon }) => (
+                  { num: "1", title: "Select a Product", desc: "Choose a product from the table to get started." },
+                  { num: "2", title: "Customize Settings", desc: "Adjust tone, length, and other generation options." },
+                  { num: "3", title: "Generate Draft", desc: "Click generate — the AI works in the background." },
+                  { num: "4", title: "Save to Shopify", desc: "Review the draft and save directly to your store." },
+                ].map(({ num, title, desc }) => (
                   <div
                     key={num}
                     style={{
@@ -1205,68 +1055,33 @@ export default function IndexPage() {
                   >
                     <div
                       style={{
+                        width: "24px",
+                        height: "24px",
+                        background: "linear-gradient(135deg, #5c6ac4 0%, #4355be 100%)",
+                        borderRadius: "50%",
                         display: "flex",
                         alignItems: "center",
-                        gap: "8px",
+                        justifyContent: "center",
+                        fontSize: "12px",
+                        fontWeight: "700",
+                        color: "#fff",
                         marginBottom: "8px",
                       }}
                     >
-                      <div
-                        style={{
-                          width: "24px",
-                          height: "24px",
-                          background:
-                            "linear-gradient(135deg, #5c6ac4 0%, #4355be 100%)",
-                          borderRadius: "50%",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          fontSize: "12px",
-                          fontWeight: "700",
-                          color: "#fff",
-                          flexShrink: 0,
-                        }}
-                      >
-                        {num}
-                      </div>
-                      <div style={{ opacity: 0.85 }}>{icon}</div>
+                      {num}
                     </div>
-                    <div
-                      style={{
-                        fontSize: "13px",
-                        fontWeight: "600",
-                        color: "#202223",
-                        marginBottom: "4px",
-                      }}
-                    >
-                      {title}
-                    </div>
-                    <div
-                      style={{
-                        fontSize: "13px",
-                        color: "#6d7175",
-                        lineHeight: "1.5",
-                      }}
-                    >
-                      {desc}
-                    </div>
+                    <div style={{ fontSize: "13px", fontWeight: "600", color: "#202223", marginBottom: "4px" }}>{title}</div>
+                    <div style={{ fontSize: "13px", color: "#6d7175", lineHeight: "1.5" }}>{desc}</div>
                   </div>
                 ))}
               </div>
             </div>
           </div>
 
-          {/* ── Existing banners ──────────────────────────────────────────── */}
+          {/* ── Banners ─────────────────────────────────────────────────────── */}
           {showSuccessBanner && (
-            <Banner
-              tone="success"
-              title="Applied to Shopify"
-              onDismiss={() => setShowSuccessBanner(false)}
-            >
-              <Text as="p">
-                The product description has been successfully updated in
-                Shopify.
-              </Text>
+            <Banner tone="success" title="Applied to Shopify" onDismiss={() => setShowSuccessBanner(false)}>
+              <Text as="p">The product description has been successfully updated in Shopify.</Text>
             </Banner>
           )}
 
@@ -1290,6 +1105,7 @@ export default function IndexPage() {
             creditsRemaining={remainingCredits}
           />
 
+          {/* ── Main two-column layout ────────────────────────────────────── */}
           <div
             style={{
               display: "grid",
@@ -1301,31 +1117,18 @@ export default function IndexPage() {
             {/* ── LEFT: Product Card ─────────────────────────────────────── */}
             <Card>
               <BlockStack gap="300">
-                <Text as="h2" variant="headingSm">
-                  Selected Product
-                </Text>
+                <Text as="h2" variant="headingSm">Selected Product</Text>
 
                 <Box background="bg-surface-secondary" borderRadius="200">
-                  <div
-                    style={{
-                      width: "100%",
-                      aspectRatio: "1 / 1",
-                      overflow: "hidden",
-                    }}
-                  >
+                  <div style={{ width: "100%", aspectRatio: "1 / 1", overflow: "hidden" }}>
                     <img
                       src={imageUrl}
                       alt={product.title}
-                      style={{
-                        width: "100%",
-                        height: "100%",
-                        objectFit: "cover",
-                      }}
+                      style={{ width: "100%", height: "100%", objectFit: "cover" }}
                     />
                   </div>
                 </Box>
 
-                {/* ── Thumbnail gallery ── */}
                 {product.images.length > 1 && (
                   <InlineStack gap="100" wrap>
                     {product.images.slice(0, 6).map((img, i) => (
@@ -1342,11 +1145,7 @@ export default function IndexPage() {
                         <img
                           src={img.url}
                           alt={img.altText ?? product.title}
-                          style={{
-                            width: "100%",
-                            height: "100%",
-                            objectFit: "cover",
-                          }}
+                          style={{ width: "100%", height: "100%", objectFit: "cover" }}
                         />
                       </div>
                     ))}
@@ -1354,23 +1153,15 @@ export default function IndexPage() {
                 )}
 
                 <BlockStack gap="100">
-                  <Text variant="headingMd" as="h3">
-                    {product.title}
-                  </Text>
+                  <Text variant="headingMd" as="h3">{product.title}</Text>
                   {product.vendor && (
-                    <Text as="p" variant="bodySm" tone="subdued">
-                      Vendor: {product.vendor}
-                    </Text>
+                    <Text as="p" variant="bodySm" tone="subdued">Vendor: {product.vendor}</Text>
                   )}
                   {product.productType && <Badge>{product.productType}</Badge>}
-                  {!product.featuredImage && (
-                    <Badge tone="warning">Using placeholder image</Badge>
-                  )}
+                  {!product.featuredImage && <Badge tone="warning">Using placeholder image</Badge>}
                 </BlockStack>
 
-                <Button fullWidth onClick={() => navigate("/app/products")}>
-                  Change Product
-                </Button>
+                <Button fullWidth onClick={() => navigate("/app/products")}>Change Product</Button>
               </BlockStack>
             </Card>
 
@@ -1378,9 +1169,7 @@ export default function IndexPage() {
             <BlockStack gap="400">
               <Card>
                 <BlockStack gap="400">
-                  <Text as="h3" variant="headingSm">
-                    Generation Settings
-                  </Text>
+                  <Text as="h3" variant="headingSm">Generation Settings</Text>
 
                   <InlineStack gap="300" wrap={false}>
                     <div style={{ flex: 1 }}>
@@ -1404,44 +1193,32 @@ export default function IndexPage() {
                   </InlineStack>
 
                   <BlockStack gap="200">
-                    <InlineStack
-                      gap="200"
-                      align="space-between"
-                      blockAlign="end"
-                    >
-                      <TextField
-                        label="Keywords (comma-separated)"
-                        value={keywords}
-                        onChange={setKeywords}
-                        placeholder="e.g. eco-friendly, handmade, organic cotton"
-                        autoComplete="off"
-                        disabled={isGenerating}
-                        connectedRight={
-                          <Button
-                            onClick={handleSuggestKeywords}
-                            loading={isSuggestingKeywords}
-                            disabled={
-                              isGenerating ||
-                              isSuggestingKeywords ||
-                              !hasCredits(
-                                remainingCredits,
-                                creditCosts.keywordSuggestion,
-                              )
-                            }
-                          >
-                            Suggest
-                          </Button>
-                        }
-                      />
-                    </InlineStack>
+                    <TextField
+                      label="Keywords (comma-separated)"
+                      value={keywords}
+                      onChange={setKeywords}
+                      placeholder="e.g. eco-friendly, handmade, organic cotton"
+                      autoComplete="off"
+                      disabled={isGenerating}
+                      connectedRight={
+                        <Button
+                          onClick={handleSuggestKeywords}
+                          loading={isSuggestingKeywords}
+                          disabled={
+                            isGenerating ||
+                            isSuggestingKeywords ||
+                            !hasCredits(remainingCredits, CREDIT_COSTS.keywordSuggestion)
+                          }
+                        >
+                          Suggest
+                        </Button>
+                      }
+                    />
 
                     {keywordTags.length > 0 && (
                       <InlineStack gap="100" wrap>
                         {keywordTags.map((kw) => (
-                          <Tag
-                            key={kw}
-                            onRemove={() => handleKeywordTagRemove(kw)}
-                          >
+                          <Tag key={kw} onRemove={() => handleKeywordTagRemove(kw)}>
                             {kw}
                           </Tag>
                         ))}
@@ -1450,9 +1227,7 @@ export default function IndexPage() {
 
                     {suggestedKeywords.length > 0 && (
                       <BlockStack gap="100">
-                        <Text as="p" variant="bodySm" tone="subdued">
-                          Suggested — click to add:
-                        </Text>
+                        <Text as="p" variant="bodySm" tone="subdued">Suggested — click to add:</Text>
                         <InlineStack gap="100" wrap>
                           {suggestedKeywords.map((kw) => (
                             <button
@@ -1484,24 +1259,24 @@ export default function IndexPage() {
                     disabled={
                       isGenerating ||
                       isSuggestingKeywords ||
-                      !hasCredits(remainingCredits, creditCosts.generation)
+                      !hasCredits(remainingCredits, CREDIT_COSTS.standardGeneration)
                     }
                   >
-                    Generate Description
+                    {isPolling
+                      ? pollStatus === "PROCESSING"
+                        ? "AI is writing…"
+                        : "Queued…"
+                      : "Generate Description"}
                   </Button>
 
                   <InlineStack align="space-between">
-                    <Text as="p" variant="bodySm" tone="subdued">
-                      Credit cost before generation
-                    </Text>
+                    <Text as="p" variant="bodySm" tone="subdued">Credit cost</Text>
                     <Text as="p" variant="bodySm" fontWeight="semibold">
-                      {formatCredits(creditCosts.generation)} credit
+                      {formatCredits(CREDIT_COSTS.standardGeneration)} credit
                     </Text>
                   </InlineStack>
                   <InlineStack align="space-between">
-                    <Text as="p" variant="bodySm" tone="subdued">
-                      Remaining credits before action
-                    </Text>
+                    <Text as="p" variant="bodySm" tone="subdued">Credits remaining</Text>
                     <Text as="p" variant="bodySm" fontWeight="semibold">
                       {formatCredits(remainingCredits)}
                     </Text>
@@ -1509,29 +1284,58 @@ export default function IndexPage() {
                 </BlockStack>
               </Card>
 
+              {/* ── Output Card ──────────────────────────────────────────── */}
               <Card>
                 <BlockStack gap="300">
-                  <Text as="p" variant="headingSm">
-                    Generated Output
-                  </Text>
+                  <Text as="p" variant="headingSm">Generated Output</Text>
                   <Divider />
 
-                  {isGenerating ? (
-                    <InlineStack align="center">
-                      <Spinner size="large" />
-                    </InlineStack>
-                  ) : generationResult ? (
-                    <BlockStack gap="400">
-                      {generationResult.headline && (
-                        <Text variant="headingMd" as="h3">
-                          {generationResult.headline}
+                  {/* Polling states */}
+                  {isGenerating && !generationResult && (
+                    <BlockStack gap="300">
+                      <InlineStack gap="300" blockAlign="center">
+                        <Spinner size="small" />
+                        <Text as="p" tone="subdued">
+                          {generateFetcher.state !== "idle"
+                            ? "Queuing your request…"
+                            : pollStatus === "PROCESSING"
+                            ? "AI is writing your description…"
+                            : "Waiting for a worker to pick up the job…"}
                         </Text>
-                      )}
-
+                      </InlineStack>
+                      {/* Progress bar */}
                       <div
-                        dangerouslySetInnerHTML={{
-                          __html: generationResult.body_html,
+                        style={{
+                          height: "4px",
+                          background: "#e1e3e5",
+                          borderRadius: "2px",
+                          overflow: "hidden",
                         }}
+                      >
+                        <div
+                          style={{
+                            height: "100%",
+                            background: "linear-gradient(90deg, #5c6ac4, #8c9cff)",
+                            borderRadius: "2px",
+                            width: pollStatus === "PROCESSING" ? "70%" : "20%",
+                            transition: "width 0.8s ease",
+                          }}
+                        />
+                      </div>
+                    </BlockStack>
+                  )}
+
+                  {pollStatus === "CANCELLED" && (
+                    <Banner tone="warning" title="Generation cancelled">
+                      The job was cancelled before it completed.
+                    </Banner>
+                  )}
+
+                  {/* Result */}
+                  {generationResult ? (
+                    <BlockStack gap="400">
+                      <div
+                        dangerouslySetInnerHTML={{ __html: generationResult.body_html }}
                         style={{ lineHeight: "1.6" }}
                       />
 
@@ -1539,95 +1343,101 @@ export default function IndexPage() {
                         <>
                           <Divider />
                           <BlockStack gap="100">
-                            <Text as="p" variant="headingSm">
-                              Instagram Caption
-                            </Text>
-                            <Text as="p" tone="subdued">
-                              {generationResult.social_caption}
-                            </Text>
+                            <Text as="p" variant="headingSm">Instagram Caption</Text>
+                            <Text as="p" tone="subdued">{generationResult.social_caption}</Text>
+                          </BlockStack>
+                        </>
+                      )}
+
+                      {/* SEO keywords */}
+                      {generationResult.keywords?.length > 0 && (
+                        <>
+                          <Divider />
+                          <BlockStack gap="100">
+                            <Text as="p" variant="bodySm" tone="subdued">SEO keywords:</Text>
+                            <InlineStack gap="100" wrap>
+                              {generationResult.keywords.slice(0, 15).map((kw: string) => (
+                                <Badge key={kw} tone="info">{kw}</Badge>
+                              ))}
+                            </InlineStack>
+                          </BlockStack>
+                        </>
+                      )}
+
+                      {/* SEO meta preview */}
+                      {(generationResult.meta_title || generationResult.meta_description) && (
+                        <>
+                          <Divider />
+                          <BlockStack gap="150">
+                            <Text as="p" variant="headingSm">SEO Preview</Text>
+                            <div
+                              style={{
+                                padding: "12px 16px",
+                                background: "#fff",
+                                border: "1px solid #dadce0",
+                                borderRadius: "8px",
+                                fontFamily: "arial, sans-serif",
+                                maxWidth: 540,
+                              }}
+                            >
+                              <div
+                                style={{
+                                  fontSize: 17,
+                                  color: "#1a0dab",
+                                  marginBottom: 3,
+                                  overflow: "hidden",
+                                  whiteSpace: "nowrap",
+                                  textOverflow: "ellipsis",
+                                }}
+                              >
+                                {generationResult.meta_title ?? product.title}
+                              </div>
+                              <div style={{ fontSize: 13, color: "#006621", marginBottom: 3 }}>
+                                {product.vendor || "Shopify"} › products
+                              </div>
+                              <div style={{ fontSize: 14, color: "#545454" }}>
+                                {generationResult.meta_description ?? ""}
+                              </div>
+                            </div>
                           </BlockStack>
                         </>
                       )}
 
                       <Divider />
 
-                      <InlineStack gap="600">
+                      <InlineStack gap="400" blockAlign="center">
                         <BlockStack gap="050">
-                          <Text as="p" variant="headingMd">
-                            {generationResult.wordCount}
-                          </Text>
-                          <Text as="p" variant="bodySm" tone="subdued">
-                            Words
-                          </Text>
+                          <Text as="p" variant="headingMd">{wordCount}</Text>
+                          <Text as="p" variant="bodySm" tone="subdued">Words</Text>
                         </BlockStack>
                         <BlockStack gap="050">
-                          <Text as="p" variant="headingMd">
-                            {generationResult.charCount}
-                          </Text>
-                          <Text as="p" variant="bodySm" tone="subdued">
-                            Characters
-                          </Text>
+                          <Text as="p" variant="headingMd">{vibe}</Text>
+                          <Text as="p" variant="bodySm" tone="subdued">Style</Text>
                         </BlockStack>
                         <BlockStack gap="050">
-                          <Text as="p" variant="headingMd">
-                            {vibe}
-                          </Text>
-                          <Text as="p" variant="bodySm" tone="subdued">
-                            Style
-                          </Text>
+                          <Text as="p" variant="headingMd">{format}</Text>
+                          <Text as="p" variant="bodySm" tone="subdued">Format</Text>
                         </BlockStack>
-                        <BlockStack gap="050">
-                          <Text as="p" variant="headingMd">
-                            {format}
-                          </Text>
-                          <Text as="p" variant="bodySm" tone="subdued">
-                            Format
-                          </Text>
-                        </BlockStack>
-                        <BlockStack gap="050">
-                          <Button
-                            variant="primary"
-                            tone="success"
-                            disabled={!canApply}
-                            loading={isApplying}
-                            onClick={() => {
-                              if (!product || !generationResult) return;
-                              const fd = new FormData();
-                              fd.append("intent", "apply");
-                              fd.append("productId", product.id);
-                              fd.append("bodyHtml", generationResult.body_html);
-                              applyFetcher.submit(fd, { method: "POST" });
-                            }}
-                          >
-                            Apply to Shopify
-                          </Button>
-                        </BlockStack>
-                        <BlockStack gap="050">
-                          <Button
-                            variant="tertiary"
-                            tone="critical"
-                            onClick={handleClear}
-                          >
-                            Clear
-                          </Button>
-                        </BlockStack>
+                        <Button
+                          variant="primary"
+                          tone="success"
+                          disabled={!canApply}
+                          loading={isApplying}
+                          onClick={handleApply}
+                        >
+                          Apply to Shopify
+                        </Button>
+                        <Button variant="tertiary" tone="critical" onClick={handleClear}>
+                          Clear
+                        </Button>
                       </InlineStack>
-
-                      {generationResult.primary_keyword && (
-                        <InlineStack gap="200" blockAlign="center">
-                          <Text as="p" variant="bodySm" tone="subdued">
-                            Primary keyword:
-                          </Text>
-                          <Badge>{generationResult.primary_keyword}</Badge>
-                        </InlineStack>
-                      )}
                     </BlockStack>
-                  ) : (
+                  ) : !isGenerating ? (
                     <Text as="p" tone="subdued">
-                      Configure settings above and click "Generate Description"
-                      to create an AI-powered product description.
+                      Configure settings above and click "Generate Description" to create an
+                      AI-powered product description.
                     </Text>
-                  )}
+                  ) : null}
                 </BlockStack>
               </Card>
             </BlockStack>

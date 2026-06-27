@@ -17,7 +17,7 @@ const processes = [
   {
     name: "worker",
     command: bin("tsx"),
-    args: ["app/workers/start-generation-worker.ts"],
+    args: ["app/worker/start-generation-worker.ts"],
   },
 ];
 
