@@ -4,11 +4,10 @@
 // - Abort-safe (stops when unmounted / jobId changes)
 // - Jittered exponential backoff on transient failures (network/5xx/429)
 // - Tab-visibility aware (slows down when hidden to reduce load)
-// - Dedupes interval scheduling; never stacks timers
+// - Dedupes repeated fetcher responses by status signature, not object identity
 // - Safe defaults (fail closed; explicit errorMessage)
 // - Works with Remix useFetcher.load (no client auth assumptions)
-// - Guards against stale responses (jobId changes mid-flight)
-// - Avoids "missing data" false negatives by using fetcher.state/idle transitions carefully
+// - Guards against stale responses when jobId changes mid-flight
 
 import { useFetcher } from "@remix-run/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -36,39 +35,36 @@ export interface JobPollState {
   result: JobPollResult | null;
   errorMessage: string | null;
   isPolling: boolean;
+  jobId: string | null;
+  lastCompletedJobId: string | null;
 }
 
 type PollResponse = {
   status: JobPollStatus;
   result: JobPollResult | null;
   errorMessage: string | null;
-  code?: string; // optional, non-breaking (server may send)
+  code?: string;
 };
 
 const TERMINAL_STATUSES: readonly JobPollStatus[] = ["COMPLETED", "FAILED", "CANCELLED"];
 
-// Interval/backoff controls
 const LIMITS = {
-  BASE_INTERVAL_MS: 2_000, // normal polling cadence
-  HIDDEN_TAB_INTERVAL_MS: 8_000, // reduce load when tab is hidden
+  BASE_INTERVAL_MS: 2_000,
+  HIDDEN_TAB_INTERVAL_MS: 8_000,
   MIN_INTERVAL_MS: 800,
   MAX_INTERVAL_MS: 25_000,
   MAX_CONSECUTIVE_FAILURES: 8,
-  MIN_SUCCESS_INTERVAL_MS: 250, // prevent rapid-fire loops
+  MIN_SUCCESS_INTERVAL_MS: 250,
 } as const;
 
-// Jitter helpers
 function randInt(min: number, max: number) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
+
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
-/**
- * Exponential backoff with "full jitter" (AWS-style):
- * sleep = random(0, min(cap, base * 2^attempt))
- */
 function computeBackoffMs(attempt: number, baseMs: number, capMs: number) {
   const maxDelay = Math.min(capMs, baseMs * Math.pow(2, attempt));
   return randInt(0, Math.max(0, Math.floor(maxDelay)));
@@ -78,40 +74,26 @@ function isTerminal(status: JobPollStatus) {
   return (TERMINAL_STATUSES as readonly string[]).includes(status);
 }
 
-/**
- * useJobPoll:
- * - startPolling(jobId): begins polling
- * - reset(): stops + resets state
- *
- * Assumptions (safest defaults):
- * - server returns status in {PENDING|PROCESSING|COMPLETED|FAILED|CANCELLED}
- * - If server returns no data repeatedly, we fail closed to FAILED after a cap.
- *
- * NOTE: Remix useFetcher does not expose HTTP status codes. We treat:
- * - `fetcher.data` missing after an idle transition as transient failure (with backoff)
- */
 export function useJobPoll() {
   const fetcher = useFetcher<PollResponse>();
 
   const [jobId, setJobId] = useState<string | null>(null);
+  const [lastCompletedJobId, setLastCompletedJobId] = useState<string | null>(null);
   const [pollState, setPollState] = useState<JobPollState>({
     status: "IDLE",
     result: null,
     errorMessage: null,
     isPolling: false,
+    jobId: null,
+    lastCompletedJobId: null,
   });
 
-  // Timers + control flags
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
-
-  // Active job id + request sequencing to ignore stale responses
   const activeJobIdRef = useRef<string | null>(null);
-  const requestSeqRef = useRef(0);
-  const lastProcessedSeqRef = useRef(0);
-
   const failureCountRef = useRef(0);
   const lastRequestAtRef = useRef(0);
+  const lastProcessedSignatureRef = useRef<string | null>(null);
 
   const isHidden = usePageVisibility();
 
@@ -132,12 +114,13 @@ export function useJobPoll() {
     (status: JobPollStatus, errorMessage?: string | null) => {
       stop();
       activeJobIdRef.current = null;
-      setJobId(null);
       setPollState((s) => ({
         status,
         result: s.result ?? null,
         errorMessage: errorMessage ?? s.errorMessage ?? null,
         isPolling: false,
+        jobId: s.jobId,
+        lastCompletedJobId: s.lastCompletedJobId,
       }));
     },
     [stop],
@@ -145,12 +128,9 @@ export function useJobPoll() {
 
   const scheduleNext = useCallback(
     (reason: "normal" | "failure") => {
-      // never stack timers
       clearTimer();
 
       const base = isHidden ? LIMITS.HIDDEN_TAB_INTERVAL_MS : LIMITS.BASE_INTERVAL_MS;
-
-      // For failures, apply exponential backoff + jitter. For normal, apply small jitter.
       const delay =
         reason === "failure"
           ? computeBackoffMs(failureCountRef.current, base, LIMITS.MAX_INTERVAL_MS)
@@ -161,21 +141,18 @@ export function useJobPoll() {
         const id = activeJobIdRef.current;
         if (!id) return;
 
-        // Rate guard: in pathological cases avoid too-tight loops.
         const now = Date.now();
         if (now - lastRequestAtRef.current < LIMITS.MIN_SUCCESS_INTERVAL_MS) {
           timeoutRef.current = setTimeout(() => {
             if (!mountedRef.current) return;
-            const id2 = activeJobIdRef.current;
-            if (!id2) return;
-            requestSeqRef.current += 1;
+            const delayedId = activeJobIdRef.current;
+            if (!delayedId) return;
             lastRequestAtRef.current = Date.now();
-            fetcher.load(`/app/api/job/${id2}`);
+            fetcher.load(`/app/api/job/${delayedId}`);
           }, LIMITS.MIN_SUCCESS_INTERVAL_MS);
           return;
         }
 
-        requestSeqRef.current += 1;
         lastRequestAtRef.current = now;
         fetcher.load(`/app/api/job/${id}`);
       }, delay);
@@ -183,7 +160,6 @@ export function useJobPoll() {
     [clearTimer, fetcher, isHidden],
   );
 
-  // Mount/unmount
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -192,71 +168,44 @@ export function useJobPoll() {
     };
   }, [stop]);
 
-  // Start/stop polling when jobId changes
   useEffect(() => {
     if (!jobId) return;
 
-    // Start fresh for this jobId
     stop();
     activeJobIdRef.current = jobId;
-    failureCountRef.current = 0;
-
-    // Reset sequence counters for this job
-    requestSeqRef.current += 1;
-    lastProcessedSeqRef.current = 0;
+    lastProcessedSignatureRef.current = null;
 
     setPollState((s) => ({
       status: "PENDING",
       result: s.result ?? null,
       errorMessage: null,
       isPolling: true,
+      jobId,
+      lastCompletedJobId: s.lastCompletedJobId,
     }));
 
-    // Kick immediately
     lastRequestAtRef.current = Date.now();
     fetcher.load(`/app/api/job/${jobId}`);
+  }, [fetcher, jobId, stop]);
 
-    // Next will be scheduled on response (success/failure)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobId]);
-
-  // React to page visibility changes: if actively polling, reschedule cadence.
   useEffect(() => {
     if (!activeJobIdRef.current) return;
     if (!pollState.isPolling) return;
     scheduleNext("normal");
   }, [isHidden, pollState.isPolling, scheduleNext]);
 
-  /**
-   * Process responses + schedule next tick.
-   *
-   * Key subtlety:
-   * - useFetcher keeps previous `data` during new loads in many cases.
-   * - We only "evaluate" when fetcher transitions to idle AND the requestSeq increased.
-   * - Since we can't read HTTP status, "missing data at idle" is treated as transient failure.
-   */
- // With this:
-const lastProcessedDataRef = useRef<PollResponse | null>(null);
+  useEffect(() => {
+    if (!activeJobIdRef.current) return;
+    if (fetcher.state !== "idle") return;
 
-useEffect(() => {
-  if (!activeJobIdRef.current) return;
-  if (fetcher.state !== "idle") return;
+    const currentJobId = activeJobIdRef.current;
+    const data = fetcher.data;
 
-  const data = fetcher.data;
-
-  // Dedupe by reference identity, not wall-clock time.
-  // Remix gives a new object reference on each successful load,
-  // so this safely skips re-processing the same response twice
-  // without ever dropping a genuinely new one.
-  if (data !== undefined && data === lastProcessedDataRef.current) return;
-  lastProcessedDataRef.current = data ?? null;
-
-  const currentJobId = activeJobIdRef.current;
-
-    // Failure path: no data returned
     if (!data) {
-      failureCountRef.current += 1;
+      if (lastProcessedSignatureRef.current === "no-data") return;
+      lastProcessedSignatureRef.current = "no-data";
 
+      failureCountRef.current += 1;
       if (failureCountRef.current >= LIMITS.MAX_CONSECUTIVE_FAILURES) {
         markTerminal("FAILED", "Polling failed repeatedly. Please retry.");
         return;
@@ -264,86 +213,106 @@ useEffect(() => {
 
       setPollState((s) => ({
         ...s,
-        errorMessage: s.errorMessage ?? "Temporary polling error. Retrying…",
+        errorMessage: s.errorMessage ?? "Temporary polling error. Retrying...",
         isPolling: true,
       }));
-
       scheduleNext("failure");
       return;
     }
 
-    // Guard against stale data being applied after a job switch:
-    // If active job changed since load kicked off, ignore this idle completion.
-    // We can't read request URL from useFetcher, so we at least ensure the jobId
-    // is still the active one at the time we apply state.
     if (!currentJobId || currentJobId !== activeJobIdRef.current) {
       return;
     }
 
-    // Success path: reset failure count
+   const status = (data.status ?? "IDLE") as JobPollStatus;
+
+// Only deduplicate terminal states — never skip PENDING/PROCESSING
+// because skipping them also skips the scheduleNext() call below,
+// which stalls the poll loop entirely.
+if (isTerminal(status)) {
+  const terminalSig = `${currentJobId}:${status}`;
+  if (terminalSig === lastProcessedSignatureRef.current) return;
+  lastProcessedSignatureRef.current = terminalSig;
+} else {
+  // For non-terminal, always process — never deduplicate
+  lastProcessedSignatureRef.current = null;
+}
     failureCountRef.current = 0;
 
-    const status: JobPollStatus = (data.status ?? "IDLE") as JobPollStatus;
+    // const status = (data.status ?? "IDLE") as JobPollStatus;
     const result = data.result ?? null;
     const errorMessage = data.errorMessage ?? null;
-
     const terminal = isTerminal(status);
+    const nextCompletedJobId = status === "COMPLETED" ? currentJobId : lastCompletedJobId;
+
+    if (status === "COMPLETED") {
+      setLastCompletedJobId(currentJobId);
+    }
 
     setPollState({
       status,
       result,
       errorMessage,
       isPolling: !terminal && status !== "IDLE",
+      jobId: currentJobId,
+      lastCompletedJobId: nextCompletedJobId,
     });
 
     if (terminal) {
       stop();
       activeJobIdRef.current = null;
-      setJobId(null);
       return;
     }
 
     scheduleNext("normal");
-  }, [fetcher.data, fetcher.state, markTerminal, scheduleNext, stop]);
+  }, [fetcher.data, fetcher.state, lastCompletedJobId, markTerminal, scheduleNext, stop]);
 
-  const startPolling = useCallback((id: string) => {
-    const trimmed = (id ?? "").trim();
-    if (!trimmed) {
-      setPollState({
-        status: "FAILED",
-        result: null,
-        errorMessage: "Missing jobId for polling.",
-        isPolling: false,
-      });
-      return;
-    }
+  const startPolling = useCallback(
+    (id: string) => {
+      const trimmed = (id ?? "").trim();
+      if (!trimmed) {
+        setPollState({
+          status: "FAILED",
+          result: null,
+          errorMessage: "Missing jobId for polling.",
+          isPolling: false,
+          jobId: null,
+          lastCompletedJobId,
+        });
+        return;
+      }
 
-    // If already polling same job, ignore.
-    if (activeJobIdRef.current && activeJobIdRef.current === trimmed && pollState.isPolling) {
-      return;
-    }
+      if (activeJobIdRef.current === trimmed && pollState.isPolling) {
+        return;
+      }
 
-    setJobId(trimmed);
-  }, [pollState.isPolling]);
+      setJobId(trimmed);
+    },
+    [lastCompletedJobId, pollState.isPolling],
+  );
 
   const reset = useCallback(() => {
     stop();
     activeJobIdRef.current = null;
+    lastProcessedSignatureRef.current = null;
     setJobId(null);
+    setLastCompletedJobId(null);
     setPollState({
       status: "IDLE",
       result: null,
       errorMessage: null,
       isPolling: false,
+      jobId: null,
+      lastCompletedJobId: null,
     });
   }, [stop]);
 
-  return useMemo(() => ({ startPolling, reset, ...pollState }), [startPolling, reset, pollState]);
+  return useMemo(
+    () => ({ startPolling, reset, stop, ...pollState }),
+    [pollState, reset, startPolling, stop],
+  );
 }
 
-/**
- * Page visibility hook (no deps). Returns true when tab is hidden.
- */
 function usePageVisibility() {
   const [hidden, setHidden] = useState<boolean>(() => {
     if (typeof document === "undefined") return false;

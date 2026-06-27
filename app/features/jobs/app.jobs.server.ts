@@ -95,6 +95,16 @@ function extractMetaDescription(result: unknown): string {
   return typeof r.meta_description === "string" ? r.meta_description : "";
 }
 
+function extractAltTexts(result: unknown): { imageId: string; altText: string }[] {
+  if (!result || typeof result !== "object") return [];
+  const r = result as Record<string, unknown>;
+  if (!Array.isArray(r.alt_texts)) return [];
+  return r.alt_texts.filter(
+    (x): x is { imageId: string; altText: string } =>
+      x && typeof x.imageId === "string" && typeof x.altText === "string"
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Loader
 // ─────────────────────────────────────────────────────────────────────────────
@@ -167,6 +177,7 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
       draftBodyHtml: extractBodyHtml(j.result),
       metaTitle: extractMetaTitle(j.result),
       metaDescription: extractMetaDescription(j.result),
+      altTexts: extractAltTexts(j.result),
     })),
     hasActiveJobs,
     hasNextPage,
@@ -546,6 +557,29 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
 
     return json({ ok: true, restored: true });
   }
+if (intent === "undo_meta") {
+  const jobId = String(form.get("jobId") ?? "");
+  if (!UUID_RE.test(jobId)) return json({ ok: false, error: "Invalid job ID" }, { status: 400 });
 
+  const job = await db.generationJob.findFirst({
+    where: { id: jobId, shopDomain },
+    select: { productId: true, status: true, previousMetaTitle: true, previousMetaDescription: true },
+  });
+
+  if (!job) return json({ ok: false, error: "Job not found" }, { status: 404 });
+  if (job.status !== "COMPLETED") return json({ ok: false, error: "Only completed jobs can be undone" }, { status: 422 });
+
+  await admin.graphql(
+    `mutation UpdateMeta($id: ID!, $seo: SEOInput) {
+      productUpdate(input: { id: $id, seo: $seo }) {
+        product { id }
+        userErrors { field message }
+      }
+    }`,
+    { variables: { id: job.productId, seo: { title: job.previousMetaTitle ?? "", description: job.previousMetaDescription ?? "" } } }
+  );
+
+  return json({ ok: true, restored: true, kind: "undo_meta" });
+}
   return json({ ok: false, error: "Invalid intent" }, { status: 400 });
 }

@@ -22,14 +22,10 @@ import {
   Tooltip,
 } from "@shopify/polaris";
 import { useFetcher, useLoaderData, useNavigate, useRevalidator } from "@remix-run/react";
+import { useJobPoll } from "../hooks/useJobPoll";
 
 import type { LoaderData, DraftResult, CustomTemplate } from "./app.products.$productId.types";
-import {
-  JOB_POLL_INTERVAL_MS,
-  JOB_POLL_JITTER_RATIO,
-  KEYWORDS,
-  UUID_V4_RE,
-} from "./app.products.$productId.constants";
+import { KEYWORDS, UUID_V4_RE } from "./app.products.$productId.constants";
 
 import { DiffViewer } from "../components/DiffViewer";
 import { CreditUsageCard } from "../components/CreditUsageCard";
@@ -72,151 +68,6 @@ function parseKeywords(input: string): string[] {
 function clampTextInput(value: string, maxChars: number) {
   const s = typeof value === "string" ? value : "";
   return s.length <= maxChars ? s : s.slice(0, maxChars);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Polling hook
-// ─────────────────────────────────────────────────────────────────────────────
-
-type PollStatus =
-  | "IDLE"
-  | "PENDING"
-  | "PROCESSING"
-  | "COMPLETED"
-  | "FAILED"
-  | "CANCELLED";
-
-interface PollPayload {
-  status: PollStatus;
-  result: DraftResult | null;
-  errorMessage: string | null;
-}
-
-function useJobPoll() {
-  const fetcher = useFetcher<PollPayload>();
-  const timerRef = useRef<number | null>(null);
-  const startedAtRef = useRef<number | null>(null);
-  const requestInFlightRef = useRef(false);
-
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [status, setStatus] = useState<PollStatus>("IDLE");
-  const [result, setResult] = useState<DraftResult | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [lastCompletedJobId, setLastCompletedJobId] = useState<string | null>(null);
-
-  const terminal = useMemo(
-    () => new Set<PollStatus>(["COMPLETED", "FAILED", "CANCELLED"]),
-    [],
-  );
-
-  const clearTimer = useCallback(() => {
-    if (timerRef.current) {
-      window.clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-  }, []);
-
-  const stop = useCallback(() => {
-    clearTimer();
-    requestInFlightRef.current = false;
-    setJobId(null);
-    startedAtRef.current = null;
-  }, [clearTimer]);
-
-  const scheduleMs = useCallback(() => {
-    const base = JOB_POLL_INTERVAL_MS;
-    const jitter = base * JOB_POLL_JITTER_RATIO;
-    return Math.max(750, Math.floor(base + (Math.random() * 2 - 1) * jitter));
-  }, []);
-
-  useEffect(() => {
-    clearTimer();
-    if (!jobId) return;
-
-    let stopped = false;
-
-    const tick = () => {
-      if (stopped) return;
-      if (startedAtRef.current && Date.now() - startedAtRef.current > 5 * 60 * 1000) {
-        setStatus("FAILED");
-        setErrorMessage(
-          "Generation did not finish. Make sure the generation worker is running and try again.",
-        );
-        stop();
-        return;
-      }
-      if (typeof document !== "undefined" && document.hidden) {
-        timerRef.current = window.setTimeout(tick, scheduleMs());
-        return;
-      }
-      if (!requestInFlightRef.current) {
-        requestInFlightRef.current = true;
-        fetcher.load(`/app/api/job/${jobId}`);
-      }
-      timerRef.current = window.setTimeout(tick, scheduleMs());
-    };
-
-    tick();
-
-    return () => {
-      stopped = true;
-      clearTimer();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobId, clearTimer, scheduleMs]);
-
-  useEffect(() => {
-    if (fetcher.state !== "idle") return;
-
-    requestInFlightRef.current = false;
-
-    if (fetcher.data === undefined) return;
-
-    const nextStatus: PollStatus = fetcher.data.status ?? "IDLE";
-    setStatus(nextStatus);
-    setErrorMessage(fetcher.data.errorMessage ?? null);
-
-    if (fetcher.data.result) setResult(fetcher.data.result);
-
-    if (terminal.has(nextStatus)) {
-      if (nextStatus === "COMPLETED" && jobId) setLastCompletedJobId(jobId);
-      stop();
-    }
-  }, [fetcher.data, fetcher.state, stop, terminal, jobId]);
-
-  const startPolling = useCallback((id: string) => {
-    if (!isUuidV4(id)) return;
-    console.log("[useJobPoll] startPolling", id);
-    clearTimer();
-    requestInFlightRef.current = false;
-    setResult(null);
-    setErrorMessage(null);
-    setStatus("PENDING");
-    startedAtRef.current = Date.now();
-    setJobId(id);
-  }, [clearTimer]);
-
-  const reset = useCallback(() => {
-    clearTimer();
-    requestInFlightRef.current = false;
-    setJobId(null);
-    setStatus("IDLE");
-    setResult(null);
-    setErrorMessage(null);
-    startedAtRef.current = null;
-  }, [clearTimer]);
-
-  return {
-    startPolling,
-    reset,
-    status,
-    result,
-    errorMessage,
-    jobId,
-    lastCompletedJobId,
-    isPolling: status !== "IDLE" && !terminal.has(status),
-    stop,
-  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -685,8 +536,10 @@ export default function ProductEditorModalRoute() {
 
   const latestDraftCompletesActiveJob = Boolean(
     latestDraft?.id &&
-      draftResult &&
-      (latestDraft.id === pollingJobId || latestDraft.id === activeJob?.id),
+      latestDraft.result &&
+      (latestDraft.id === lastCompletedJobId ||
+        latestDraft.id === pollingJobId ||
+        latestDraft.id === activeJob?.id),
   );
 
   const isGenerating =
@@ -699,16 +552,24 @@ export default function ProductEditorModalRoute() {
 
   useEffect(() => {
     if (!latestDraftCompletesActiveJob) return;
-    if (pollStatus !== "PENDING" && pollStatus !== "PROCESSING") return;
+    generationSubmitLockedRef.current = false;
+    setGenerationRequestPending(false);
+    if (
+      pollStatus !== "PENDING" &&
+      pollStatus !== "PROCESSING" &&
+      pollStatus !== "COMPLETED"
+    ) {
+      return;
+    }
     resetPolling();
   }, [latestDraftCompletesActiveJob, pollStatus, resetPolling]);
 
   useEffect(() => {
-    if (pollStatus !== "COMPLETED" || !lastCompletedJobId || draftResult) return;
+    if (pollStatus !== "COMPLETED" || !lastCompletedJobId) return;
     if (lastRevalidatedJobIdRef.current === lastCompletedJobId) return;
     lastRevalidatedJobIdRef.current = lastCompletedJobId;
     revalidator.revalidate();
-  }, [draftResult, lastCompletedJobId, pollStatus, revalidator]);
+  }, [lastCompletedJobId, pollStatus, revalidator]);
 
   const draftHtml =
     typeof draftResult?.body_html === "string" ? draftResult.body_html : "";

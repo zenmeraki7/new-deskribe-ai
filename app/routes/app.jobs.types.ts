@@ -35,6 +35,11 @@ export interface JobRow {
   // Description snapshot — populated by worker on COMPLETED
   generatedDescription: string | null;
   hasPreviousDescription: boolean; // true when DB `previousDescription` is non-null
+  // Add these fields to the JobRow interface, after hasPreviousDescription:
+draftBodyHtml: string;       // sanitized body_html from result JSON
+metaTitle: string;           // meta_title from result JSON  
+metaDescription: string;     // meta_description from result JSON
+altTexts: { imageId: string; altText: string }[]; // from result JSON (if stored)
   createdAt: string;       // ISO string
   updatedAt: string;       // ISO string
 }
@@ -46,6 +51,7 @@ export interface LoaderData {
   nextCursor: string | null;
   prevCursor: string | null;
   totalPending: number;    // server-computed, shop-scoped
+  shopDomain: string;
 }
 
 /**

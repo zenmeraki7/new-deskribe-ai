@@ -68,58 +68,82 @@ interface JobDetailModalProps {
   onClose: () => void;
   shopDomain: string;
 }
+ 
+
 
 function JobDetailModal({ job, open, onClose, shopDomain }: JobDetailModalProps) {
-  const undoFetcher = useFetcher<{
-    ok: boolean;
-    error?: string;
-    restored?: boolean;
-  }>();
-  const applyFetcher = useFetcher<{
-    ok: boolean;
-    error?: string;
-    applied?: boolean;
-    kind?: string;
-  }>();
-
-  const isUndoing = undoFetcher.state !== "idle";
-  const isApplying = applyFetcher.state !== "idle";
-  const undoResult = undoFetcher.data;
-  const applyResult = applyFetcher.data;
-
+  const undoFetcher = useFetcher<{ ok: boolean; error?: string; restored?: boolean }>();
+  const undoMetaFetcher = useFetcher<{ ok: boolean; error?: string; restored?: boolean; kind?: string }>();
+  const applyFetcher = useFetcher<{ ok: boolean; error?: string; applied?: boolean; kind?: string }>();
+ 
+  const [activeTab, setActiveTab] = useState(0);
+ 
+  // Reset tab when modal opens for a new job
+  useEffect(() => {
+    if (open) setActiveTab(0);
+  }, [open, job?.id]);
+ 
   if (!job) return null;
-
+ 
+  const isUndoing = undoFetcher.state !== "idle";
+  const isUndoingMeta = undoMetaFetcher.state !== "idle";
+  const isApplying = applyFetcher.state !== "idle";
+ 
   const handleUndo = () => {
     const fd = new FormData();
     fd.set("intent", "undo");
     fd.set("jobId", job.id);
     undoFetcher.submit(fd, { method: "post" });
   };
-
+ 
+  const handleUndoMeta = () => {
+    const fd = new FormData();
+    fd.set("intent", "undo_meta");
+    fd.set("jobId", job.id);
+    undoMetaFetcher.submit(fd, { method: "post" });
+  };
+ 
   const handleApply = () => {
     const numericId = job.productId.split("/").pop();
     const fd = new FormData();
     fd.set("intent", "apply");
     fd.set("jobId", job.id);
-    applyFetcher.submit(fd, {
-      method: "post",
-      action: `/app/products/${numericId}`,
-    });
+    applyFetcher.submit(fd, { method: "post", action: `/app/products/${numericId}` });
   };
-
+ 
   const { label, tone } = statusBadge(job.status);
-  const applySuccess =
-    applyResult?.ok === true && applyResult?.applied === true;
-  const canApply = job.status === "COMPLETED" && !applySuccess && !isApplying;
-  const canUndo = job.status === "COMPLETED" && !undoResult?.restored;
-
-  // draftBodyHtml is the server-sanitized body_html from result JSON.
-  // Falls back to generatedDescription (set after apply).
-  const draftHtml =
-    (job as any).draftBodyHtml || job.generatedDescription || "";
+  const applySuccess = applyFetcher.data?.ok === true && applyFetcher.data?.applied === true;
+  const undoDone = undoFetcher.data?.ok === true && undoFetcher.data?.restored === true;
+  const undoMetaDone = undoMetaFetcher.data?.ok === true && undoMetaFetcher.data?.restored === true;
+ 
+  const draftHtml = (job as any).draftBodyHtml || job.generatedDescription || "";
   const metaTitle = (job as any).metaTitle || "";
   const metaDescription = (job as any).metaDescription || "";
-
+  const altTexts: { imageId: string; altText: string }[] = (job as any).altTexts || [];
+ 
+  const canApply = job.status === "COMPLETED" && !applySuccess && !isApplying;
+  const canUndoDesc = job.status === "COMPLETED" && !undoDone;
+  const canUndoMeta = job.status === "COMPLETED" && !undoMetaDone && (!!metaTitle || !!metaDescription);
+ 
+  const tabs = [
+    { id: "description", content: "Description", panelID: "desc-panel" },
+    { id: "meta", content: "Meta SEO", panelID: "meta-panel" },
+    ...(altTexts.length > 0
+      ? [{ id: "alttext", content: `Image Alt Text (${altTexts.length})`, panelID: "alt-panel" }]
+      : []),
+  ];
+ 
+  // Primary action depends on active tab
+  const primaryAction =
+    activeTab === 0 && canApply
+      ? {
+          content: isApplying ? "Applying…" : "Apply to Shopify",
+          onAction: handleApply,
+          loading: isApplying,
+          disabled: isApplying,
+        }
+      : undefined;
+ 
   return (
     <Modal
       open={open}
@@ -132,44 +156,32 @@ function JobDetailModal({ job, open, onClose, shopDomain }: JobDetailModalProps)
           {applySuccess && <Badge tone="success">Applied</Badge>}
         </InlineStack>
       }
-      primaryAction={
-        canApply
-          ? {
-              content: isApplying ? "Applying…" : "Apply to Shopify",
-              onAction: handleApply,
-              loading: isApplying,
-              disabled: isApplying,
-            }
-          : undefined
-      }
-      secondaryActions={[
-        ...(canUndo
-          ? [
-              {
-                content: "↩ Undo",
-                onAction: handleUndo,
-                loading: isUndoing,
-                disabled: isUndoing,
-                destructive: true,
-              },
-            ]
-          : []),
-        { content: "Close", onAction: onClose },
-      ]}
+      primaryAction={primaryAction}
+      secondaryActions={[{ content: "Close", onAction: onClose }]}
       large
     >
       <Modal.Section>
         <BlockStack gap="400">
-          {/* Banners */}
-          {undoResult?.ok && undoResult.restored && (
+ 
+          {/* ── Global banners ── */}
+          {undoFetcher.data?.ok && undoFetcher.data.restored && (
             <Banner tone="success" title="Description restored">
-              The previous description has been restored to the product.
+              The previous description has been restored on Shopify.
             </Banner>
           )}
-          {undoResult && !undoResult.ok && (
+          {undoFetcher.data && !undoFetcher.data.ok && (
             <Banner tone="critical" title="Undo failed">
-              {undoResult.error ??
-                "Could not restore the previous description."}
+              {undoFetcher.data.error ?? "Could not restore the previous description."}
+            </Banner>
+          )}
+          {undoMetaFetcher.data?.ok && undoMetaFetcher.data.restored && (
+            <Banner tone="success" title="Meta SEO restored">
+              The previous meta title and description have been restored on Shopify.
+            </Banner>
+          )}
+          {undoMetaFetcher.data && !undoMetaFetcher.data.ok && (
+            <Banner tone="critical" title="Meta undo failed">
+              {undoMetaFetcher.data.error ?? "Could not restore the previous meta."}
             </Banner>
           )}
           {applySuccess && (
@@ -177,204 +189,221 @@ function JobDetailModal({ job, open, onClose, shopDomain }: JobDetailModalProps)
               This description is now live on the product.
             </Banner>
           )}
-          {applyResult && !applyResult.ok && (
+          {applyFetcher.data && !applyFetcher.data.ok && (
             <Banner tone="critical" title="Apply failed">
-              {applyResult.error ?? "An unexpected error occurred."}
+              {applyFetcher.data.error ?? "An unexpected error occurred."}
             </Banner>
           )}
-
-          {/* Status + timestamps */}
+ 
+          {/* ── Status row ── */}
           <InlineStack gap="300" blockAlign="center">
-            <Text as="span" variant="bodyMd" fontWeight="semibold">
-              Status:
-            </Text>
+            <Text as="span" variant="bodyMd" fontWeight="semibold">Status:</Text>
             <Badge tone={tone}>{label}</Badge>
           </InlineStack>
-
+ 
           <Divider />
-
-          <BlockStack gap="200">
-            <InlineStack gap="200" wrap>
-              <Text
-                as="span"
-                variant="bodySm"
-                tone="subdued"
-                fontWeight="semibold"
-              >
-                Created:
-              </Text>
-              <Text as="span" variant="bodySm" tone="subdued">
-                {safeDateLabel(job.createdAt)}
-              </Text>
+ 
+          {/* ── Timestamps ── */}
+          <BlockStack gap="100">
+            <InlineStack gap="200">
+              <Text as="span" variant="bodySm" tone="subdued" fontWeight="semibold">Created:</Text>
+              <Text as="span" variant="bodySm" tone="subdued">{safeDateLabel(job.createdAt)}</Text>
             </InlineStack>
-            <InlineStack gap="200" wrap>
-              <Text
-                as="span"
-                variant="bodySm"
-                tone="subdued"
-                fontWeight="semibold"
-              >
-                Last updated:
-              </Text>
-              <Text as="span" variant="bodySm" tone="subdued">
-                {safeDateLabel(job.updatedAt)}
-              </Text>
+            <InlineStack gap="200">
+              <Text as="span" variant="bodySm" tone="subdued" fontWeight="semibold">Updated:</Text>
+              <Text as="span" variant="bodySm" tone="subdued">{safeDateLabel(job.updatedAt)}</Text>
             </InlineStack>
           </BlockStack>
-
-          <Divider />
-
+ 
           {(job.format || job.tone || job.costTokens > 0) && (
             <>
-              <BlockStack gap="200">
-                <Text as="p" variant="bodyMd" fontWeight="semibold">
-                  Generation settings
-                </Text>
+              <Divider />
+              <BlockStack gap="150">
+                <Text as="p" variant="bodyMd" fontWeight="semibold">Generation settings</Text>
                 <InlineStack gap="200" wrap>
                   {job.format && <Tag>Format: {job.format}</Tag>}
                   {job.tone && <Tag>Tone: {job.tone}</Tag>}
-                  {job.costTokens > 0 && (
-                    <Tag>{job.costTokens.toLocaleString()} tokens</Tag>
-                  )}
+                  {job.costTokens > 0 && <Tag>{job.costTokens.toLocaleString()} tokens</Tag>}
                 </InlineStack>
               </BlockStack>
-              <Divider />
             </>
           )}
-
+ 
           {job.status === "FAILED" && job.errorMessage && (
             <>
+              <Divider />
               <BlockStack gap="100">
-                <Text
-                  as="p"
-                  variant="bodyMd"
-                  fontWeight="semibold"
-                  tone="critical"
-                >
-                  Error
-                </Text>
-                <Box
-                  padding="300"
-                  background="bg-surface-critical-subdued"
-                  borderRadius="200"
-                >
-                  <Text as="p" variant="bodySm" tone="critical">
-                    {job.errorMessage}
-                  </Text>
+                <Text as="p" variant="bodyMd" fontWeight="semibold" tone="critical">Error</Text>
+                <Box padding="300" background="bg-surface-critical-subdued" borderRadius="200">
+                  <Text as="p" variant="bodySm" tone="critical">{job.errorMessage}</Text>
                 </Box>
               </BlockStack>
-              <Divider />
             </>
           )}
-
-          {/* SEO preview — shown when meta is available */}
-          {job.status === "COMPLETED" && (metaTitle || metaDescription) && (
-            <>
-              <BlockStack gap="200">
-                <Text as="p" variant="bodyMd" fontWeight="semibold">
-                  SEO Preview
-                </Text>
-                <div
-                  style={{
-                    padding: 16,
-                    background: "#fff",
-                    border: "1px solid #dadce0",
-                    borderRadius: 8,
-                    fontFamily: "arial, sans-serif",
-                    maxWidth: 600,
-                  }}
-                >
+ 
+          <Divider />
+ 
+          {/* ── Tabs ── */}
+          <Tabs tabs={tabs} selected={activeTab} onSelect={setActiveTab} />
+ 
+          {/* ══ TAB 0: Description ══ */}
+          {activeTab === 0 && (
+            <BlockStack gap="300">
+              {draftHtml ? (
+                <>
+                  <Box padding="300" background="bg-surface-secondary" borderRadius="200" borderWidth="025" borderColor="border">
+                    <div
+                      style={{ fontSize: 13, lineHeight: 1.6, color: "#202223", maxHeight: 320, overflowY: "auto" }}
+                      dangerouslySetInnerHTML={{ __html: draftHtml }}
+                    />
+                  </Box>
+                  {canUndoDesc && (
+                    <InlineStack align="end" gap="200">
+                      <Text as="p" variant="bodySm" tone="subdued">
+                        {job.hasPreviousDescription
+                          ? "Previous description saved — Undo will restore it."
+                          : "No snapshot — Undo will clear this description."}
+                      </Text>
+                      <Button
+                        size="slim"
+                        tone="critical"
+                        onClick={handleUndo}
+                        loading={isUndoing}
+                        disabled={isUndoing}
+                      >
+                        ↩ Undo Description
+                      </Button>
+                    </InlineStack>
+                  )}
+                </>
+              ) : job.status === "COMPLETED" ? (
+                <Banner tone="warning" title="Description not available">
+                  Open the full product editor to preview and apply the generated description.
+                </Banner>
+              ) : (
+                <Text as="p" variant="bodySm" tone="subdued">No description generated yet.</Text>
+              )}
+ 
+              {job.status === "COMPLETED" && (
+                <InlineStack>
+                  <Button variant="plain" url={`/app/products/${job.productId.split("/").pop()}`}>
+                    Open full editor ↗
+                  </Button>
+                </InlineStack>
+              )}
+            </BlockStack>
+          )}
+ 
+          {/* ══ TAB 1: Meta SEO ══ */}
+          {activeTab === 1 && (
+            <BlockStack gap="300">
+              {metaTitle || metaDescription ? (
+                <>
+                  {/* Live Google-style preview */}
+                  <Text as="p" variant="bodyMd" fontWeight="semibold">SEO Preview</Text>
                   <div
                     style={{
-                      fontSize: 18,
-                      color: "#1a0dab",
-                      marginBottom: 4,
-                      overflow: "hidden",
-                      whiteSpace: "nowrap",
-                      textOverflow: "ellipsis",
+                      padding: 16,
+                      background: "#fff",
+                      border: "1px solid #dadce0",
+                      borderRadius: 8,
+                      fontFamily: "arial, sans-serif",
+                      maxWidth: 600,
                     }}
                   >
-                    {metaTitle || job.productTitle}
+                    <div style={{ fontSize: 18, color: "#1a0dab", marginBottom: 4, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>
+                      {metaTitle || job.productTitle}
+                    </div>
+                    <div style={{ fontSize: 13, color: "#006621", marginBottom: 4 }}>
+                      {shopDomain} › products
+                    </div>
+                    <div style={{ fontSize: 14, color: "#545454" }}>
+                      {metaDescription || "No meta description."}
+                    </div>
                   </div>
-                  <div style={{ fontSize: 13, color: "#006621", marginBottom: 4 }}>
-  {shopDomain} › products
-</div>
-                  <div
-                    style={
-                      {
-                        fontSize: 14,
-                        color: "#545454",
-                        display: "-webkit-box",
-                        WebkitLineClamp: 2,
-                        WebkitBoxOrient: "vertical",
-                        overflow: "hidden",
-                      } as any
-                    }
-                  >
-                    {metaDescription}
-                  </div>
-                </div>
-              </BlockStack>
-              <Divider />
-            </>
-          )}
-
-          {/* Generated description */}
-          {draftHtml ? (
-            <BlockStack gap="200">
-              <Text as="p" variant="bodyMd" fontWeight="semibold">
-                Generated description
-              </Text>
-              <Box
-                padding="300"
-                background="bg-surface-secondary"
-                borderRadius="200"
-                borderWidth="025"
-                borderColor="border"
-              >
-                <div
-                  style={{
-                    fontSize: 13,
-                    lineHeight: 1.6,
-                    color: "#202223",
-                    maxHeight: 320,
-                    overflowY: "auto",
-                  }}
-                  dangerouslySetInnerHTML={{ __html: draftHtml }}
-                />
-              </Box>
-              {canUndo && !undoResult?.restored && (
+ 
+                  <Divider />
+ 
+                  {/* Raw fields */}
+                  <BlockStack gap="200">
+                    <BlockStack gap="050">
+                      <Text as="p" variant="bodySm" fontWeight="semibold" tone="subdued">
+                        Meta title ({metaTitle.length} chars{metaTitle.length > 60 ? " — over 60, may truncate" : ""})
+                      </Text>
+                      <Box padding="200" background="bg-surface-secondary" borderRadius="100">
+                        <Text as="p" variant="bodySm">{metaTitle || "—"}</Text>
+                      </Box>
+                    </BlockStack>
+                    <BlockStack gap="050">
+                      <Text as="p" variant="bodySm" fontWeight="semibold" tone="subdued">
+                        Meta description ({metaDescription.length} chars{metaDescription.length > 155 ? " — over 155, may truncate" : ""})
+                      </Text>
+                      <Box padding="200" background="bg-surface-secondary" borderRadius="100">
+                        <Text as="p" variant="bodySm">{metaDescription || "—"}</Text>
+                      </Box>
+                    </BlockStack>
+                  </BlockStack>
+ 
+                  {canUndoMeta && (
+                    <InlineStack align="end" gap="200">
+                      <Text as="p" variant="bodySm" tone="subdued">
+                        Undo will restore the previous meta title and description on Shopify.
+                      </Text>
+                      <Button
+                        size="slim"
+                        tone="critical"
+                        onClick={handleUndoMeta}
+                        loading={isUndoingMeta}
+                        disabled={isUndoingMeta}
+                      >
+                        ↩ Undo Meta SEO
+                      </Button>
+                    </InlineStack>
+                  )}
+                </>
+              ) : (
                 <Text as="p" variant="bodySm" tone="subdued">
-                  {job.hasPreviousDescription
-                    ? "A previous description is saved — Undo will restore it."
-                    : "No snapshot saved — Undo will clear this description on the product."}
+                  No meta title or description was generated for this job.
                 </Text>
               )}
             </BlockStack>
-          ) : job.status === "COMPLETED" ? (
-            <Banner
-              tone="warning"
-              title="Description not available in this view"
-            >
-              Open the full product editor to preview and apply the generated
-              description.
-            </Banner>
-          ) : (
-            <Text as="p" variant="bodySm" tone="subdued">
-              No generated description available yet.
-            </Text>
           )}
-
-          {job.status === "COMPLETED" && (
-            <InlineStack>
-              <Button
-                variant="plain"
-                url={`/app/products/${job.productId.split("/").pop()}`}
-              >
-                Open full editor  ↗
-              </Button>
-            </InlineStack>
+ 
+          {/* ══ TAB 2: Image Alt Text ══ */}
+          {activeTab === 2 && (
+            <BlockStack gap="300">
+              {altTexts.length > 0 ? (
+                altTexts.map((item, idx) => (
+                  <BlockStack key={item.imageId} gap="100">
+                    <Text as="p" variant="bodySm" fontWeight="semibold" tone="subdued">
+                      Image {idx + 1}
+                    </Text>
+                    <Box padding="200" background="bg-surface-secondary" borderRadius="100">
+                      <Text as="p" variant="bodySm">{item.altText}</Text>
+                    </Box>
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      {item.altText.length}/125 characters
+                      {item.altText.length > 125 ? " (longer than recommended)" : ""}
+                    </Text>
+                    {idx < altTexts.length - 1 && <Divider />}
+                  </BlockStack>
+                ))
+              ) : (
+                <Text as="p" variant="bodySm" tone="subdued">
+                  No image alt text was generated for this job.
+                </Text>
+              )}
+              <Text as="p" variant="bodySm" tone="subdued">
+                To edit or regenerate alt text, open the full product editor.
+              </Text>
+              <InlineStack>
+                <Button variant="plain" url={`/app/products/${job.productId.split("/").pop()}`}>
+                  Open full editor ↗
+                </Button>
+              </InlineStack>
+            </BlockStack>
           )}
+ 
         </BlockStack>
       </Modal.Section>
     </Modal>

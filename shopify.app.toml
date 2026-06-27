@@ -2,7 +2,7 @@
 
 client_id = "edfa37793692fabbeabe10ec4f7e0151"
 name = "development"
-application_url = "https://customize-european-bool-association.trycloudflare.com"
+application_url = "https://writer-strict-seas-projected.trycloudflare.com"
 embedded = true
 
 [webhooks]
@@ -13,7 +13,7 @@ api_version = "2026-07"
 scopes = "write_products"
 
 [auth]
-redirect_urls = [ "https://customize-european-bool-association.trycloudflare.com/api/auth" ]
+redirect_urls = [ "https://writer-strict-seas-projected.trycloudflare.com/api/auth" ]
 
 [build]
 automatically_update_urls_on_dev = true

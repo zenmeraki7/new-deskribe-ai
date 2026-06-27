@@ -376,6 +376,7 @@ export async function action({ request }: ActionFunctionArgs) {
       });
 
       // ── 4. Derive bullJobId and update record ────────────────────────────
+      // FIX: underscore separator — BullMQ v4+ forbids colons in custom jobIds
       const bullJobId = `${shopDomain}_${job.id}`;
       await db.generationJob.update({
         where: { id: job.id },
@@ -532,11 +533,16 @@ function useJobPoll() {
   const timerRef = useRef<number | null>(null);
   const startedAtRef = useRef<number | null>(null);
   const inFlightRef = useRef(false);
+  // jobId stored in a ref, not state — avoids the render cycle that caused
+  // isPolling to flip false before generationResult appeared in the DOM
+  const jobIdRef = useRef<string | null>(null);
 
-  const [jobId, setJobId] = useState<string | null>(null);
   const [status, setStatus] = useState<PollStatus>("IDLE");
   const [result, setResult] = useState<DraftResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // isPolling is explicit state, NOT derived from jobId
+  // This guarantees: setResult(...) always commits before setIsPolling(false)
+  const [isPolling, setIsPolling] = useState(false);
 
   const TERMINAL = new Set<PollStatus>(["COMPLETED", "FAILED", "CANCELLED"]);
 
@@ -547,11 +553,14 @@ function useJobPoll() {
     }
   }, []);
 
+  // stop() only flips isPolling — does NOT clear result or status
+  // so the rendered output stays visible after generation completes
   const stop = useCallback(() => {
     clearTimer();
     inFlightRef.current = false;
     startedAtRef.current = null;
-    setJobId(null);
+    jobIdRef.current = null;
+    setIsPolling(false);
   }, [clearTimer]);
 
   const scheduleMs = () => {
@@ -559,13 +568,14 @@ function useJobPoll() {
     return Math.max(750, Math.floor(POLL_INTERVAL_MS + (Math.random() * 2 - 1) * jitter));
   };
 
+  // Tick loop depends on isPolling (state), not jobId (ref)
   useEffect(() => {
+    if (!isPolling) return;
     clearTimer();
-    if (!jobId) return;
 
     let stopped = false;
     const tick = () => {
-      if (stopped) return;
+      if (stopped || !jobIdRef.current) return;
       if (startedAtRef.current && Date.now() - startedAtRef.current > POLL_TIMEOUT_MS) {
         setStatus("FAILED");
         setErrorMessage("Generation timed out. Make sure the worker is running and try again.");
@@ -578,7 +588,7 @@ function useJobPoll() {
       }
       if (!inFlightRef.current) {
         inFlightRef.current = true;
-        fetcher.load(`/app/api/job/${jobId}`);
+        fetcher.load(`/app/api/job/${jobIdRef.current}`);
       }
       timerRef.current = window.setTimeout(tick, scheduleMs());
     };
@@ -588,7 +598,7 @@ function useJobPoll() {
       clearTimer();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobId, clearTimer]);
+  }, [isPolling, clearTimer]);
 
   useEffect(() => {
     if (fetcher.state !== "idle") return;
@@ -598,8 +608,17 @@ function useJobPoll() {
     const next: PollStatus = fetcher.data.status ?? "IDLE";
     setStatus(next);
     setErrorMessage(fetcher.data.errorMessage ?? null);
-    if (fetcher.data.result) setResult(fetcher.data.result);
-    if (TERMINAL.has(next)) stop();
+
+    // CRITICAL ORDER: setResult BEFORE stop()
+    // React batches these but setResult must be in the queue first so
+    // generationResult is truthy when isPolling flips to false
+    if (fetcher.data.result) {
+      setResult(fetcher.data.result);
+    }
+
+    if (TERMINAL.has(next)) {
+      stop(); // setIsPolling(false) — happens after setResult in the same batch
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetcher.data, fetcher.state]);
 
@@ -607,11 +626,12 @@ function useJobPoll() {
     (id: string) => {
       clearTimer();
       inFlightRef.current = false;
+      jobIdRef.current = id;
       setResult(null);
       setErrorMessage(null);
       setStatus("PENDING");
       startedAtRef.current = Date.now();
-      setJobId(id);
+      setIsPolling(true); // triggers the tick loop via useEffect
     },
     [clearTimer],
   );
@@ -619,10 +639,11 @@ function useJobPoll() {
   const reset = useCallback(() => {
     clearTimer();
     inFlightRef.current = false;
-    setJobId(null);
+    jobIdRef.current = null;
     setStatus("IDLE");
     setResult(null);
     setErrorMessage(null);
+    setIsPolling(false);
     startedAtRef.current = null;
   }, [clearTimer]);
 
@@ -632,7 +653,7 @@ function useJobPoll() {
     status,
     result,
     errorMessage,
-    isPolling: !!jobId && !TERMINAL.has(status),
+    isPolling,
   };
 }
 
