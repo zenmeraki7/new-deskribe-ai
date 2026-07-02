@@ -7,6 +7,7 @@ import { db } from "../../lib/db.server";
 import { requireAdminSession, type AdminAuthContext } from "../../lib/auth.server";
 import { enqueueGenerationJobs } from "../../lib/enqueue.server";
 import { suggestKeywords, generateImageAltText, generateImageAltTextBulk, generateMetaOnly } from "../../lib/ai.server";
+import { checkBilling } from "../../lib/billing.server";
 import { sanitiseHtml, stripHtml } from "../../lib/html.server";
 
 import {
@@ -25,15 +26,14 @@ import { resolvePlan, type Plan } from "../../lib/rateLimiter.server";
 import { CREDIT_COSTS, deductCredits, getCreditBalance, refundCredits } from "../../lib/creditService.server";
 import { canUseFeature, PLAN_FEATURES, type CreditPlan } from "../../lib/credits";
 
-// ─────────────────────────────────────────────────────────────────────────────
+
 // Helpers
-// ─────────────────────────────────────────────────────────────────────────────
 
 async function getShopPlan(
-  billing: AdminAuthContext["billing"],
+  adminGraphql: AdminAuthContext["admin"]["graphql"],
 ): Promise<Plan> {
   try {
-    const { appSubscriptions } = await billing.check();
+    const { appSubscriptions } = await checkBilling(adminGraphql);
     const name = appSubscriptions?.[0]?.name ?? null;
     return resolvePlan(name);
   } catch {
@@ -96,9 +96,9 @@ function keywordCsvFromInput(input: unknown): string {
   return normalizeKeywordList(input).join(", ");
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+
 // Zod schema
-// ─────────────────────────────────────────────────────────────────────────────
+
 
 const DraftResultSchema = z
   .object({
@@ -120,9 +120,9 @@ function parseDraftResultOrNull(value: unknown): DraftResult | null {
   return { ...r, keywords: cappedKeywords } as DraftResult;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+
 // GraphQL helpers
-// ─────────────────────────────────────────────────────────────────────────────
+
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -190,9 +190,9 @@ async function adminGraphqlWithRetry<T>(
   throw new Error("Shopify GraphQL retry attempts exhausted");
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+
 // Product meta fetch
-// ─────────────────────────────────────────────────────────────────────────────
+
 
 async function fetchProductMeta(adminGraphql: (query: string, opts?: any) => Promise<Response>, productGid: string) {
   const gql = await adminGraphqlWithRetry<{
@@ -232,12 +232,12 @@ async function fetchProductMeta(adminGraphql: (query: string, opts?: any) => Pro
   return { id: p.id, title: p.title, productType: p.productType, vendor: p.vendor, tags: p.tags, images };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+
 // Loader
-// ─────────────────────────────────────────────────────────────────────────────
+
 
 export async function loader({ request, params }: LoaderFunctionArgs): Promise<Response> {
-  const { admin, billing, shopDomain } = await requireAdminSession(request);
+  const { admin, shopDomain } = await requireAdminSession(request);
 
   const rawId = params.productId ?? "";
   const productGid = normalizeProductGid(rawId);
@@ -280,7 +280,7 @@ export async function loader({ request, params }: LoaderFunctionArgs): Promise<R
         select: { productId: true },
       });
       if (conflict) {
-        policyWarnings.push(`Keyword "${pk}" is already used by another product — risk of SEO cannibalization.`);
+        policyWarnings.push(`Keyword "${pk}" is already used by another product â€” risk of SEO cannibalization.`);
       }
     }
   }
@@ -300,7 +300,7 @@ export async function loader({ request, params }: LoaderFunctionArgs): Promise<R
       }
     : null;
 
-  const shopPlan = await getShopPlan(billing);
+  const shopPlan = await getShopPlan(admin.graphql);
   const credits = await getCreditBalance(shopDomain, shopPlan);
 
   const customTemplates = await db.customTemplate.findMany({
@@ -310,7 +310,7 @@ export async function loader({ request, params }: LoaderFunctionArgs): Promise<R
     select: { id: true, name: true, instruction: true, createdAt: true },
   });
 
-  // ── Plan feature flags ──────────────────────────────────────────────────
+  
   const planFeatures = {
     altText: PLAN_FEATURES[shopPlan as CreditPlan]?.altText ?? false,
     metaGeneration: PLAN_FEATURES[shopPlan as CreditPlan]?.metaGeneration ?? false,
@@ -341,12 +341,11 @@ export async function loader({ request, params }: LoaderFunctionArgs): Promise<R
   });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+
 // Action
-// ─────────────────────────────────────────────────────────────────────────────
 
 export async function action({ request, params }: ActionFunctionArgs): Promise<Response> {
-  const { admin, billing, shopDomain } = await requireAdminSession(request);
+  const { admin, shopDomain } = await requireAdminSession(request);
 
   const rawId = params.productId ?? "";
   const productGid = normalizeProductGid(rawId);
@@ -355,7 +354,7 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
 
-  // ── Intent: create_template ─────────────────────────────────────────────
+  // â”€â”€ Intent: create_template 
   if (intent === "create_template") {
     const name = String(form.get("name") ?? "").trim().slice(0, 80);
     const instruction = String(form.get("instruction") ?? "").trim().slice(0, 1000);
@@ -364,7 +363,7 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
       return json({ ok: false, kind: "error", error: "Name and instruction are required", code: "INVALID_INPUT" }, { status: 400 });
     }
 
-    const templatePlan = await getShopPlan(billing);
+    const templatePlan = await getShopPlan(admin.graphql);
     if (templatePlan === "free" || templatePlan === "basic") {
       return json(
         { ok: false, kind: "error", error: "Custom writing styles require an Advanced or Pro plan.", code: "PLAN_UPGRADE_REQUIRED", plan: templatePlan },
@@ -385,14 +384,14 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     });
   }
 
-  // ── Intent: delete_template ─────────────────────────────────────────────
+  // â”€â”€ Intent: delete_template 
   if (intent === "delete_template") {
     const templateId = String(form.get("templateId") ?? "").trim();
     if (!templateId) {
       return json({ ok: false, kind: "error", error: "Missing templateId", code: "INVALID_INPUT" }, { status: 400 });
     }
 
-    const deletePlan = await getShopPlan(billing);
+    const deletePlan = await getShopPlan(admin.graphql);
     if (deletePlan === "free" || deletePlan === "basic") {
       return json(
         { ok: false, kind: "error", error: "Custom writing styles require an Advanced or Pro plan.", code: "PLAN_UPGRADE_REQUIRED", plan: deletePlan },
@@ -404,9 +403,9 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     return json({ ok: true, kind: "delete_template" });
   }
 
-  // ── Intent: generate ────────────────────────────────────────────────────
+  // â”€â”€ Intent: generate 
   if (intent === "generate") {
-    const plan = await getShopPlan(billing);
+    const plan = await getShopPlan(admin.graphql);
     const limitResult = await checkAndIncrementRateLimit(shopDomain, plan);
 
     if (!limitResult.allowed) {
@@ -490,7 +489,7 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     }
   }
 
-  // ── Intent: apply ────────────────────────────────────────────────────────
+  // â”€â”€ Intent: apply 
   if (intent === "apply") {
     const jobId = String(form.get("jobId") ?? "");
     if (!jobId || !isUuidV4(jobId)) {
@@ -533,12 +532,12 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     return json({ ok: true, kind: "apply", applied: true });
   }
 
-  // ── Intent: suggest_keywords ─────────────────────────────────────────────
+  // â”€â”€ Intent: suggest_keywords 
   if (intent === "suggest_keywords") {
     let keywordCreditRequestId: string | null = null;
     let keywordPlan: Plan = "free";
     try {
-      keywordPlan = await getShopPlan(billing);
+      keywordPlan = await getShopPlan(admin.graphql);
       const limitResult = await checkAndIncrementKeywordLimit(shopDomain, keywordPlan);
 
       if (!limitResult.allowed) {
@@ -591,7 +590,7 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     }
   }
 
-  // ── Intent: fetch_description ────────────────────────────────────────────
+  // â”€â”€ Intent: fetch_description 
   if (intent === "fetch_description") {
     const gql = await adminGraphqlWithRetry<any>(
       admin.graphql,
@@ -603,9 +602,9 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     return json({ ok: true, kind: "fetch_description", descriptionHtml: sanitized, descriptionText: stripHtml(descriptionHtml), fetchedAt: nowIso() });
   }
 
-  // ── Intent: generate_alt_text ────────────────────────────────────────────
+  // â”€â”€ Intent: generate_alt_text 
   if (intent === "generate_alt_text") {
-    const plan = await getShopPlan(billing);
+    const plan = await getShopPlan(admin.graphql);
 
     if (!canUseFeature(plan, "altText")) {
       return json(
@@ -661,9 +660,9 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     }
   }
 
-  // ── Intent: generate_alt_text_bulk ───────────────────────────────────────
+  // â”€â”€ Intent: generate_alt_text_bulk 
   if (intent === "generate_alt_text_bulk") {
-    const plan = await getShopPlan(billing);
+    const plan = await getShopPlan(admin.graphql);
 
     if (!canUseFeature(plan, "altText")) {
       return json(
@@ -724,9 +723,9 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     }
   }
 
-  // ── Intent: apply_alt_text ───────────────────────────────────────────────
+  // â”€â”€ Intent: apply_alt_text 
   if (intent === "apply_alt_text") {
-    const plan = await getShopPlan(billing);
+    const plan = await getShopPlan(admin.graphql);
     if (!canUseFeature(plan, "altText")) {
       return json({ ok: false, kind: "error", error: "Upgrade required.", code: "PLAN_UPGRADE_REQUIRED", plan }, { status: 403 });
     }
@@ -761,9 +760,9 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     return json({ ok: true, kind: "apply_alt_text", imageId, applied: true });
   }
 
-  // ── Intent: apply_alt_text_bulk ──────────────────────────────────────────
+  // â”€â”€ Intent: apply_alt_text_bulk 
   if (intent === "apply_alt_text_bulk") {
-    const plan = await getShopPlan(billing);
+    const plan = await getShopPlan(admin.graphql);
     if (!canUseFeature(plan, "altText")) {
       return json({ ok: false, kind: "error", error: "Upgrade required.", code: "PLAN_UPGRADE_REQUIRED", plan }, { status: 403 });
     }
@@ -806,9 +805,9 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     return json({ ok: true, kind: "apply_alt_text_bulk", applied: true, count: media.length });
   }
 
-  // ── Intent: generate_meta ────────────────────────────────────────────────
+  // â”€â”€ Intent: generate_meta 
   if (intent === "generate_meta") {
-    const plan = await getShopPlan(billing);
+    const plan = await getShopPlan(admin.graphql);
 
     if (!canUseFeature(plan, "metaGeneration")) {
       return json(
@@ -852,9 +851,9 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     }
   }
 
-  // ── Intent: apply_meta ───────────────────────────────────────────────────
+  // â”€â”€ Intent: apply_meta 
   if (intent === "apply_meta") {
-    const plan = await getShopPlan(billing);
+    const plan = await getShopPlan(admin.graphql);
     if (!canUseFeature(plan, "metaGeneration")) {
       return json({ ok: false, kind: "error", error: "Upgrade required.", code: "PLAN_UPGRADE_REQUIRED", plan }, { status: 403 });
     }

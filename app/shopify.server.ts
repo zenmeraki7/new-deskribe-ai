@@ -5,7 +5,6 @@ import {
   AppDistribution,
   DeliveryMethod,
   shopifyApp,
-  BillingInterval,
 } from "@shopify/shopify-app-remix/server";
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 import { db } from "./lib/db.server";
@@ -43,6 +42,11 @@ const shopify = shopifyApp({
     deliveryMethod: DeliveryMethod.Http,
     callbackUrl: "/webhooks/products/update",
   },
+
+  APP_SUBSCRIPTIONS_UPDATE: {
+    deliveryMethod: DeliveryMethod.Http,
+    callbackUrl: "/webhooks/app/subscriptions_update",
+  },
   CUSTOMERS_DATA_REQUEST: {
     deliveryMethod: DeliveryMethod.Http,
     callbackUrl: "/webhooks/compliance",
@@ -62,68 +66,6 @@ const shopify = shopifyApp({
   },
 },
     
-  billing: {
-    "Basic Plan": {
-      lineItems: [
-        {
-          amount: 9.99,
-          currencyCode: "USD",
-          interval: BillingInterval.Every30Days,
-          trialDays: 0,  
-        },
-      ],
-    },
-    "Basic Plan Yearly": {
-      lineItems: [
-        {
-          amount: 83.92,
-          currencyCode: "USD",
-          interval: BillingInterval.Annual,
-          trialDays: 0,  
-        },
-      ],
-    },
-    "Advanced Plan": {
-      lineItems: [
-        {
-          amount: 17.99,
-          currencyCode: "USD",
-          interval: BillingInterval.Every30Days,
-          trialDays: 0,  
-        },
-      ],
-    },
-    "Advanced Plan Yearly": {
-      lineItems: [
-        {
-          amount: 151.12,
-          currencyCode: "USD",
-          interval: BillingInterval.Annual,
-          trialDays: 0,  
-        },
-      ],
-    },
-    "Pro Plan": {
-      lineItems: [
-        {
-          amount: 24.99,
-          currencyCode: "USD",
-          interval: BillingInterval.Every30Days,
-          trialDays: 0,  
-        },
-      ],
-    },
-    "Pro Plan Yearly": {
-      lineItems: [
-        {
-          amount: 209.92,
-          currencyCode: "USD",
-          interval: BillingInterval.Annual,
-          trialDays: 0,  
-        },
-      ],
-    },
-  },
 });
 
 export default shopify;

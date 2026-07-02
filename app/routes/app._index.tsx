@@ -38,11 +38,12 @@ import {
   checkAndIncrementRateLimit,
   resolvePlan,
 } from "../lib/rateLimiter.server";
-import { CREDIT_COSTS } from "../lib/credits";
+// import { CREDIT_COSTS } from "../lib/credits";
 import { CreditUsageCard } from "../components/CreditUsageCard";
-import { formatCredits, hasCredits } from "../lib/credits";
+import { formatCredits, hasCredits , CREDIT_COSTS } from "../lib/credits";
 import { db } from "../lib/db.server";
 import { generationQueue } from "../lib/queue.server";
+import { checkBilling } from "../lib/billing.server";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -119,16 +120,10 @@ interface DraftResult {
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const { getCreditBalance } = await import("../lib/creditService.server");
-  const { admin, billing, shopDomain } = await requireAdminSession(request);
-  let plan = resolvePlan(null);
+  const { admin, shopDomain } = await requireAdminSession(request);
 
-  try {
-    const { appSubscriptions } = await billing.check();
-    plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
-  } catch (err) {
-    if (err instanceof Response) throw err;
-    console.error("[billing.check error]", err);
-  }
+  const { appSubscriptions } = await checkBilling(admin.graphql);
+  const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
 
   const credits = await getCreditBalance(shopDomain, plan);
 
@@ -190,7 +185,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 export async function action({ request }: ActionFunctionArgs) {
   const { deductCredits, refundCredits } =
     await import("../lib/creditService.server");
-  const { admin, billing, shopDomain } = await requireAdminSession(request);
+  const { admin, shopDomain } = await requireAdminSession(request);
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
 
@@ -204,7 +199,7 @@ export async function action({ request }: ActionFunctionArgs) {
       .map((t) => t.trim())
       .filter(Boolean);
 
-    const { appSubscriptions } = await billing.check();
+    const { appSubscriptions } = await checkBilling(admin.graphql);
     const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
     const rate = await checkAndIncrementKeywordLimit(shopDomain, plan);
 
@@ -287,10 +282,9 @@ export async function action({ request }: ActionFunctionArgs) {
     let plan = resolvePlan(null);
 
     try {
-      const { appSubscriptions } = await billing.check();
-      plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
-
-      const rate = await checkAndIncrementRateLimit(shopDomain, plan);
+      const { appSubscriptions } = await checkBilling(admin.graphql);
+const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
+const rate = await checkAndIncrementKeywordLimit(shopDomain, plan);
       if (!rate.allowed) {
         return json(
           {

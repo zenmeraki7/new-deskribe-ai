@@ -7,6 +7,7 @@ import { CreditUsageCard } from "../components/CreditUsageCard";
 import { CREDIT_RULES, formatCredits, PLAN_LABELS } from "../lib/credits";
 import { resolvePlan } from "../lib/rateLimiter.server";
 import { requireAdminSession } from "../lib/auth.server";
+import { checkBilling } from "../lib/billing.server";
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat("en", {
@@ -18,8 +19,8 @@ function formatDate(value: string) {
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { getCreditBalance } = await import("../lib/creditService.server");
-  const { billing, shopDomain } = await requireAdminSession(request);
-  const { appSubscriptions } = await billing.check();
+  const { admin, shopDomain } = await requireAdminSession(request);
+  const { appSubscriptions } = await checkBilling(admin.graphql);
   const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
   const balance = await getCreditBalance(shopDomain, plan);
 

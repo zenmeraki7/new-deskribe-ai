@@ -19,6 +19,7 @@ import {
   resolvePlan,
 } from "../../lib/rateLimiter.server";
 import { CREDIT_COSTS, deductCredits, refundCredits } from "../../lib/creditService.server";
+import { checkBilling } from "../../lib/billing.server";
 
 import {
   ACTIVE_STATUSES,
@@ -193,7 +194,7 @@ export async function loader({ request }: LoaderFunctionArgs): Promise<Response>
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function action({ request }: ActionFunctionArgs): Promise<Response> {
-  const { admin, billing, shopDomain } = await requireAdminSession(request);
+  const { admin, shopDomain } = await requireAdminSession(request);
 
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
@@ -342,7 +343,7 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
     if ((res as any).alreadyQueued) return json({ ok: true, retried: jobId, alreadyQueued: true });
 
     const { jobData, newBullJobId } = res as any;
-    const { appSubscriptions } = await billing.check();
+    const { appSubscriptions } = await checkBilling(admin.graphql);
     const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
     const rate = await checkAndIncrementRateLimit(shopDomain, plan);
 
@@ -429,7 +430,7 @@ export async function action({ request }: ActionFunctionArgs): Promise<Response>
     const vibe = String(form.get("vibe"));
     const format = String(form.get("format"));
     const keywords = String(form.get("keywords"));
-    const { appSubscriptions } = await billing.check();
+    const { appSubscriptions } = await checkBilling(admin.graphql);
     const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
     const rate = await checkAndIncrementRateLimit(shopDomain, plan);
 

@@ -4,12 +4,13 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
 import { db } from "../lib/db.server";
 import { resolvePlan, canUseCustomTemplates } from "../lib/rateLimiter.server";
 import { requireAdminSession } from "../lib/auth.server";
+import { checkBilling } from "../lib/billing.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const { billing, shopDomain } = await requireAdminSession(request);
+  const { admin, shopDomain } = await requireAdminSession(request);
 
-  const { appSubscriptions } = await billing.check();
-  const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null); // ← null coalesce
+  const { appSubscriptions } = await checkBilling(admin.graphql);
+  const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null); // â† null coalesce
 
   if (!canUseCustomTemplates(plan)) {
     return json({ forbidden: true, templates: [] }, { status: 403 });
@@ -26,15 +27,15 @@ export async function loader({ request }: LoaderFunctionArgs) {
     forbidden: false,
     templates: templates.map((t) => ({
       ...t,
-      createdAt: t.createdAt.toISOString(), // ← serialize date
+      createdAt: t.createdAt.toISOString(), // â† serialize date
     })),
   });
 }
 
 export async function action({ request }: ActionFunctionArgs) {
-  const { billing, shopDomain } = await requireAdminSession(request);
+  const { admin, shopDomain } = await requireAdminSession(request);
 
-  const { appSubscriptions } = await billing.check();
+  const { appSubscriptions } = await checkBilling(admin.graphql);
   const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
 
   if (!canUseCustomTemplates(plan)) {
@@ -71,7 +72,7 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 
   if (intent === "delete_template") {
-    const id = String(fd.get("templateId") ?? "").trim(); // ← consistent key name
+    const id = String(fd.get("templateId") ?? "").trim(); // â† consistent key name
     if (!id) {
       return json({ ok: false, error: "Missing templateId" }, { status: 400 });
     }

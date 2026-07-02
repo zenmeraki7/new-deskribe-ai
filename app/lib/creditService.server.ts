@@ -7,9 +7,9 @@ import { CREDIT_COSTS, PLAN_CREDITS } from "./credits";
 
 export { CREDIT_COSTS, PLAN_CREDITS };
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Types
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export type CreditDebitKind =
   | "generation"
@@ -41,9 +41,9 @@ export interface CreditFailure {
   reason: "insufficient_credits";
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function nextMonthlyResetDate(now = new Date()) {
   return new Date(
@@ -76,9 +76,9 @@ function grantRequestId(
   return `grant:${shopId}:${plan}:${resetDate.toISOString()}:${creditsLimit.toString()}`;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Internal: recordGrant + ensureCycle (write path only — used by deduct/refund)
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Internal: recordGrant + ensureCycle (write path only â€” used by deduct/refund)
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async function recordGrant(
   tx: Prisma.TransactionClient,
@@ -135,9 +135,6 @@ async function ensureCycle(
 
   const existing = await tx.shopCredit.findUnique({ where: { shopId } });
 
-console.log("creditsLimit value:", existing.creditsLimit);
-console.log("typeof:", typeof existing.creditsLimit);
-console.log("constructor:", existing.creditsLimit?.constructor?.name);
 
   if (!existing) {
     const created = await tx.shopCredit.create({
@@ -183,16 +180,14 @@ console.log("constructor:", existing.creditsLimit?.constructor?.name);
   return existing;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// getCreditBalance — READ ONLY, no transaction, no lock, safe for loaders
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// getCreditBalance â€” READ ONLY, no transaction, no lock, safe for loaders
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function getCreditBalance(shopId: string, plan: Plan) {
   if (!shopId) throw new Error("Missing shop context");
 
-  const existing = await db.shopCredit.findUnique({ where: { shopId } });
-
-  if (!existing) {
+  const fallback = (resetDate = nextMonthlyResetDate()) => {
     const creditsLimit = PLAN_CREDITS[plan];
     return {
       shopId,
@@ -200,40 +195,47 @@ export async function getCreditBalance(shopId: string, plan: Plan) {
       creditsUsed: 0,
       creditsLimit,
       creditsRemaining: creditsLimit,
-      resetDate: nextMonthlyResetDate(),
+      resetDate,
     };
-  }
-
-  const now = new Date();
-
-  if (existing.resetDate <= now) {
-    const creditsLimit = PLAN_CREDITS[plan];
-    return {
-      shopId,
-      plan,
-      creditsUsed: 0,
-      creditsLimit,
-      creditsRemaining: creditsLimit,
-      resetDate: nextMonthlyResetDate(now),
-    };
-  }
-
-  const creditsUsed = asNumber(existing.creditsUsed);
-  const creditsLimit = asNumber(existing.creditsLimit);
-
-  return {
-    shopId,
-    plan: existing.plan as Plan,
-    creditsUsed,
-    creditsLimit,
-    creditsRemaining: Math.max(0, creditsLimit - creditsUsed),
-    resetDate: existing.resetDate,
   };
+
+  try {
+    const existing = await db.shopCredit.findUnique({ where: { shopId } });
+
+    if (!existing) {
+      return fallback();
+    }
+
+    const now = new Date();
+
+    if (existing.resetDate <= now) {
+      return fallback(nextMonthlyResetDate(now));
+    }
+
+    const creditsUsed = asNumber(existing.creditsUsed);
+    const creditsLimit = asNumber(existing.creditsLimit);
+
+    return {
+      shopId,
+      plan: existing.plan as Plan,
+      creditsUsed,
+      creditsLimit,
+      creditsRemaining: Math.max(0, creditsLimit - creditsUsed),
+      resetDate: existing.resetDate,
+    };
+  } catch (error) {
+    console.warn("[getCreditBalance] falling back to default credits", {
+      shopId,
+      plan,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return fallback();
+  }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// deductCredits — write path, uses ensureCycle inside transaction
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// deductCredits â€” write path, uses ensureCycle inside transaction
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function deductCredits({
   shopId,
@@ -283,7 +285,7 @@ export async function deductCredits({
         } satisfies CreditResult;
       }
 
-      // Atomic deduction via raw SQL — bypasses Prisma binary encoding issues
+      // Atomic deduction via raw SQL â€” bypasses Prisma binary encoding issues
       const maxAllowed = (asNumber(current.creditsLimit) - amount).toFixed(1);
       const amountStr = amount.toFixed(1);
       const newLimit = PLAN_CREDITS[plan].toFixed(1);
@@ -355,9 +357,9 @@ export async function deductCredits({
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// refundCredits — write path, uses ensureCycle inside transaction
-// ─────────────────────────────────────────────────────────────────────────────
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// refundCredits â€” write path, uses ensureCycle inside transaction
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function refundCredits({
   shopId,
@@ -403,7 +405,7 @@ export async function refundCredits({
         };
       }
 
-      // Refund via raw SQL — same reason as deductCredits
+      // Refund via raw SQL â€” same reason as deductCredits
       const amountStr = amount.toFixed(1);
       const newLimit = PLAN_CREDITS[effectivePlan].toFixed(1);
 

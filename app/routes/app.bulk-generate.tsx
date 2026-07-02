@@ -6,6 +6,7 @@ import crypto from "node:crypto";
 import { requireAdminSession } from "../lib/auth.server";
 import { enqueueGenerationJobs } from "../lib/enqueue.server";
 import { suggestKeywordsBulk , generateMetaOnly, generateImageAltTextBulk } from "../lib/ai.server";
+import { checkBilling } from "../lib/billing.server";
 import {
   checkAndIncrementKeywordLimit,
   checkAndIncrementRateLimit,
@@ -63,13 +64,13 @@ async function adminGraphqlWithRetry<T>(
 // -- Action --------------------------------------------------------------------
 
 export async function action({ request }: ActionFunctionArgs) {
-  const { admin, billing, shopDomain } = await requireAdminSession(request);
+  const { admin, shopDomain } = await requireAdminSession(request);
 
   const fd = await request.formData();
   const intent = String(fd.get("intent") ?? "");
 
-  // Resolve plan once — used by both intents
-  const { appSubscriptions } = await billing.check();
+  // Resolve plan once â€” used by both intents
+  const { appSubscriptions } = await checkBilling(admin.graphql);
   const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
 
   // -- Intent: suggest_keywords_bulk -----------------------------------------
@@ -337,7 +338,7 @@ export async function action({ request }: ActionFunctionArgs) {
     );
     }
   }
-  // ── Intent: bulk_generate_meta ───────────────────────────────────────────
+  // â”€â”€ Intent: bulk_generate_meta 
 if (intent === "bulk_generate_meta") {
   let productIds: string[];
   try {
@@ -350,7 +351,8 @@ if (intent === "bulk_generate_meta") {
     return json({ ok: false, error: "Invalid product list", code: "INVALID_INPUT" }, { status: 400 });
   }
 
-  const plan = await getShopPlan(billing);
+  const { appSubscriptions } = await checkBilling(admin.graphql);
+  const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
   const totalCost = CREDIT_COSTS.metaGeneration * productIds.length;
   let creditRequestId: string | null = null;
 
@@ -425,7 +427,7 @@ if (intent === "bulk_generate_meta") {
   }
 }
 
-// ── Intent: bulk_apply_meta ──────────────────────────────────────────────
+// â”€â”€ Intent: bulk_apply_meta 
 if (intent === "bulk_apply_meta") {
   let items: { productId: string; meta_title: string; meta_description: string }[];
   try {
@@ -485,7 +487,7 @@ if (intent === "bulk_apply_meta") {
   return json({ ok: true, kind: "bulk_apply_meta", succeeded, failed, total: items.length });
 }
 
-// ── Intent: bulk_generate_alt_text ──────────────────────────────────────
+// â”€â”€ Intent: bulk_generate_alt_text 
 if (intent === "bulk_generate_alt_text") {
   let productIds: string[];
   try {
@@ -498,7 +500,8 @@ if (intent === "bulk_generate_alt_text") {
     return json({ ok: false, error: "Invalid product list", code: "INVALID_INPUT" }, { status: 400 });
   }
 
-  const plan = await getShopPlan(billing);
+  const { appSubscriptions } = await checkBilling(admin.graphql);
+  const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
 
   // Fetch all products first to know the total image count for credit deduction
   const productMetas = await Promise.all(
@@ -592,7 +595,7 @@ if (intent === "bulk_generate_alt_text") {
   }
 }
 
-// ── Intent: bulk_apply_alt_text ──────────────────────────────────────────
+// â”€â”€ Intent: bulk_apply_alt_text 
 if (intent === "bulk_apply_alt_text") {
   let items: { productId: string; imageId: string; altText: string }[];
   try {
