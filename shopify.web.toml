@@ -1,0 +1,7 @@
+name = "remix"
+roles = ["frontend", "backend"]
+webhooks_path = "/webhooks/app/uninstalled"
+
+[commands]
+predev = "npx prisma generate"
+dev = "node scripts/check-required-env.js && node scripts/check-db-ready.js && node scripts/dev-with-worker.js"

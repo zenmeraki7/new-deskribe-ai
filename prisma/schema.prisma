@@ -1,0 +1,188 @@
+generator client {
+  provider   = "prisma-client-js"
+  engineType = "client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+}
+
+model History {
+  id             String   @id @default(cuid())
+  productId      String
+  productTitle   String
+  description    String
+  vibe           String
+  format         String
+  keywords       String?
+  includeSocials Boolean
+  socials        Json?
+  createdAt      DateTime @default(now())
+  shopDomain     String   @default("")
+}
+
+model GenerationJob {
+  id                   String   @id @default(uuid())
+  shopDomain           String
+  productId            String
+  status               String
+  inputHash            String
+  vibe                 String
+  format               String
+  keywords             String
+  includeSocials       Boolean
+  result               Json?
+  errorMessage         String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  bulkId               String?
+  bullJobId            String?
+  costTokens           Int      @default(0)
+  productTitle         String
+  progress             Int      @default(0)
+  traceId              String?
+  generatedDescription String?
+  previousDescription  String?
+  productTags          String?
+  productType          String?
+  productVendor        String?
+  customInstruction    String?
+  isStale              Boolean  @default(false)
+  creditRequestId      String?
+  creditCost           Decimal? @db.Decimal(12, 1)
+
+  @@index([shopDomain])
+  @@index([productId])
+  @@index([status])
+  @@index([creditRequestId])
+}
+
+model ShopCredit {
+  id           String   @id @default(cuid())
+  shopId       String   @unique
+  plan         String   @default("free")
+  creditsUsed  Decimal  @default(0) @db.Decimal(12, 1)
+  creditsLimit Decimal  @db.Decimal(12, 1)
+  resetDate    DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([shopId])
+  @@index([resetDate])
+}
+
+model CreditTransaction {
+  id        String   @id @default(cuid())
+  shopId    String
+  requestId String
+  kind      String
+  amount    Decimal  @db.Decimal(12, 1)
+  plan      String
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@unique([shopId, requestId, kind])
+  @@index([shopId])
+  @@index([requestId])
+}
+
+model ShopUsage {
+  id         String   @id @default(cuid())
+  shopDomain String
+  date       String
+  count      Int      @default(0)
+  plan       String   @default("free")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([shopDomain, date])
+  @@index([shopDomain])
+  @@index([date])
+}
+
+model GlobalUsage {
+  id        String   @id @default(cuid())
+  date      String   @unique
+  count     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([date])
+}
+
+model CustomTemplate {
+  id          String   @id @default(cuid())
+  shopDomain  String
+  name        String
+  instruction String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([shopDomain])
+
+}
+
+model CreditUsageLog {
+  id             String   @id
+  shop           String
+  action         String
+  amount         Int      @default(1)
+  createdAt      DateTime @default(now())
+  idempotencyKey String?
+
+  @@unique([shop, idempotencyKey])
+  @@index([shop, createdAt])
+}
+
+model Plan {
+  id          String       @id
+  name        String       @unique
+  creditLimit Int
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime
+}
+
+model ShopWebhookState {
+  id          String   @id
+  shop        String
+  topic       String
+  lastEventAt DateTime
+  updatedAt   DateTime
+
+  @@unique([shop, topic])
+  @@index([shop])
+}
+
+model WebhookDelivery {
+  id          String    @id
+  webhookId   String    @unique
+  shop        String
+  topic       String
+  eventAt     DateTime?
+  payloadHash String?
+  status      String    @default("PENDING")
+  processedAt DateTime?
+  receivedAt  DateTime  @default(now())
+
+  @@index([eventAt])
+  @@index([shop, topic])
+}

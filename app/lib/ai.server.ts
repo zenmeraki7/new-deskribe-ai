@@ -1,0 +1,452 @@
+// FILE: app/lib/ai.server.ts
+
+import OpenAI from "openai";
+import { z } from "zod";
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+export const DraftSchema = z.object({
+  body_html: z.string(),
+  meta_title: z.string(),
+  meta_description: z.string(),
+  keywords: z.array(z.string().max(50)).max(30),
+  social_caption: z.string().optional(),
+});
+
+export type DraftResult = z.infer<typeof DraftSchema>;
+
+// ── Helper: strip markdown fences the AI sometimes wraps around JSON ──────────
+function stripJsonFences(text: string): string {
+  return text
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+}
+
+export async function generateProductDescription(params: {
+  title: string;
+  vendor: string;
+  productType: string;
+  tags: string[];
+  vibe: string;
+  format: string;
+  keywords: string[];
+  includeSocials: boolean;
+  customInstruction?: string;
+}): Promise<DraftResult> {
+  const { customInstruction } = params;
+  const {
+    title,
+    vendor,
+    productType,
+    tags,
+    vibe,
+    format,
+    keywords,
+    includeSocials,
+  } = params;
+
+  // Build the format instruction based on user's choice
+  const formatInstruction =
+    format === "bullets"
+      ? "Use bullet points for ALL sections. No paragraphs."
+      : format === "hybrid"
+        ? "Use short paragraphs for intro and closing. Use bullet points for features."
+        : "Use paragraphs throughout. No bullet points.";
+
+  const socialsInstruction = includeSocials
+    ? `Also generate a short, engaging Instagram caption with 3–5 relevant hashtags in "social_caption".`
+    : `Set "social_caption" to an empty string.`;
+
+const styleInstruction: string =
+  vibe === "custom" && typeof customInstruction === "string"
+    ? `Follow these custom writing instructions exactly:\n"${customInstruction}"\nDo not default to any built-in style — follow the instructions above precisely.`
+    : `Writing Style: ${vibe}`;
+
+const prompt = `
+You are an expert Shopify ecommerce copywriter.
+
+Write a high-converting SEO-optimized product description.
+
+Product Information:
+- Title: ${title}
+- Brand: ${vendor}
+- Category: ${productType}
+- Tags: ${tags.join(", ")}
+
+${styleInstruction}
+
+${formatInstruction}
+
+STRUCTURE (always use these exact section headings):
+1. <p><strong>Product Overview</strong></p> — 2–3 sentence engaging intro that naturally includes the primary keyword
+2. <p><strong>Key Features</strong></p> followed by <ul><li> items (4–6 bullet points)
+3. <p><strong>Why You'll Love It</strong></p> — persuasive closing paragraph encouraging purchase
+
+HTML RULES:
+- Use ONLY <p>, <ul>, <li>, <strong> tags
+- No inline styles, no divs, no spans
+- Wrap section headings in <p><strong>Heading</strong></p>
+
+SEO RULES:
+- meta_title: under 60 characters, include primary keyword
+- meta_description: under 155 characters, compelling and keyword-rich
+- keywords: up to 15 relevant SEO keywords as a JSON array of strings
+
+${socialsInstruction}
+
+Return ONLY valid JSON, no markdown, no explanation:
+{
+  "body_html": "...",
+  "meta_title": "...",
+  "meta_description": "...",
+  "keywords": [],
+  "social_caption": "..."
+}
+`;
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4.1-mini",
+    temperature: 0.6,
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are an SEO copywriter for Shopify stores. Always respond with valid JSON only.",
+      },
+      {
+        role: "user",
+        content: prompt,
+      },
+    ],
+  });
+
+  const raw = completion.choices?.[0]?.message?.content?.trim() ?? "";
+  const text = stripJsonFences(raw);
+
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    console.error("AI raw response (failed to parse):", raw);
+    throw new Error("AI returned invalid JSON for description");
+  }
+
+  const parsed = DraftSchema.safeParse(json);
+  if (!parsed.success) {
+    console.error("Schema validation failed:", parsed.error.issues);
+    throw new Error("Invalid AI output format");
+  }
+
+  return parsed.data;
+}
+
+// ── Keyword suggestion ─────────────────────────────────────────────────────────
+export async function suggestKeywords(
+  title: string,
+  vendor: string,
+  productType: string,
+  tags: string[],
+): Promise<string[]> {
+  if (!title) return [];
+
+  const prompt = `
+Generate SEO keywords for a Shopify product listing.
+
+Product Title: ${title}
+Brand / Vendor: ${vendor}
+Category / Type: ${productType}
+Tags: ${tags.join(", ")}
+
+Rules:
+- Return ONLY a valid JSON array of strings
+- No markdown, no explanation, no code fences
+- Maximum 20 keywords
+- Mix short-tail and long-tail keywords
+- Include brand + category combinations
+
+Example output:
+["keyword one", "keyword two", "keyword three"]
+`;
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4.1-mini",
+    temperature: 0.4,
+    // Note: NOT using response_format json_object here because we want a raw array
+    messages: [
+      {
+        role: "system",
+        content:
+          "You generate SEO keyword lists. Always respond with a plain JSON array of strings only.",
+      },
+      { role: "user", content: prompt },
+    ],
+  });
+
+  const raw = completion.choices?.[0]?.message?.content ?? "[]";
+  const text = stripJsonFences(raw);
+
+  console.log("AI keyword response (cleaned):", text);
+
+  try {
+    const parsed = JSON.parse(text);
+    if (!Array.isArray(parsed)) return [];
+    // Ensure all items are strings
+    return parsed
+      .filter((k): k is string => typeof k === "string")
+      .slice(0, 20);
+  } catch (err) {
+    console.error("Suggest keyword parse error:", err, "Raw:", raw);
+    throw new Error("AI returned invalid keyword format");
+  }
+}
+
+// ── Bulk keyword suggestion ────────────────────────────────────────────────────
+// Takes meta from multiple products, finds common themes, suggests shared keywords.
+export async function suggestKeywordsBulk(products: {
+  title: string;
+  vendor: string;
+  productType: string;
+  tags: string[];
+}[]): Promise<string[]> {
+  if (products.length === 0) return [];
+
+  // Build a compact product list for the prompt — avoid token bloat
+  const productLines = products
+    .slice(0, 50) // hard cap just in case
+    .map((p, i) =>
+      `${i + 1}. "${p.title}" | Brand: ${p.vendor || "unknown"} | Type: ${p.productType || "unknown"} | Tags: ${p.tags.slice(0, 8).join(", ") || "none"}`,
+    )
+    .join("\n");
+
+  const prompt = `
+You are an SEO expert for Shopify stores.
+
+I am generating product descriptions for ${products.length} products in bulk.
+Suggest SEO keywords that are relevant across this entire product collection.
+
+Products:
+${productLines}
+
+Rules:
+- Return ONLY a valid JSON array of strings
+- No markdown, no explanation, no code fences
+- Maximum 20 keywords
+- Focus on shared themes, categories, and use cases across ALL products
+- Include both short-tail (1-2 words) and long-tail (3-5 words) keywords
+- Prioritize keywords a customer would use to find this type of product
+- If products span multiple categories, include category-level keywords
+
+Example output:
+["keyword one", "keyword two", "keyword three"]
+`;
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4.1-mini",
+    temperature: 0.4,
+    messages: [
+      {
+        role: "system",
+        content: "You generate SEO keyword lists for product collections. Always respond with a plain JSON array of strings only.",
+      },
+      { role: "user", content: prompt },
+    ],
+  });
+
+  const raw = completion.choices?.[0]?.message?.content ?? "[]";
+  const text = stripJsonFences(raw);
+
+  try {
+    const parsed = JSON.parse(text);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((k): k is string => typeof k === "string")
+      .slice(0, 20);
+  } catch (err) {
+    console.error("Bulk keyword suggestion parse error:", err, "Raw:", raw);
+    throw new Error("AI returned invalid keyword format");
+  }
+}
+
+// ── Image alt text (single) ────────────────────────────────────────────────
+const ALT_TEXT_MAX_CHARS = 125; // accessibility / SEO best practice
+
+function clampAltText(s: string): string {
+  const trimmed = s.trim().replace(/\s+/g, " ").replace(/^["']|["']$/g, "");
+  return trimmed.length <= ALT_TEXT_MAX_CHARS ? trimmed : trimmed.slice(0, ALT_TEXT_MAX_CHARS).trim();
+}
+
+export async function generateImageAltText(params: {
+  title: string;
+  vendor: string;
+  productType: string;
+  imageIndex: number; // 0-based
+  totalImages: number;
+}): Promise<string> {
+  const { title, vendor, productType, imageIndex, totalImages } = params;
+
+  const positionHint =
+    totalImages <= 1
+      ? "This is the only product image."
+      : `This is image ${imageIndex + 1} of ${totalImages} for this product. Vary the phrasing from a typical "main shot" description — imply a plausible different angle or detail (e.g. close-up, alternate angle, in use) without inventing specific visual details you can't actually know.`;
+
+  const prompt = `
+Write accessible alt text for a Shopify product image.
+
+Product Title: ${title}
+Brand: ${vendor || "unknown"}
+Category: ${productType || "unknown"}
+
+${positionHint}
+
+Rules:
+- Plain text only, no quotes, no markdown
+- Under ${ALT_TEXT_MAX_CHARS} characters
+- Describe the product naturally for a screen-reader user — don't just stuff keywords
+- Do NOT start with "Image of" or "Picture of"
+- Do NOT fabricate specific visual details (colors, materials, scenery) you cannot know from the title alone
+- Include the product name naturally
+
+Return ONLY the alt text string, nothing else.
+`;
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4.1-mini",
+    temperature: 0.5,
+    messages: [
+      {
+        role: "system",
+        content:
+          "You write concise, accessible image alt text for ecommerce. Respond with plain text only — no quotes, no markdown, no preamble.",
+      },
+      { role: "user", content: prompt },
+    ],
+  });
+
+  const raw = completion.choices?.[0]?.message?.content ?? "";
+  const cleaned = stripJsonFences(raw);
+  return clampAltText(cleaned || title);
+}
+
+// ── Image alt text (bulk — multiple images of the same product) ─────────────
+export async function generateImageAltTextBulk(params: {
+  title: string;
+  vendor: string;
+  productType: string;
+  imageCount: number;
+}): Promise<string[]> {
+  const { title, vendor, productType, imageCount } = params;
+  if (imageCount <= 0) return [];
+
+  const prompt = `
+Write accessible alt text for ${imageCount} product images of the SAME Shopify product (different photos of it — front, detail, alternate angle, etc., though you don't know exactly what each one shows).
+
+Product Title: ${title}
+Brand: ${vendor || "unknown"}
+Category: ${productType || "unknown"}
+
+Rules:
+- Return ONLY a valid JSON array of exactly ${imageCount} strings, no markdown, no explanation
+- Each string under ${ALT_TEXT_MAX_CHARS} characters
+- Each should sound like a plausible different image of this product (vary phrasing — main shot, detail/close-up, alternate angle, in-use, packaging — pick naturally), but do NOT invent specific colors/materials/scenes you can't know
+- Do NOT start any entry with "Image of" or "Picture of"
+- Don't just repeat the title verbatim in every entry — vary wording so entries don't look duplicated to search engines or screen readers
+
+Example output for 3 images:
+["Short alt text for image 1", "Short alt text for image 2", "Short alt text for image 3"]
+`;
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4.1-mini",
+    temperature: 0.6,
+    messages: [
+      {
+        role: "system",
+        content:
+          "You write concise, accessible image alt text for ecommerce. Always respond with a plain JSON array of strings only.",
+      },
+      { role: "user", content: prompt },
+    ],
+  });
+
+  const raw = completion.choices?.[0]?.message?.content ?? "[]";
+  const text = stripJsonFences(raw);
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    console.error("Bulk alt text parse error:", err, "Raw:", raw);
+    throw new Error("AI returned invalid alt text format");
+  }
+  if (!Array.isArray(parsed)) throw new Error("AI returned invalid alt text format");
+
+  const out = parsed.filter((x): x is string => typeof x === "string").map(clampAltText);
+
+  while (out.length < imageCount) out.push(clampAltText(title));
+  return out.slice(0, imageCount);
+}
+
+// Add this new function to app/lib/ai.server.ts
+
+export async function generateMetaOnly(params: {
+  title: string;
+  vendor: string;
+  productType: string;
+  tags: string[];
+  keywords: string[];
+}): Promise<{ meta_title: string; meta_description: string }> {
+  const { title, vendor, productType, tags, keywords } = params;
+
+  const prompt = `
+You are an SEO expert for Shopify stores.
+
+Generate ONLY a meta title and meta description for this product.
+
+Product: ${title}
+Brand: ${vendor}
+Category: ${productType}
+Tags: ${tags.join(", ")}
+Keywords: ${keywords.join(", ")}
+
+Rules:
+- meta_title: under 60 characters, include primary keyword naturally
+- meta_description: under 155 characters, compelling and keyword-rich
+- Return ONLY valid JSON, no markdown
+
+{"meta_title": "...", "meta_description": "..."}
+`;
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4.1-mini",
+    temperature: 0.5,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: "You are an SEO copywriter. Always respond with valid JSON only." },
+      { role: "user", content: prompt },
+    ],
+  });
+
+  const raw = completion.choices?.[0]?.message?.content?.trim() ?? "";
+  const text = stripJsonFences(raw);
+
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw new Error("AI returned invalid JSON for meta");
+  }
+
+  const schema = z.object({
+    meta_title: z.string().max(70),
+    meta_description: z.string().max(320),
+  });
+
+  const parsed = schema.safeParse(json);
+  if (!parsed.success) throw new Error("Invalid AI meta output");
+  return parsed.data;
+}
