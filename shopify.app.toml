@@ -1,7 +1,7 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "6f9d8710bcea15a9a7814c24bb5404be"
-application_url = "https://blades-development-beaver-much.trycloudflare.com"
+application_url = "https://lady-sleeve-kentucky-spice.trycloudflare.com"
 embedded = true
 name = "new"
 
@@ -11,9 +11,9 @@ scopes = "read_inventory,read_products,write_products"
 
 [auth]
 redirect_urls = [
-  "https://blades-development-beaver-much.trycloudflare.com/auth/callback",
-  "https://blades-development-beaver-much.trycloudflare.com/auth/shopify/callback",
-  "https://blades-development-beaver-much.trycloudflare.com/api/auth/callback"
+  "https://lady-sleeve-kentucky-spice.trycloudflare.com/auth/callback",
+  "https://lady-sleeve-kentucky-spice.trycloudflare.com/auth/shopify/callback",
+  "https://lady-sleeve-kentucky-spice.trycloudflare.com/api/auth/callback"
 ]
 
 [webhooks]
