@@ -35,7 +35,6 @@ import { suggestKeywords } from "../lib/ai.server";
 import { requireAdminSession } from "../lib/auth.server";
 import {
   checkAndIncrementKeywordLimit,
-  checkAndIncrementRateLimit,
   resolvePlan,
 } from "../lib/rateLimiter.server";
 // import { CREDIT_COSTS } from "../lib/credits";
@@ -114,6 +113,37 @@ interface DraftResult {
   social_caption?: string;
 }
 
+function formatShopifyGraphQLErrors(errors: unknown): string | null {
+  if (!Array.isArray(errors) || errors.length === 0) {
+    return null;
+  }
+
+  const messages = errors
+    .map((error) =>
+      typeof error === "object" && error !== null && "message" in error
+        ? String(error.message)
+        : null,
+    )
+    .filter(Boolean);
+
+  return messages.length > 0 ? messages.join("; ") : null;
+}
+
+async function formatCaughtError(error: unknown): Promise<string> {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (error instanceof Response) {
+    const body = await error.text().catch(() => "");
+    const details = body.trim() ? `: ${body.slice(0, 300)}` : "";
+
+    return `HTTP ${error.status} ${error.statusText || "Response"}${details}`;
+  }
+
+  return String(error);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Loader — plain read, no transaction, no lock
 // ─────────────────────────────────────────────────────────────────────────────
@@ -148,7 +178,20 @@ export async function loader({ request }: LoaderFunctionArgs) {
       }
     `);
 
-    const data = await resp.json();
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      throw new Error(
+        `Shopify product query failed with HTTP ${resp.status}: ${body.slice(0, 300)}`,
+      );
+    }
+
+    const data: any = await resp.json();
+    const graphQLError = formatShopifyGraphQLErrors(data?.errors);
+
+    if (graphQLError) {
+      throw new Error(graphQLError);
+    }
+
     const rawProduct = data?.data?.products?.nodes?.[0] ?? null;
 
     const product: ShopifyProduct | null = rawProduct
@@ -165,6 +208,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
       },
     });
   } catch (err) {
+    const errorMessage = await formatCaughtError(err);
+
+    console.error("[home] Failed to load Shopify product:", err);
+
     return json<LoaderData>({
       product: null,
       credits: {
@@ -173,7 +220,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
         creditsRemaining: credits.creditsRemaining,
         resetDate: credits.resetDate.toISOString(),
       },
-      error: "Failed to load product.",
+      error: errorMessage || "Failed to load product.",
     });
   }
 }
