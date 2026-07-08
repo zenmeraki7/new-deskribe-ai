@@ -2,44 +2,81 @@
 import { useLoaderData } from "@remix-run/react";
 import { Banner, Layout, Page, BlockStack, Button, Text, Card } from "@shopify/polaris";
 import { requireAdminSession } from "../lib/auth.server";
-import { checkBilling } from "../lib/billing.server";
+import { getActiveSubscription } from "../lib/partnerApi.server";
 import { json } from "@remix-run/node";
 import type { LoaderFunctionArgs } from "@remix-run/node";
 
-// TODO: replace with your app's actual handle from Partner Dashboard
-// (Partner Dashboard Ã¢â€ â€™ your app Ã¢â€ â€™ the URL slug in the app listing page,
-// NOT the client_id). Something like "des-kribe-ai" or similar.
 const APP_HANDLE = (process.env.SHOPIFY_APP_HANDLE || "").trim();
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, shopDomain } = await requireAdminSession(request);
 
-  const { appSubscriptions } = await checkBilling(admin.graphql);
+  // --- Detect a return from the hosted plan-selection page ---
+  // Shopify appends plan_handle (and the shop domain) to your redirect URL
+  // after a merchant selects/confirms a plan. No charge_id, no webhook —
+  // this is the new signal. We don't trust it on its own; it just tells us
+  // *when* to go confirm status with the Partner API.
+  const url = new URL(request.url);
+  const returnedPlanHandle = url.searchParams.get("plan_handle");
+  const justReturnedFromPlanSelection = Boolean(returnedPlanHandle);
+
+  // --- Resolve the Shop GID (Partner API needs this, not the domain) ---
+  let shopGid: string | null = null;
+  try {
+    const shopResponse = await admin.graphql(`#graphql
+      query ShopId {
+        shop { id }
+      }
+    `);
+    const shopData = await shopResponse.json();
+    shopGid = shopData?.data?.shop?.id ?? null;
+  } catch (error) {
+    console.error("[app.billing loader] failed to resolve shop id", { error: String(error) });
+  }
+
+  const subscription = shopGid ? await getActiveSubscription(shopGid) : null;
+
+  // If we just came back from plan selection but the Partner API still shows
+  // no active subscription (or a different handle), don't assume failure —
+  // Partner API can lag slightly behind the redirect. Surface it distinctly
+  // so the UI can show a "confirming..." state instead of "no subscription".
+  const pendingConfirmation =
+    justReturnedFromPlanSelection &&
+    (!subscription || !subscription.items.some((item) => item.handle === returnedPlanHandle));
 
   const pricingPageUrl = APP_HANDLE
     ? `https://admin.shopify.com/store/${shopDomain.replace(".myshopify.com", "")}/charges/${APP_HANDLE}/pricing_plans`
     : null;
 
   return json({
-    subscription: appSubscriptions?.[0] ?? null,
+    subscription,
+    pendingConfirmation,
     pricingPageUrl,
     missingAppHandle: !APP_HANDLE,
   });
 };
 
-// No action needed Ã¢â‚¬â€ subscribe/cancel happen entirely on Shopify's
-// hosted pricing page under Managed Pricing.
-
 export default function Billing() {
-  const { subscription, pricingPageUrl, missingAppHandle } = useLoaderData<typeof loader>();
+  const { subscription, pendingConfirmation, pricingPageUrl, missingAppHandle } =
+    useLoaderData<typeof loader>();
 
   return (
     <Page title="Plan & Billing">
       <Layout>
         <Layout.Section>
           <BlockStack gap="400">
-            {subscription ? (
-              <Banner title={`Active subscription: ${subscription.name}`} tone="success" />
+            {pendingConfirmation ? (
+              <Banner title="Confirming your plan..." tone="info">
+                <Text as="p">
+                  We're confirming your subscription with Shopify. Refresh this page in a
+                  few seconds if this doesn't update.
+                </Text>
+              </Banner>
+            ) : subscription ? (
+              <Banner
+                title={`Active plan: ${subscription.items.map((i) => i.description).join(", ")}`}
+                tone="success"
+              />
             ) : (
               <Banner title="You do not have an active subscription." tone="warning" />
             )}
@@ -51,11 +88,7 @@ export default function Billing() {
                   Click below to view or change your plan.
                 </Text>
                 {pricingPageUrl ? (
-                  <Button
-                    variant="primary"
-                    url={pricingPageUrl}
-                    target="_top"
-                  >
+                  <Button variant="primary" url={pricingPageUrl} target="_top">
                     Manage plan on Shopify
                   </Button>
                 ) : missingAppHandle ? (

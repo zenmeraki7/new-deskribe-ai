@@ -1,27 +1,21 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "6f9d8710bcea15a9a7814c24bb5404be"
-application_url = "https://lady-sleeve-kentucky-spice.trycloudflare.com"
+client_id = "edfa37793692fabbeabe10ec4f7e0151"
+name = "development"
+application_url = "https://applications-shift-blowing-rpm.trycloudflare.com"
 embedded = true
-name = "new"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "read_inventory,read_products,write_products"
+scopes = "read_locations,read_products,write_products"
 
 [auth]
 redirect_urls = [
-  "https://lady-sleeve-kentucky-spice.trycloudflare.com/auth/callback",
-  "https://lady-sleeve-kentucky-spice.trycloudflare.com/auth/shopify/callback",
-  "https://lady-sleeve-kentucky-spice.trycloudflare.com/api/auth/callback"
+  "https://applications-shift-blowing-rpm.trycloudflare.com/api/auth"
 ]
 
 [webhooks]
-api_version = "2026-01"
-
-  [[webhooks.subscriptions]]
-  uri = "/webhooks/bulk-operations-finish"
-  topics = [ "bulk_operations/finish" ]
+api_version = "2026-07"
 
 [build]
 automatically_update_urls_on_dev = true
