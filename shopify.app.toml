@@ -2,7 +2,7 @@
 
 client_id = "edfa37793692fabbeabe10ec4f7e0151"
 name = "development"
-application_url = "https://applications-shift-blowing-rpm.trycloudflare.com"
+application_url = "https://investigated-besides-heating-lat.trycloudflare.com"
 embedded = true
 
 [access_scopes]
@@ -11,7 +11,7 @@ scopes = "read_locations,read_products,write_products"
 
 [auth]
 redirect_urls = [
-  "https://applications-shift-blowing-rpm.trycloudflare.com/api/auth"
+  "https://investigated-besides-heating-lat.trycloudflare.com/api/auth"
 ]
 
 [webhooks]

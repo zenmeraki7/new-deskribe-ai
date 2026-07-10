@@ -1,12 +1,3 @@
-// app/routes/app._index.tsx
-//
-// Priority 1 fix: generate action no longer calls generateProductDescription() inline.
-// It creates a GenerationJob + enqueues to BullMQ and returns {ok, jobId} immediately.
-// The UI then polls /app/api/job/:jobId (same endpoint used by app.products.$productId)
-// until COMPLETED / FAILED / CANCELLED, then displays the result.
-//
-// suggest_keywords  — stays synchronous (fast, correct as-is)
-// apply             — stays synchronous (Shopify write, no AI)
 
 import crypto from "node:crypto";
 import { useState, useCallback, useEffect, useRef } from "react";
@@ -26,7 +17,15 @@ import {
   Box,
   Banner,
   Tag,
+  Tabs,
+  Thumbnail,
+  EmptyState,
+  SkeletonBodyText,
+  Frame,
+  Toast,
+  Tooltip,
 } from "@shopify/polaris";
+import { ImageIcon } from "@shopify/polaris-icons";
 
 import { useLoaderData, useFetcher, useNavigate } from "@remix-run/react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
@@ -145,7 +144,7 @@ async function formatCaughtError(error: unknown): Promise<string> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Loader — plain read, no transaction, no lock
+// Loader — plain read, no transaction, no lock (UNCHANGED)
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function loader({ request }: LoaderFunctionArgs) {
@@ -226,7 +225,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Action
+// Action — UNCHANGED
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function action({ request }: ActionFunctionArgs) {
@@ -318,20 +317,14 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 
   // ── generate — FIXED: authenticate → validate → enqueue → return jobId ────
-  //
-  // Previously: called generateProductDescription() here, blocking for 5-15 s.
-  // Now:        creates a GenerationJob record, enqueues it to BullMQ, and
-  //             returns { ok: true, jobId } in < 500 ms.
-  //             The UI polls /app/api/job/:jobId until terminal status.
-  //
   if (intent === "generate") {
     let creditRequestId: string | null = null;
     let plan = resolvePlan(null);
 
     try {
       const { appSubscriptions } = await checkBilling(admin.graphql);
-const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
-const rate = await checkAndIncrementKeywordLimit(shopDomain, plan);
+      const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
+      const rate = await checkAndIncrementKeywordLimit(shopDomain, plan);
       if (!rate.allowed) {
         return json(
           {
@@ -417,7 +410,6 @@ const rate = await checkAndIncrementKeywordLimit(shopDomain, plan);
       });
 
       // ── 4. Derive bullJobId and update record ────────────────────────────
-      // FIX: underscore separator — BullMQ v4+ forbids colons in custom jobIds
       const bullJobId = `${shopDomain}_${job.id}`;
       await db.generationJob.update({
         where: { id: job.id },
@@ -450,11 +442,9 @@ const rate = await checkAndIncrementKeywordLimit(shopDomain, plan);
           },
         );
       } catch (enqueueErr: any) {
-        // BullMQ "already exists" is safe to swallow — job is already queued
         const msg =
           typeof enqueueErr?.message === "string" ? enqueueErr.message : "";
         if (!(msg.includes("Job") && msg.includes("already exists"))) {
-          // Real enqueue failure — refund credits and mark job failed
           await refundCredits({
             shopId: shopDomain,
             plan,
@@ -480,7 +470,6 @@ const rate = await checkAndIncrementKeywordLimit(shopDomain, plan);
       // ── 6. Return jobId immediately — UI will poll ────────────────────────
       return json({ ok: true, kind: "generate", jobId: job.id });
     } catch (err) {
-      // Unexpected error — refund if we already deducted
       if (creditRequestId) {
         await refundCredits({
           shopId: shopDomain,
@@ -560,7 +549,7 @@ const rate = await checkAndIncrementKeywordLimit(shopDomain, plan);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Polling hook — mirrors the one in app.products.$productId.ui.tsx
+// Polling hook — UNCHANGED
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface PollPayload {
@@ -574,15 +563,11 @@ function useJobPoll() {
   const timerRef = useRef<number | null>(null);
   const startedAtRef = useRef<number | null>(null);
   const inFlightRef = useRef(false);
-  // jobId stored in a ref, not state — avoids the render cycle that caused
-  // isPolling to flip false before generationResult appeared in the DOM
   const jobIdRef = useRef<string | null>(null);
 
   const [status, setStatus] = useState<PollStatus>("IDLE");
   const [result, setResult] = useState<DraftResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  // isPolling is explicit state, NOT derived from jobId
-  // This guarantees: setResult(...) always commits before setIsPolling(false)
   const [isPolling, setIsPolling] = useState(false);
 
   const TERMINAL = new Set<PollStatus>(["COMPLETED", "FAILED", "CANCELLED"]);
@@ -594,8 +579,6 @@ function useJobPoll() {
     }
   }, []);
 
-  // stop() only flips isPolling — does NOT clear result or status
-  // so the rendered output stays visible after generation completes
   const stop = useCallback(() => {
     clearTimer();
     inFlightRef.current = false;
@@ -609,7 +592,6 @@ function useJobPoll() {
     return Math.max(750, Math.floor(POLL_INTERVAL_MS + (Math.random() * 2 - 1) * jitter));
   };
 
-  // Tick loop depends on isPolling (state), not jobId (ref)
   useEffect(() => {
     if (!isPolling) return;
     clearTimer();
@@ -650,15 +632,12 @@ function useJobPoll() {
     setStatus(next);
     setErrorMessage(fetcher.data.errorMessage ?? null);
 
-    // CRITICAL ORDER: setResult BEFORE stop()
-    // React batches these but setResult must be in the queue first so
-    // generationResult is truthy when isPolling flips to false
     if (fetcher.data.result) {
       setResult(fetcher.data.result);
     }
 
     if (TERMINAL.has(next)) {
-      stop(); // setIsPolling(false) — happens after setResult in the same batch
+      stop();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetcher.data, fetcher.state]);
@@ -672,7 +651,7 @@ function useJobPoll() {
       setErrorMessage(null);
       setStatus("PENDING");
       startedAtRef.current = Date.now();
-      setIsPolling(true); // triggers the tick loop via useEffect
+      setIsPolling(true);
     },
     [clearTimer],
   );
@@ -699,7 +678,10 @@ function useJobPoll() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Component
+// Component — RENDER RESTRUCTURED, all handlers/state below are the same ones
+// from the original (same names, same bodies, same fetcher wiring). Only new
+// additions are `selectedTab` and `altTextDrafts`, which are local, UI-only,
+// and never sent to the server.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function IndexPage() {
@@ -707,7 +689,6 @@ export default function IndexPage() {
   const navigate = useNavigate();
 
   const suggestFetcher = useFetcher<any>();
-  // generateFetcher now only carries the enqueue response { ok, jobId }
   const generateFetcher = useFetcher<any>();
   const applyFetcher = useFetcher<any>();
 
@@ -717,8 +698,11 @@ export default function IndexPage() {
   const [includeSocials, setIncludeSocials] = useState(false);
   const [localCreditError, setLocalCreditError] = useState<string | null>(null);
   const [showSuccessBanner, setShowSuccessBanner] = useState(false);
-  // Track optimistic credit spend for the UI counter
   const [creditSpent, setCreditSpent] = useState(0);
+
+  // NEW — UI-only, not sent to the server
+  const [selectedTab, setSelectedTab] = useState(0);
+  const [altTextDrafts, setAltTextDrafts] = useState<Record<string, string>>({});
 
   const {
     startPolling,
@@ -729,12 +713,10 @@ export default function IndexPage() {
     isPolling,
   } = useJobPoll();
 
-  // ── Wire generate fetcher → start polling ──────────────────────────────────
   useEffect(() => {
     const data = generateFetcher.data;
     if (data?.ok && typeof data?.jobId === "string") {
       startPolling(data.jobId);
-      // Optimistically subtract the credit cost so the counter updates instantly
       setCreditSpent((prev) => prev + CREDIT_COSTS.standardGeneration);
     }
   }, [generateFetcher.data?.jobId, startPolling]);
@@ -786,7 +768,7 @@ export default function IndexPage() {
     ? generationResult.body_html.replace(/<[^>]+>/g, " ").trim().split(/\s+/).length
     : 0;
 
-  // ── Handlers ───────────────────────────────────────────────────────────────
+  // ── Handlers — same bodies as the original ─────────────────────────────────
 
   const handleGenerate = useCallback(() => {
     if (!product || isGenerating) return;
@@ -870,7 +852,16 @@ export default function IndexPage() {
 
   const imageUrl = product?.featuredImage?.url ?? DUMMY_IMAGE;
 
-  // ── Error state ─────────────────────────────────────────────────────────────
+  const tabs = [
+    { id: "description", content: "Description" },
+    { id: "seo-social", content: "SEO & social" },
+    {
+      id: "alt-text",
+      content: product ? `Image alt text (${product.images.length})` : "Image alt text",
+    },
+  ];
+
+  // ── Error state — unchanged ─────────────────────────────────────────────────
   if (error) {
     return (
       <Page title="DescribeAI" subtitle="AI Product Description Generator">
@@ -903,280 +894,37 @@ export default function IndexPage() {
 
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
-    <Page title="DescribeAI" subtitle="AI Product Description Generator">
-      <Layout>
-        <Layout.Section>
-
-          {/* ── Stats Bar ─────────────────────────────────────────────────── */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(3, 1fr)",
-              gap: "1px",
-              background: "#e1e3e5",
-              border: "1px solid #e1e3e5",
-              borderRadius: "12px",
-              overflow: "hidden",
-              marginBottom: "16px",
-            }}
-          >
-            {[
-              {
-                label: "Generated",
-                value: wordCount ? `${wordCount} words` : "—",
-                icon: (
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <rect x="2" y="4" width="16" height="2" rx="1" fill="#5c6ac4" />
-                    <rect x="2" y="9" width="12" height="2" rx="1" fill="#5c6ac4" />
-                    <rect x="2" y="14" width="14" height="2" rx="1" fill="#5c6ac4" />
-                  </svg>
-                ),
-              },
-              {
-                label: "Credits left",
-                value: String(remainingCredits),
-                icon: (
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <circle cx="10" cy="10" r="7" stroke="#f59e0b" strokeWidth="2" />
-                    <text x="10" y="14" textAnchor="middle" fontSize="9" fill="#f59e0b" fontWeight="bold">$</text>
-                  </svg>
-                ),
-              },
-              {
-                label: "Current Plan",
-                value: credits.creditsLimit > 100 ? "PRO" : "FREE",
-                icon: (
-                  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                    <rect x="3" y="5" width="14" height="10" rx="2" stroke="#5c6ac4" strokeWidth="2" />
-                    <path d="M3 9h14" stroke="#5c6ac4" strokeWidth="1.5" />
-                    <rect x="6" y="12" width="4" height="1.5" rx="0.75" fill="#5c6ac4" />
-                  </svg>
-                ),
-              },
-            ].map(({ label, value, icon }) => (
-              <div
-                key={label}
-                style={{
-                  background: "#ffffff",
-                  padding: "20px 24px",
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                }}
-              >
-                <div>
-                  <div style={{ fontSize: "13px", color: "#6d7175", marginBottom: "4px" }}>{label}</div>
-                  <div style={{ fontSize: "18px", fontWeight: "600", color: "#202223" }}>{value}</div>
-                </div>
-                <div style={{ opacity: 0.85 }}>{icon}</div>
-              </div>
-            ))}
-          </div>
-
-          {/* ── Quick Generate Panel ───────────────────────────────────────── */}
-          <div
-            style={{
-              background: "#ffffff",
-              border: "1px solid #e1e3e5",
-              borderRadius: "12px",
-              padding: "24px",
-              marginBottom: "16px",
-              display: "flex",
-              flexDirection: "column",
-              gap: "24px",
-            }}
-          >
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: "32px",
-                alignItems: "center",
-              }}
-            >
-              {/* Left: steps + CTA */}
-              <div>
-                <Text as="h2" variant="headingMd" fontWeight="semibold">
-                  What do you want to generate?
-                </Text>
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(3, 1fr)",
-                    gap: "12px",
-                    marginTop: "20px",
-                    marginBottom: "24px",
-                  }}
-                >
-                  {[
-                    { step: "1. Select Content Type" },
-                    { step: "2. Select Target" },
-                    { step: "3. Click Generate" },
-                  ].map(({ step }) => (
-                    <div
-                      key={step}
-                      style={{
-                        border: "1px solid #e1e3e5",
-                        borderRadius: "8px",
-                        padding: "16px 12px",
-                        textAlign: "center",
-                        background: "#fafbfb",
-                        fontSize: "13px",
-                        color: "#202223",
-                        fontWeight: "500",
-                      }}
-                    >
-                      {step}
-                    </div>
-                  ))}
-                </div>
-                <button
-                  onClick={() => navigate("/app/products")}
-                  style={{
-                    background: "linear-gradient(135deg, #5c6ac4 0%, #4355be 100%)",
-                    color: "#fff",
-                    border: "none",
-                    borderRadius: "10px",
-                    padding: "12px 28px",
-                    fontSize: "14px",
-                    fontWeight: "600",
-                    cursor: "pointer",
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    boxShadow: "0 2px 8px rgba(92,106,196,0.35)",
-                  }}
-                >
-                  ✦ Start Generating
-                </button>
-              </div>
-
-              {/* Right: preview placeholder */}
-              <div
-                style={{
-                  background: "linear-gradient(135deg, #e8eaff 0%, #f0f4ff 100%)",
-                  borderRadius: "10px",
-                  aspectRatio: "16/9",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  position: "relative",
-                }}
-              >
-                <div
-                  style={{
-                    width: "80%",
-                    background: "#fff",
-                    borderRadius: "6px",
-                    padding: "10px",
-                    boxShadow: "0 2px 8px rgba(0,0,0,0.08)",
-                  }}
-                >
-                  {[60, 90, 75].map((w, i) => (
-                    <div
-                      key={i}
-                      style={{
-                        height: i === 0 ? "8px" : "6px",
-                        background: "#e1e3e5",
-                        borderRadius: "4px",
-                        marginBottom: i < 2 ? "6px" : 0,
-                        width: `${w}%`,
-                      }}
-                    />
-                  ))}
-                </div>
-                <div style={{ position: "absolute", bottom: "16px", right: "20px", fontSize: "20px" }}>✨</div>
-              </div>
-            </div>
-
-            {/* How It Works */}
-            <div style={{ borderTop: "1px solid #e1e3e5", paddingTop: "24px" }}>
-              <Text as="h2" variant="headingMd" fontWeight="semibold">🚀 How It Works</Text>
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(4, 1fr)",
-                  gap: "16px",
-                  marginTop: "16px",
-                }}
-              >
-                {[
-                  { num: "1", title: "Select a Product", desc: "Choose a product from the table to get started." },
-                  { num: "2", title: "Customize Settings", desc: "Adjust tone, length, and other generation options." },
-                  { num: "3", title: "Generate Draft", desc: "Click generate — the AI works in the background." },
-                  { num: "4", title: "Save to Shopify", desc: "Review the draft and save directly to your store." },
-                ].map(({ num, title, desc }) => (
-                  <div
-                    key={num}
-                    style={{
-                      background: "#fafbfb",
-                      border: "1px solid #e1e3e5",
-                      borderRadius: "8px",
-                      padding: "16px",
-                    }}
-                  >
-                    <div
-                      style={{
-                        width: "24px",
-                        height: "24px",
-                        background: "linear-gradient(135deg, #5c6ac4 0%, #4355be 100%)",
-                        borderRadius: "50%",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        fontSize: "12px",
-                        fontWeight: "700",
-                        color: "#fff",
-                        marginBottom: "8px",
-                      }}
-                    >
-                      {num}
-                    </div>
-                    <div style={{ fontSize: "13px", fontWeight: "600", color: "#202223", marginBottom: "4px" }}>{title}</div>
-                    <div style={{ fontSize: "13px", color: "#6d7175", lineHeight: "1.5" }}>{desc}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* ── Banners ─────────────────────────────────────────────────────── */}
-          {showSuccessBanner && (
-            <Banner tone="success" title="Applied to Shopify" onDismiss={() => setShowSuccessBanner(false)}>
-              <Text as="p">The product description has been successfully updated in Shopify.</Text>
-            </Banner>
-          )}
-
+    <Frame>
+      <Page title="DescribeAI" subtitle="AI Product Description Generator">
+        <Layout>
           {actionError && (
-            <Banner tone="critical" title="Something went wrong">
-              <Text as="p">{actionError}</Text>
-            </Banner>
+            <Layout.Section>
+              <Banner tone="critical" title="Something went wrong">
+                <Text as="p">{actionError}</Text>
+              </Banner>
+            </Layout.Section>
           )}
 
           {applyFetcher.data?.ok === false && applyFetcher.data?.error && (
-            <Banner tone="critical" title="Failed to apply description">
-              <Text as="p">{applyFetcher.data.error}</Text>
-            </Banner>
+            <Layout.Section>
+              <Banner tone="critical" title="Failed to apply description">
+                <Text as="p">{applyFetcher.data.error}</Text>
+              </Banner>
+            </Layout.Section>
           )}
 
-          <CreditUsageCard
-            compact
-            title="Credits remaining"
-            creditsUsed={credits.creditsLimit - remainingCredits}
-            creditsLimit={credits.creditsLimit}
-            creditsRemaining={remainingCredits}
-          />
+          <Layout.Section>
+            <CreditUsageCard
+              compact
+              title="Credits remaining"
+              creditsUsed={credits.creditsLimit - remainingCredits}
+              creditsLimit={credits.creditsLimit}
+              creditsRemaining={remainingCredits}
+            />
+          </Layout.Section>
 
-          {/* ── Main two-column layout ────────────────────────────────────── */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 2fr",
-              gap: "16px",
-              alignItems: "start",
-            }}
-          >
-            {/* ── LEFT: Product Card ─────────────────────────────────────── */}
+          {/* ── LEFT: Product card / RIGHT: Settings + Output ────────────── */}
+          <Layout.Section variant="oneThird">
             <Card>
               <BlockStack gap="300">
                 <Text as="h2" variant="headingSm">Selected Product</Text>
@@ -1201,7 +949,7 @@ export default function IndexPage() {
                           height: "48px",
                           borderRadius: "6px",
                           overflow: "hidden",
-                          border: "1px solid #e1e3e5",
+                          border: "1px solid var(--p-color-border)",
                         }}
                       >
                         <img
@@ -1226,8 +974,9 @@ export default function IndexPage() {
                 <Button fullWidth onClick={() => navigate("/app/products")}>Change Product</Button>
               </BlockStack>
             </Card>
+          </Layout.Section>
 
-            {/* ── RIGHT: Settings + Output ───────────────────────────────── */}
+          <Layout.Section>
             <BlockStack gap="400">
               <Card>
                 <BlockStack gap="400">
@@ -1292,67 +1041,52 @@ export default function IndexPage() {
                         <Text as="p" variant="bodySm" tone="subdued">Suggested — click to add:</Text>
                         <InlineStack gap="100" wrap>
                           {suggestedKeywords.map((kw) => (
-                            <button
-                              key={kw}
-                              onClick={() => handleAddSuggestedKeyword(kw)}
-                              style={{
-                                background: "none",
-                                border: "1px solid #c9cccf",
-                                borderRadius: "4px",
-                                padding: "2px 8px",
-                                cursor: "pointer",
-                                fontSize: "13px",
-                                color: "#202223",
-                              }}
-                            >
+                            <Button key={kw} size="micro" onClick={() => handleAddSuggestedKeyword(kw)}>
                               + {kw}
-                            </button>
+                            </Button>
                           ))}
                         </InlineStack>
                       </BlockStack>
                     )}
                   </BlockStack>
 
-                  <Button
-                    variant="primary"
-                    tone="success"
-                    onClick={handleGenerate}
-                    loading={isGenerating}
-                    disabled={
-                      isGenerating ||
-                      isSuggestingKeywords ||
-                      !hasCredits(remainingCredits, CREDIT_COSTS.standardGeneration)
-                    }
-                  >
-                    {isPolling
-                      ? pollStatus === "PROCESSING"
-                        ? "AI is writing…"
-                        : "Queued…"
-                      : "Generate Description"}
-                  </Button>
+                  <Divider />
 
-                  <InlineStack align="space-between">
-                    <Text as="p" variant="bodySm" tone="subdued">Credit cost</Text>
-                    <Text as="p" variant="bodySm" fontWeight="semibold">
-                      {formatCredits(CREDIT_COSTS.standardGeneration)} credit
+                  <InlineStack align="space-between" blockAlign="center">
+                    <BlockStack gap="050">
+                      <Text as="p" variant="bodySm" tone="subdued">Credit cost</Text>
+                      <Text as="p" variant="bodySm" fontWeight="semibold">
+                        {formatCredits(CREDIT_COSTS.standardGeneration)} credit
+                      </Text>
+                    </BlockStack>
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      {formatCredits(remainingCredits)} remaining
                     </Text>
-                  </InlineStack>
-                  <InlineStack align="space-between">
-                    <Text as="p" variant="bodySm" tone="subdued">Credits remaining</Text>
-                    <Text as="p" variant="bodySm" fontWeight="semibold">
-                      {formatCredits(remainingCredits)}
-                    </Text>
+                    <Button
+                      variant="primary"
+                      tone="success"
+                      onClick={handleGenerate}
+                      loading={isGenerating}
+                      disabled={
+                        isGenerating ||
+                        isSuggestingKeywords ||
+                        !hasCredits(remainingCredits, CREDIT_COSTS.standardGeneration)
+                      }
+                    >
+                      {isPolling
+                        ? pollStatus === "PROCESSING"
+                          ? "AI is writing…"
+                          : "Queued…"
+                        : "Generate Description"}
+                    </Button>
                   </InlineStack>
                 </BlockStack>
               </Card>
 
               {/* ── Output Card ──────────────────────────────────────────── */}
-              <Card>
-                <BlockStack gap="300">
-                  <Text as="p" variant="headingSm">Generated Output</Text>
-                  <Divider />
-
-                  {/* Polling states */}
+              <Card padding="0">
+                <Tabs tabs={tabs} selected={selectedTab} onSelect={setSelectedTab} />
+                <Box padding="400">
                   {isGenerating && !generationResult && (
                     <BlockStack gap="300">
                       <InlineStack gap="300" blockAlign="center">
@@ -1365,25 +1099,7 @@ export default function IndexPage() {
                             : "Waiting for a worker to pick up the job…"}
                         </Text>
                       </InlineStack>
-                      {/* Progress bar */}
-                      <div
-                        style={{
-                          height: "4px",
-                          background: "#e1e3e5",
-                          borderRadius: "2px",
-                          overflow: "hidden",
-                        }}
-                      >
-                        <div
-                          style={{
-                            height: "100%",
-                            background: "linear-gradient(90deg, #5c6ac4, #8c9cff)",
-                            borderRadius: "2px",
-                            width: pollStatus === "PROCESSING" ? "70%" : "20%",
-                            transition: "width 0.8s ease",
-                          }}
-                        />
-                      </div>
+                      <SkeletonBodyText lines={4} />
                     </BlockStack>
                   )}
 
@@ -1393,81 +1109,32 @@ export default function IndexPage() {
                     </Banner>
                   )}
 
-                  {/* Result */}
-                  {generationResult ? (
+                  {!isGenerating && !generationResult && selectedTab !== 2 && (
+                    <EmptyState
+                      heading="Nothing generated yet"
+                      image="https://cdn.shopify.com/s/files/1/0757/9955/files/empty-state.svg"
+                      action={{
+                        content: "Generate Description",
+                        onAction: handleGenerate,
+                        disabled: !hasCredits(remainingCredits, CREDIT_COSTS.standardGeneration),
+                      }}
+                    >
+                      <p>
+                        Configure settings above and generate an AI-powered
+                        product description for "{product.title}".
+                      </p>
+                    </EmptyState>
+                  )}
+
+                  {/* ── Tab 0: Description ──────────────────────────────── */}
+                  {generationResult && selectedTab === 0 && (
                     <BlockStack gap="400">
                       <div
                         dangerouslySetInnerHTML={{ __html: generationResult.body_html }}
                         style={{ lineHeight: "1.6" }}
                       />
-
-                      {generationResult.social_caption && (
-                        <>
-                          <Divider />
-                          <BlockStack gap="100">
-                            <Text as="p" variant="headingSm">Instagram Caption</Text>
-                            <Text as="p" tone="subdued">{generationResult.social_caption}</Text>
-                          </BlockStack>
-                        </>
-                      )}
-
-                      {/* SEO keywords */}
-                      {generationResult.keywords?.length > 0 && (
-                        <>
-                          <Divider />
-                          <BlockStack gap="100">
-                            <Text as="p" variant="bodySm" tone="subdued">SEO keywords:</Text>
-                            <InlineStack gap="100" wrap>
-                              {generationResult.keywords.slice(0, 15).map((kw: string) => (
-                                <Badge key={kw} tone="info">{kw}</Badge>
-                              ))}
-                            </InlineStack>
-                          </BlockStack>
-                        </>
-                      )}
-
-                      {/* SEO meta preview */}
-                      {(generationResult.meta_title || generationResult.meta_description) && (
-                        <>
-                          <Divider />
-                          <BlockStack gap="150">
-                            <Text as="p" variant="headingSm">SEO Preview</Text>
-                            <div
-                              style={{
-                                padding: "12px 16px",
-                                background: "#fff",
-                                border: "1px solid #dadce0",
-                                borderRadius: "8px",
-                                fontFamily: "arial, sans-serif",
-                                maxWidth: 540,
-                              }}
-                            >
-                              <div
-                                style={{
-                                  fontSize: 17,
-                                  color: "#1a0dab",
-                                  marginBottom: 3,
-                                  overflow: "hidden",
-                                  whiteSpace: "nowrap",
-                                  textOverflow: "ellipsis",
-                                }}
-                              >
-                                {generationResult.meta_title ?? product.title}
-                              </div>
-                              <div style={{ fontSize: 13, color: "#006621", marginBottom: 3 }}>
-                                {product.vendor || "Shopify"} › products
-                              </div>
-                              <div style={{ fontSize: 14, color: "#545454" }}>
-                                {generationResult.meta_description ?? ""}
-                              </div>
-                            </div>
-                          </BlockStack>
-                        </>
-                      )}
-
                       <Divider />
-
-                      <InlineStack gap="400" blockAlign="center">
+                      <InlineStack gap="400">
                         <BlockStack gap="050">
                           <Text as="p" variant="headingMd">{wordCount}</Text>
                           <Text as="p" variant="bodySm" tone="subdued">Words</Text>
@@ -1480,6 +1147,106 @@ export default function IndexPage() {
                           <Text as="p" variant="headingMd">{format}</Text>
                           <Text as="p" variant="bodySm" tone="subdued">Format</Text>
                         </BlockStack>
+                      </InlineStack>
+                    </BlockStack>
+                  )}
+
+                  {/* ── Tab 1: SEO & social ──────────────────────────────── */}
+                  {generationResult && selectedTab === 1 && (
+                    <BlockStack gap="400">
+                      {(generationResult.meta_title || generationResult.meta_description) && (
+                        <BlockStack gap="150">
+                          <Text as="p" variant="headingSm">SEO Preview</Text>
+                          <div
+                            style={{
+                              padding: "12px 16px",
+                              background: "var(--p-color-bg-surface-secondary)",
+                              border: "1px solid var(--p-color-border)",
+                              borderRadius: "8px",
+                              fontFamily: "arial, sans-serif",
+                              maxWidth: 540,
+                            }}
+                          >
+                            <div
+                              style={{
+                                fontSize: 17,
+                                color: "#1a0dab",
+                                marginBottom: 3,
+                                overflow: "hidden",
+                                whiteSpace: "nowrap",
+                                textOverflow: "ellipsis",
+                              }}
+                            >
+                              {generationResult.meta_title ?? product.title}
+                            </div>
+                            <div style={{ fontSize: 13, color: "#006621", marginBottom: 3 }}>
+                              {product.vendor || "Shopify"} › products
+                            </div>
+                            <div style={{ fontSize: 14, color: "#545454" }}>
+                              {generationResult.meta_description ?? ""}
+                            </div>
+                          </div>
+                        </BlockStack>
+                      )}
+
+                      {generationResult.keywords?.length > 0 && (
+                        <BlockStack gap="100">
+                          <Text as="p" variant="bodySm" tone="subdued">SEO keywords:</Text>
+                          <InlineStack gap="100" wrap>
+                            {generationResult.keywords.slice(0, 15).map((kw: string) => (
+                              <Badge key={kw} tone="info">{kw}</Badge>
+                            ))}
+                          </InlineStack>
+                        </BlockStack>
+                      )}
+
+                      {generationResult.social_caption && (
+                        <>
+                          <Divider />
+                          <BlockStack gap="100">
+                            <Text as="p" variant="headingSm">Instagram Caption</Text>
+                            <Text as="p" tone="subdued">{generationResult.social_caption}</Text>
+                          </BlockStack>
+                        </>
+                      )}
+                    </BlockStack>
+                  )}
+
+                  {/* ── Tab 2: Image alt text (UI-only, no backend call) ─── */}
+                  {selectedTab === 2 && (
+                    <BlockStack gap="300">
+                      <Banner tone="info">
+                        AI-generated alt text isn't wired up yet — that needs a backend
+                        change to `action`. You can still write alt text manually below.
+                      </Banner>
+                      {product.images.map((img, i) => (
+                        <InlineStack key={img.url + i} gap="300" blockAlign="start" wrap={false}>
+                          <Thumbnail source={img.url || ImageIcon} alt={img.altText ?? ""} size="large" />
+                          <div style={{ flex: 1 }}>
+                            <TextField
+                              label={`Image ${i + 1} alt text`}
+                              labelHidden
+                              value={altTextDrafts[img.url] ?? img.altText ?? ""}
+                              onChange={(val) =>
+                                setAltTextDrafts((prev) => ({ ...prev, [img.url]: val }))
+                              }
+                              placeholder="Describe this image for accessibility & SEO"
+                              autoComplete="off"
+                              multiline={2}
+                            />
+                          </div>
+                        </InlineStack>
+                      ))}
+                    </BlockStack>
+                  )}
+
+                  {generationResult && selectedTab !== 2 && (
+                    <>
+                      <Divider />
+                      <InlineStack align="end" gap="200">
+                        <Button variant="tertiary" tone="critical" onClick={handleClear}>
+                          Clear
+                        </Button>
                         <Button
                           variant="primary"
                           tone="success"
@@ -1489,23 +1256,22 @@ export default function IndexPage() {
                         >
                           Apply to Shopify
                         </Button>
-                        <Button variant="tertiary" tone="critical" onClick={handleClear}>
-                          Clear
-                        </Button>
                       </InlineStack>
-                    </BlockStack>
-                  ) : !isGenerating ? (
-                    <Text as="p" tone="subdued">
-                      Configure settings above and click "Generate Description" to create an
-                      AI-powered product description.
-                    </Text>
-                  ) : null}
-                </BlockStack>
+                    </>
+                  )}
+                </Box>
               </Card>
             </BlockStack>
-          </div>
-        </Layout.Section>
-      </Layout>
-    </Page>
+          </Layout.Section>
+        </Layout>
+      </Page>
+
+      {showSuccessBanner && (
+        <Toast
+          content="Applied to Shopify"
+          onDismiss={() => setShowSuccessBanner(false)}
+        />
+      )}
+    </Frame>
   );
 }
