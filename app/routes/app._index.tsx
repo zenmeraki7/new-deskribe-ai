@@ -101,6 +101,11 @@ interface LoaderData {
     creditsRemaining: number;
     resetDate: string;
   };
+  stats: {
+    totalProducts: number;
+    missingDescriptions: number;
+    lastSyncedAt: string;
+  };
   error?: string;
 }
 
@@ -144,6 +149,136 @@ async function formatCaughtError(error: unknown): Promise<string> {
   }
 
   return String(error);
+}
+
+function formatRelativeTime(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const diffMin = Math.round(diffMs / 60000);
+
+  if (diffMin < 1) return "just now";
+  if (diffMin === 1) return "1m ago";
+  if (diffMin < 60) return `${diffMin}m ago`;
+
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+
+  const diffDay = Math.round(diffHr / 24);
+  return `${diffDay}d ago`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stats helpers — total product count is a single cheap query; "missing
+// description" has no server-side filter in Shopify's search syntax, so it
+// has to be computed by paging through every product and counting client-side.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function getProductsCount(admin: any): Promise<number> {
+  const resp = await admin.graphql(`
+    #graphql
+    query ProductsCount {
+      productsCount {
+        count
+      }
+    }
+  `);
+
+  if (!resp.ok) return 0;
+
+  const data: any = await resp.json();
+  return data?.data?.productsCount?.count ?? 0;
+}
+
+async function countProductsMissingDescriptions(admin: any): Promise<number> {
+  let missing = 0;
+  let cursor: string | null = null;
+  let hasNextPage = true;
+
+  // Pages through the whole catalog in batches of 250 (Shopify's max page
+  // size). This is only run when the ShopProductStats cache is stale — see
+  // getShopProductStats below.
+  while (hasNextPage) {
+    const resp: any = await admin.graphql(
+      `#graphql
+      query ProductsDescriptionAudit($cursor: String) {
+        products(first: 250, after: $cursor) {
+          nodes {
+            descriptionHtml
+          }
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+        }
+      }`,
+      { variables: { cursor } },
+    );
+
+    if (!resp.ok) break;
+
+    const data: any = await resp.json();
+    const products = data?.data?.products;
+    if (!products) break;
+
+    missing += products.nodes.filter(
+      (p: { descriptionHtml: string | null }) =>
+        !p.descriptionHtml || p.descriptionHtml.trim().length === 0,
+    ).length;
+
+    hasNextPage = products.pageInfo.hasNextPage;
+    cursor = products.pageInfo.endCursor;
+  }
+
+  return missing;
+}
+
+// How long a cached ShopProductStats row is trusted before we re-query
+// Shopify and pay the cost of paginating the whole catalog again.
+const PRODUCT_STATS_STALE_MS = 5 * 60 * 1000; // 5 minutes
+
+async function getShopProductStats(
+  shopDomain: string,
+  admin: any,
+): Promise<{
+  totalProducts: number;
+  missingDescriptions: number;
+  lastSyncedAt: string;
+}> {
+  const cached = await db.shopProductStats.findUnique({
+    where: { shopDomain },
+  });
+
+  const isFresh =
+    cached &&
+    Date.now() - cached.lastSyncedAt.getTime() < PRODUCT_STATS_STALE_MS;
+
+  if (isFresh) {
+    return {
+      totalProducts: cached.totalProducts,
+      missingDescriptions: cached.missingDescriptions,
+      lastSyncedAt: cached.lastSyncedAt.toISOString(),
+    };
+  }
+
+  const [totalProducts, missingDescriptions] = await Promise.all([
+    getProductsCount(admin),
+    countProductsMissingDescriptions(admin),
+  ]);
+
+  const updated = await db.shopProductStats.upsert({
+    where: { shopDomain },
+    create: { shopDomain, totalProducts, missingDescriptions },
+    update: {
+      totalProducts,
+      missingDescriptions,
+      lastSyncedAt: new Date(),
+    },
+  });
+
+  return {
+    totalProducts: updated.totalProducts,
+    missingDescriptions: updated.missingDescriptions,
+    lastSyncedAt: updated.lastSyncedAt.toISOString(),
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -200,6 +335,13 @@ export async function loader({ request }: LoaderFunctionArgs) {
       ? { ...rawProduct, images: rawProduct.images?.nodes ?? [] }
       : null;
 
+    const [totalProducts, missingDescriptions, statsLastSyncedAt] =
+      await getShopProductStats(shopDomain, admin).then((s) => [
+        s.totalProducts,
+        s.missingDescriptions,
+        s.lastSyncedAt,
+      ]);
+
     return json<LoaderData>({
       product,
       credits: {
@@ -207,6 +349,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
         creditsLimit: credits.creditsLimit,
         creditsRemaining: credits.creditsRemaining,
         resetDate: credits.resetDate.toISOString(),
+      },
+      stats: {
+        totalProducts,
+        missingDescriptions,
+        lastSyncedAt: statsLastSyncedAt,
       },
     });
   } catch (err) {
@@ -221,6 +368,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
         creditsLimit: credits.creditsLimit,
         creditsRemaining: credits.creditsRemaining,
         resetDate: credits.resetDate.toISOString(),
+      },
+      stats: {
+        totalProducts: 0,
+        missingDescriptions: 0,
+        lastSyncedAt: new Date().toISOString(),
       },
       error: errorMessage || "Failed to load product.",
     });
@@ -700,7 +852,7 @@ function useJobPoll() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function IndexPage() {
-  const { product, error, credits } = useLoaderData<typeof loader>();
+  const { product, error, credits, stats } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
 
   const suggestFetcher = useFetcher<any>();
@@ -884,11 +1036,11 @@ export default function IndexPage() {
     }
   }, [applyFetcher.data]);
 
-  // TODO: replace with real aggregate values from the loader once an
-  // endpoint exists for shop-wide product/description counts and sync time.
-  const totalProductsCount = 1248;
-  const missingDescriptionsCount = 327;
-  const lastSyncedLabel = "2m ago";
+  // Real values come from the loader now — see getProductsCount /
+  // countProductsMissingDescriptions above.
+  const totalProductsCount = stats.totalProducts;
+  const missingDescriptionsCount = stats.missingDescriptions;
+  const lastSyncedLabel = formatRelativeTime(stats.lastSyncedAt);
 
   const tabs = [
     { id: "description", content: "Description" },
@@ -1004,14 +1156,15 @@ export default function IndexPage() {
                     <InlineStack gap="150" blockAlign="center">
                       <Text as="span" variant="bodySm" tone="subdued">
                         {totalProductsCount.toLocaleString()} products
-                      </Text>                    
+                      </Text>
+                     
                     </InlineStack>
 
                     <InlineStack gap="200">
                       <Button
                         variant="primary"
                         tone="success"
-                        onClick={() => navigate("/app/products")}
+                       onClick={() => navigate("/app/products")}
                       >
                         {isPolling
                           ? pollStatus === "PROCESSING"
@@ -1019,6 +1172,7 @@ export default function IndexPage() {
                             : "Queued…"
                           : "Generate descriptions"}
                       </Button>
+                     
                     </InlineStack>
                   </BlockStack>
 

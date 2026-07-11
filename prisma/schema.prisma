@@ -186,3 +186,11 @@ model WebhookDelivery {
   @@index([eventAt])
   @@index([shop, topic])
 }
+model ShopProductStats {
+  shopDomain          String   @id
+  totalProducts       Int      @default(0)
+  missingDescriptions Int      @default(0)
+  lastSyncedAt        DateTime @default(now())
+
+  @@index([lastSyncedAt])
+}

@@ -450,7 +450,7 @@ export default function ProductsDashboard() {
         ]
       : [
           {
-            content: `âœ¨ Generate AI Descriptions (${selectedResources.length})`,
+            content: ` Generate AI Descriptions (${selectedResources.length})`,
             onAction: () => {
               if (!hasEnoughBulkCredits) return;
               setBulkModalOpen(true);
@@ -545,7 +545,6 @@ export default function ProductsDashboard() {
             onClick={() => {
               navigate(`/app/products/${numericId}`);
             }}
-            icon={<span style={{ fontSize: 12 }}>âœ¨</span>}
           >
             Generate
           </Button>
@@ -553,7 +552,7 @@ export default function ProductsDashboard() {
       </IndexTable.Row>
     );
   });
-  // â”€â”€ Render
+  //  Render
   return (
     <Page
       title="Products"
@@ -564,7 +563,7 @@ export default function ProductsDashboard() {
       }}
     >
       <BlockStack gap="600">
-        {/* â”€â”€ Bulk progress bar (replaces the redirect for multi-product runs) â”€â”€ */}
+        {/*  Bulk progress bar (replaces the redirect for multi-product runs)  */}
         {activeBulk && (
           <BulkProgressBar
             bulkId={activeBulk.bulkId}
@@ -576,7 +575,7 @@ export default function ProductsDashboard() {
           />
         )}
 
-        {/* â”€â”€ Bulk success banner (single product or fallback)  */}
+        {/*  Bulk success banner (single product or fallback)  */}
         {bulkSuccessBanner && !activeBulk && (
           <Banner
             tone="success"
@@ -585,7 +584,7 @@ export default function ProductsDashboard() {
           />
         )}
 
-        {/* â”€â”€ Stat Cards  */}
+        {/* Stat Cards  */}
         <CreditUsageCard
           compact
           title="Credits remaining"
@@ -598,41 +597,41 @@ export default function ProductsDashboard() {
           <StatCard
             label="Total Products"
             value={totalProducts}
-            icon="ðŸ“¦"
+            icon="📦"
             accent="#eff6ff"
             iconColor="#3b82f6"
           />
           <StatCard
             label="Active"
             value={activeProducts}
-            icon="âœ…"
+            icon="✅"
             accent="#f0fdf4"
             iconColor="#22c55e"
           />
           <StatCard
             label="Draft"
             value={draftProducts}
-            icon="ðŸ“"
+            icon="📝"
             accent="#fefce8"
             iconColor="#eab308"
           />
           <StatCard
             label="Inventory"
             value={totalInventory.toLocaleString()}
-            icon="ðŸª"
+            icon="📊"
             accent="#fdf4ff"
             iconColor="#a855f7"
           />
           <StatCard
             label="AI Generated"
             value={generatedDescriptions}
-            icon="âœ¨"
+            icon="✨"
             accent="#fff7ed"
             iconColor="#f97316"
           />
         </div>
 
-        {/* â”€â”€ Products Table  */}
+        {/*  Products Table  */}
         <div style={{ marginBottom: "10px" }}>
           <Card padding="0">
             {loadError && (
