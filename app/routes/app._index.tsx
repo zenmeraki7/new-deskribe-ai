@@ -27,7 +27,13 @@ import {
   EmptyState,
   List,
 } from "@shopify/polaris";
-import { ImageIcon, MagicIcon } from "@shopify/polaris-icons";
+import {
+  ImageIcon,
+  MagicIcon,
+  ProductIcon,
+  ClockIcon,
+  CheckCircleIcon,
+} from "@shopify/polaris-icons";
 
 import { useLoaderData, useFetcher, useNavigate } from "@remix-run/react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
@@ -878,7 +884,11 @@ export default function IndexPage() {
     }
   }, [applyFetcher.data]);
 
-  const imageUrl = product?.featuredImage?.url ?? DUMMY_IMAGE;
+  // TODO: replace with real aggregate values from the loader once an
+  // endpoint exists for shop-wide product/description counts and sync time.
+  const totalProductsCount = 1248;
+  const missingDescriptionsCount = 327;
+  const lastSyncedLabel = "2m ago";
 
   const tabs = [
     { id: "description", content: "Description" },
@@ -941,6 +951,21 @@ export default function IndexPage() {
             </InlineStack>
           </Layout.Section>
 
+          {/* ── Credits remaining ─────────────────────────────────── */}
+          <Layout.Section>
+            <Card padding="0">
+              <Box padding="0">
+                <CreditUsageCard
+                  compact
+                  title="Credits remaining"
+                  creditsUsed={credits.creditsLimit - remainingCredits}
+                  creditsLimit={credits.creditsLimit}
+                  creditsRemaining={remainingCredits}
+                />
+              </Box>
+            </Card>
+          </Layout.Section>
+
           {actionError && (
             <Layout.Section>
               <Banner tone="critical" title="Something went wrong">
@@ -957,499 +982,184 @@ export default function IndexPage() {
             </Layout.Section>
           )}
 
-          {/* ── Credits + Product + Settings ─────────────────────────────────── */}
+          {/* ── Generate Product Description hero ────────────────────────── */}
           <Layout.Section>
             <Card padding="0">
-              <Box padding="0">
-                <CreditUsageCard
-                  compact
-                  title="Credits remaining"
-                  creditsUsed={credits.creditsLimit - remainingCredits}
-                  creditsLimit={credits.creditsLimit}
-                  creditsRemaining={remainingCredits}
-                />
-              </Box>
-
-              <Divider />
-
-              <InlineGrid columns={{ xs: 1, md: ["oneThird", "twoThirds"] }}>
-                {/* ── Selected Product ─────────────────────────────────── */}
-                <Box
-                  padding="400"
-                  borderInlineEndWidth={{ md: "025" }}
-                  borderColor="border"
-                  borderBlockEndWidth={{ xs: "025", md: "0" }}
-                >
+              <Box padding="500">
+                <InlineGrid columns={{ xs: 1, md: "3fr 2fr" }} gap="500">
                   <BlockStack gap="300">
-                    <Text as="h2" variant="headingSm">
-                      Selected Product
+                    <Text as="h1" variant="headingLg">
+                      Generate product descriptions
                     </Text>
 
-                    <Box
-                      borderRadius="300"
-                      borderWidth="025"
-                      borderColor="border-brand"
-                      overflowX="hidden"
-                      overflowY="hidden"
-                    >
-                      <img
-                        src={imageUrl}
-                        alt={product.title}
-                        style={{
-                          width: "100%",
-                          aspectRatio: "1 / 1",
-                          objectFit: "cover",
-                          display: "block",
-                        }}
-                      />
-                    </Box>
-
-                    {product.images.length > 1 && (
-                      <InlineStack gap="150" wrap>
-                        {product.images.slice(0, 6).map((img, i) => (
-                          <Thumbnail
-                            key={img.url + i}
-                            source={img.url || ImageIcon}
-                            alt={img.altText ?? product.title}
-                            size="small"
-                          />
-                        ))}
-                      </InlineStack>
-                    )}
-
-                    <BlockStack gap="100">
-                      <Tooltip content={product.title}>
-                        <Text variant="headingMd" as="h3" truncate>
-                          {product.title}
-                        </Text>
-                      </Tooltip>
-                      {product.vendor && (
-                        <Text as="p" variant="bodySm" tone="subdued">
-                          Vendor: {product.vendor}
-                        </Text>
-                      )}
-                      {product.productType && (
-                        <Badge>{product.productType}</Badge>
-                      )}
-                      {!product.featuredImage && (
-                        <Badge tone="warning">Using placeholder image</Badge>
-                      )}
-                    </BlockStack>
-
-                    <Button fullWidth onClick={() => navigate("/app/products")}>
-                      Change Product
-                    </Button>
-                  </BlockStack>
-                </Box>
-
-                {/* ── Generation Settings ──────────────────────────────── */}
-                <Box padding="400">
-                  <BlockStack gap="400" align="space-between">
-                    <BlockStack gap="400">
-                      <Text as="h3" variant="headingSm">
-                        Generation Settings
+                    <InlineStack gap="100" blockAlign="baseline">
+                      <Text as="span" variant="headingXl" tone="success">
+                        {missingDescriptionsCount}
                       </Text>
+                      <Text as="span" variant="bodyMd" tone="subdued">
+                        products are missing descriptions.
+                      </Text>
+                    </InlineStack>
 
-                      <InlineStack gap="300" wrap={false}>
-                        <div style={{ flex: 1 }}>
-                          <Select
-                            label="Writing style (tone)"
-                            options={VIBE_OPTIONS}
-                            value={vibe}
-                            onChange={setVibe}
-                            disabled={isGenerating}
-                          />
-                        </div>
-                        <div style={{ flex: 1 }}>
-                          <Select
-                            label="Format"
-                            options={FORMAT_OPTIONS}
-                            value={format}
-                            onChange={setFormat}
-                            disabled={isGenerating}
-                          />
-                        </div>
-                      </InlineStack>
+                    <InlineStack gap="150" blockAlign="center">
+                      <Text as="span" variant="bodySm" tone="subdued">
+                        {totalProductsCount.toLocaleString()} products
+                      </Text>                    
+                    </InlineStack>
 
-                      <BlockStack gap="200">
-                        <TextField
-                          label="Keywords (comma-separated)"
-                          value={keywords}
-                          onChange={setKeywords}
-                          placeholder="e.g. eco-friendly, handmade, organic cotton"
-                          autoComplete="off"
-                          disabled={isGenerating}
-                          connectedRight={
-                            <Button
-                              onClick={handleSuggestKeywords}
-                              loading={isSuggestingKeywords}
-                              disabled={
-                                isGenerating ||
-                                isSuggestingKeywords ||
-                                !hasCredits(
-                                  remainingCredits,
-                                  CREDIT_COSTS.keywordSuggestion,
-                                )
-                              }
-                            >
-                              Suggest
-                            </Button>
-                          }
-                        />
-
-                        {keywordTags.length > 0 && (
-                          <InlineStack gap="100" wrap>
-                            {keywordTags.map((kw) => (
-                              <Tag
-                                key={kw}
-                                onRemove={() => handleKeywordTagRemove(kw)}
-                              >
-                                {kw}
-                              </Tag>
-                            ))}
-                          </InlineStack>
-                        )}
-
-                        {suggestedKeywords.length > 0 && (
-                          <BlockStack gap="100">
-                            <Text as="p" variant="bodySm" tone="subdued">
-                              Suggested — click to add:
-                            </Text>
-                            <InlineStack gap="100" wrap>
-                              {suggestedKeywords.map((kw) => (
-                                <Button
-                                  key={kw}
-                                  size="micro"
-                                  onClick={() => handleAddSuggestedKeyword(kw)}
-                                >
-                                  + {kw}
-                                </Button>
-                              ))}
-                            </InlineStack>
-                          </BlockStack>
-                        )}
-                      </BlockStack>
-                    </BlockStack>
-
-                    <BlockStack gap="200">
-                      <Divider />
-                      <Box
-                        background="bg-surface-secondary"
-                        borderRadius="300"
-                        padding="300"
+                    <InlineStack gap="200">
+                      <Button
+                        variant="primary"
+                        tone="success"
+                        onClick={() => navigate("/app/products")}
                       >
-                        <BlockStack gap="200">
-                          <Text as="h4" variant="headingXs">
-                            How it works
-                          </Text>
-                          <List type="number">
-                            <List.Item>
-                              Pick a writing style and format for the
-                              description.
-                            </List.Item>
-                            <List.Item>
-                              Add your own keywords, or hit "Suggest" to let AI
-                              pull relevant ones from the product's title,
-                              vendor, and tags.
-                            </List.Item>
-                            <List.Item>
-                              Click "Generate Description" — this uses{" "}
-                              {formatCredits(CREDIT_COSTS.standardGeneration)}{" "}
-                              credit and usually finishes in a few seconds.
-                            </List.Item>
-                            <List.Item>
-                              Review the draft, SEO preview, and social caption
-                              in the tabs below, then apply it straight to the
-                              product.
-                            </List.Item>
-                          </List>
-                        </BlockStack>
+                        {isPolling
+                          ? pollStatus === "PROCESSING"
+                            ? "AI is writing…"
+                            : "Queued…"
+                          : "Generate descriptions"}
+                      </Button>
+                    </InlineStack>
+                  </BlockStack>
+
+                  <Box
+                    background="bg-surface-secondary"
+                    borderRadius="300"
+                    padding="0"
+                    minHeight="100%"
+                  >
+                    <InlineStack align="center" blockAlign="center">
+                      <Box padding="200">
+                        <svg
+                          viewBox="0 0 220 140"
+                          width="220"
+                          height="140"
+                          xmlns="http://www.w3.org/2000/svg"
+                        >
+                          <rect
+                            x="70"
+                            y="14"
+                            width="86"
+                            height="112"
+                            rx="14"
+                            fill="var(--p-color-bg-surface)"
+                            stroke="var(--p-color-border)"
+                            strokeWidth="1"
+                          />
+                          <rect
+                            x="86"
+                            y="34"
+                            width="40"
+                            height="8"
+                            rx="4"
+                            fill="var(--p-color-bg-fill-brand)"
+                          />
+                          <rect
+                            x="86"
+                            y="52"
+                            width="54"
+                            height="6"
+                            rx="3"
+                            fill="var(--p-color-border)"
+                          />
+                          <rect
+                            x="86"
+                            y="66"
+                            width="54"
+                            height="6"
+                            rx="3"
+                            fill="var(--p-color-border)"
+                          />
+                          <rect
+                            x="86"
+                            y="80"
+                            width="40"
+                            height="6"
+                            rx="3"
+                            fill="var(--p-color-border)"
+                          />
+                          <rect
+                            x="86"
+                            y="98"
+                            width="54"
+                            height="6"
+                            rx="3"
+                            fill="var(--p-color-border)"
+                          />
+                          <rect
+                            x="86"
+                            y="112"
+                            width="30"
+                            height="6"
+                            rx="3"
+                            fill="var(--p-color-border)"
+                          />
+
+                          <path
+                            d="M172 30 L177 40 L187 45 L177 50 L172 60 L167 50 L157 45 L167 40 Z"
+                            fill="var(--p-color-bg-fill-success)"
+                          />
+                          <path
+                            d="M50 78 L53 84 L59 87 L53 90 L50 96 L47 90 L41 87 L47 84 Z"
+                            fill="var(--p-color-bg-fill-success)"
+                          />
+                          <path
+                            d="M182 92 L184 96 L188 98 L184 100 L182 104 L180 100 L176 98 L180 96 Z"
+                            fill="var(--p-color-bg-fill-success)"
+                          />
+                        </svg>
                       </Box>
-                    </BlockStack>
-
-                    <BlockStack gap="300">
-                      <Divider />
-                      <InlineStack align="space-between" blockAlign="center">
-                        <BlockStack gap="050">
-                          <Text as="p" variant="bodySm" tone="subdued">
-                            Credit cost
-                          </Text>
-                          <Text as="p" variant="bodySm" fontWeight="semibold">
-                            {formatCredits(CREDIT_COSTS.standardGeneration)}{" "}
-                            credit
-                          </Text>
-                        </BlockStack>
-                        <Text as="p" variant="bodySm" tone="subdued">
-                          {formatCredits(remainingCredits)} remaining
-                        </Text>
-                        <Button
-                          variant="primary"
-                          tone="success"
-                          onClick={handleGenerate}
-                          loading={isGenerating}
-                          disabled={
-                            isGenerating ||
-                            isSuggestingKeywords ||
-                            !hasCredits(
-                              remainingCredits,
-                              CREDIT_COSTS.standardGeneration,
-                            )
-                          }
-                        >
-                          {isPolling
-                            ? pollStatus === "PROCESSING"
-                              ? "AI is writing…"
-                              : "Queued…"
-                            : "Generate Description"}
-                        </Button>
-                      </InlineStack>
-                    </BlockStack>
-                  </BlockStack>
-                </Box>
-              </InlineGrid>
-            </Card>
-          </Layout.Section>
-
-          {/* ── Output Card ──────────────────────────────────────────── */}
-          <Layout.Section>
-            <Card padding="0">
-              <Tabs
-                tabs={tabs}
-                selected={selectedTab}
-                onSelect={setSelectedTab}
-              />
-              <Box padding="400">
-                {isGenerating && !generationResult && (
-                  <BlockStack gap="300">
-                    <InlineStack gap="300" blockAlign="center">
-                      <Spinner size="small" />
-                      <Text as="p" tone="subdued">
-                        {generateFetcher.state !== "idle"
-                          ? "Queuing your request…"
-                          : pollStatus === "PROCESSING"
-                            ? "AI is writing your description…"
-                            : "Waiting for a worker to pick up the job…"}
-                      </Text>
                     </InlineStack>
-                    <SkeletonBodyText lines={4} />
-                  </BlockStack>
-                )}
-
-                {pollStatus === "CANCELLED" && (
-                  <Banner tone="warning" title="Generation cancelled">
-                    The job was cancelled before it completed.
-                  </Banner>
-                )}
-
-                {!isGenerating && !generationResult && selectedTab !== 2 && (
-                  <BlockStack gap="400" align="center" inlineAlign="center">
-                    <Box
-                      background="bg-fill-magic-secondary"
-                      borderRadius="full"
-                      padding="500"
-                    >
-                      <Icon source={MagicIcon} tone="magic" />
-                    </Box>
-                    <BlockStack gap="150" inlineAlign="center">
-                      <Text as="h3" variant="headingSm" alignment="center">
-                        Nothing generated yet
-                      </Text>
-                      <Text as="p" tone="subdued" alignment="center">
-                        Configure settings above, then generate a description
-                        for "{product.title}".
-                      </Text>
-                    </BlockStack>
-                    <Button
-                      variant="primary"
-                      tone="success"
-                      onClick={handleGenerate}
-                      disabled={
-                        !hasCredits(
-                          remainingCredits,
-                          CREDIT_COSTS.standardGeneration,
-                        )
-                      }
-                    >
-                      Generate Description
-                    </Button>
-                  </BlockStack>
-                )}
-
-                {/* ── Tab 0: Description ──────────────────────────────── */}
-                {generationResult && selectedTab === 0 && (
-                  <BlockStack gap="400">
-                    <div
-                      dangerouslySetInnerHTML={{
-                        __html: generationResult.body_html,
-                      }}
-                    />
-                    <Divider />
-                    <InlineStack gap="400">
-                      <BlockStack gap="050">
-                        <Text as="p" variant="headingMd">
-                          {wordCount}
-                        </Text>
-                        <Text as="p" variant="bodySm" tone="subdued">
-                          Words
-                        </Text>
-                      </BlockStack>
-                      <BlockStack gap="050">
-                        <Text as="p" variant="headingMd">
-                          {vibe}
-                        </Text>
-                        <Text as="p" variant="bodySm" tone="subdued">
-                          Style
-                        </Text>
-                      </BlockStack>
-                      <BlockStack gap="050">
-                        <Text as="p" variant="headingMd">
-                          {format}
-                        </Text>
-                        <Text as="p" variant="bodySm" tone="subdued">
-                          Format
-                        </Text>
-                      </BlockStack>
-                    </InlineStack>
-                  </BlockStack>
-                )}
-
-                {/* ── Tab 1: SEO & social ──────────────────────────────── */}
-                {generationResult && selectedTab === 1 && (
-                  <BlockStack gap="400">
-                    {(generationResult.meta_title ||
-                      generationResult.meta_description) && (
-                      <BlockStack gap="150">
-                        <Text as="p" variant="headingSm">
-                          SEO Preview
-                        </Text>
-                        {/* Google SERP mockup: colors here mimic Google's own
-                            result styling, not app branding — Polaris has no
-                            component for this, so plain inline styles are used
-                            only for this one snippet. */}
-                        <Box
-                          padding="400"
-                          borderWidth="025"
-                          borderColor="border"
-                          borderRadius="300"
-                          background="bg-surface"
-                        >
-                          <BlockStack gap="050">
-                            <Text as="p" variant="bodyLg" truncate>
-                              {generationResult.meta_title ?? product.title}
-                            </Text>
-                            <Text as="p" variant="bodySm" tone="success">
-                              {product.vendor || "Shopify"} › products
-                            </Text>
-                            <Text as="p" variant="bodySm" tone="subdued">
-                              {generationResult.meta_description ?? ""}
-                            </Text>
-                          </BlockStack>
-                        </Box>
-                      </BlockStack>
-                    )}
-
-                    {generationResult.keywords?.length > 0 && (
-                      <BlockStack gap="100">
-                        <Text as="p" variant="bodySm" tone="subdued">
-                          SEO keywords:
-                        </Text>
-                        <InlineStack gap="100" wrap>
-                          {generationResult.keywords
-                            .slice(0, 15)
-                            .map((kw: string) => (
-                              <Badge key={kw} tone="info">
-                                {kw}
-                              </Badge>
-                            ))}
-                        </InlineStack>
-                      </BlockStack>
-                    )}
-
-                    {generationResult.social_caption && (
-                      <>
-                        <Divider />
-                        <BlockStack gap="100">
-                          <Text as="p" variant="headingSm">
-                            Instagram Caption
-                          </Text>
-                          <Text as="p" tone="subdued">
-                            {generationResult.social_caption}
-                          </Text>
-                        </BlockStack>
-                      </>
-                    )}
-                  </BlockStack>
-                )}
-
-                {/* ── Tab 2: Image alt text (UI-only, no backend call) ─── */}
-                {selectedTab === 2 && (
-                  <BlockStack gap="300">
-                    <Banner tone="info">
-                      AI-generated alt text isn't wired up yet — that needs a
-                      backend change to `action`. You can still write alt text
-                      manually below.
-                    </Banner>
-                    {product.images.map((img, i) => (
-                      <InlineStack
-                        key={img.url + i}
-                        gap="300"
-                        blockAlign="start"
-                        wrap={false}
-                      >
-                        <Thumbnail
-                          source={img.url || ImageIcon}
-                          alt={img.altText ?? ""}
-                          size="large"
-                        />
-                        <div style={{ flex: 1 }}>
-                          <TextField
-                            label={`Image ${i + 1} alt text`}
-                            labelHidden
-                            value={altTextDrafts[img.url] ?? img.altText ?? ""}
-                            onChange={(val) =>
-                              setAltTextDrafts((prev) => ({
-                                ...prev,
-                                [img.url]: val,
-                              }))
-                            }
-                            placeholder="Describe this image for accessibility & SEO"
-                            autoComplete="off"
-                            multiline={2}
-                          />
-                        </div>
-                      </InlineStack>
-                    ))}
-                  </BlockStack>
-                )}
-
-                {generationResult && selectedTab !== 2 && (
-                  <>
-                    <Divider />
-                    <Box paddingBlockStart="400">
-                      <InlineStack align="end" gap="200">
-                        <Button
-                          variant="tertiary"
-                          tone="critical"
-                          onClick={handleClear}
-                        >
-                          Clear
-                        </Button>
-                        <Button
-                          variant="primary"
-                          tone="success"
-                          disabled={!canApply}
-                          loading={isApplying}
-                          onClick={handleApply}
-                        >
-                          Apply to Shopify
-                        </Button>
-                      </InlineStack>
-                    </Box>
-                  </>
-                )}
+                  </Box>
+                </InlineGrid>
               </Box>
             </Card>
           </Layout.Section>
+
+          {/* ── Settings ─────────────────────────────────── */}
+          <Layout.Section>
+            <Card padding="0">
+              <Box padding="400">
+                <BlockStack gap="400" align="space-between">
+                  <BlockStack gap="200">
+                    <Divider />
+                    <Box
+                      background="bg-surface-secondary"
+                      borderRadius="300"
+                      padding="300"
+                    >
+                      <BlockStack gap="200">
+                        <Text as="h4" variant="headingXs">
+                          How it works
+                        </Text>
+                        <List type="number">
+                          <List.Item>
+                            Pick a writing style and format for the
+                            description.
+                          </List.Item>
+                          <List.Item>
+                            Add your own keywords, or hit "Suggest" to let AI
+                            pull relevant ones from the product's title,
+                            vendor, and tags.
+                          </List.Item>
+                          <List.Item>
+                            Click "Generate Description" — this uses{" "}
+                            {formatCredits(CREDIT_COSTS.standardGeneration)}{" "}
+                            credit and usually finishes in a few seconds.
+                          </List.Item>
+                          <List.Item>
+                            Review the draft, SEO preview, and social caption
+                            in the tabs below, then apply it straight to the
+                            product.
+                          </List.Item>
+                        </List>
+                      </BlockStack>
+                    </Box>
+                  </BlockStack>
+                </BlockStack>
+              </Box>
+            </Card>
+          </Layout.Section>          
         </Layout>
       </Page>
 
