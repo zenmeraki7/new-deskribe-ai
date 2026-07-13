@@ -28,6 +28,13 @@ export interface ManagedSubscription {
   name: string;
   status: string;
   test: boolean;
+  lineItems: {
+    plan: {
+      pricingDetails: {
+        price?: { amount: string; currencyCode: string };
+      };
+    };
+  }[];
 }
 
 export interface CheckBillingResult {
@@ -47,15 +54,24 @@ export async function checkBilling(
     const response = await adminGraphql(`
       #graphql
       query CurrentSubscription {
-        currentAppInstallation {
-          activeSubscriptions {
-            id
-            name
-            status
-            test
+  currentAppInstallation {
+    activeSubscriptions {
+      id
+      name
+      status
+      test
+      lineItems {
+        plan {
+          pricingDetails {
+            ... on AppRecurringPricing {
+              price { amount currencyCode }
+            }
           }
         }
       }
+    }
+  }
+}
     `);
 
     if (!response.ok) {
@@ -77,7 +93,7 @@ export async function checkBilling(
 
     const appSubscriptions: ManagedSubscription[] =
       data?.data?.currentAppInstallation?.activeSubscriptions ?? [];
-
+      console.log("[checkBilling] raw activeSubscriptions:", JSON.stringify(appSubscriptions, null, 2));
     return { appSubscriptions };
   } catch (error) {
   if (error instanceof Response) {
