@@ -1,4 +1,4 @@
-// FILE: app/components/BulkGenerateModal.tsx
+// FILE: app/components/BulkComponents/BulkGenerateModal.tsx
 
 import React, { useCallback, useEffect, useState } from "react";
 import {

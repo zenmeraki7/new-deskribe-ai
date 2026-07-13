@@ -1,3 +1,4 @@
+//app/routes/auth.tsx
 import { redirect } from "@remix-run/node";
 import type { LoaderFunctionArgs } from "@remix-run/node";
 import { requireAdminSession } from "../lib/auth.server";

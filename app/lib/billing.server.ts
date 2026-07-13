@@ -77,15 +77,21 @@ export async function checkBilling(
 
     const appSubscriptions: ManagedSubscription[] =
       data?.data?.currentAppInstallation?.activeSubscriptions ?? [];
-
+    console.log(
+      "[Billing] Active subscriptions:",
+      JSON.stringify(appSubscriptions, null, 2),
+    );
     return { appSubscriptions };
   } catch (error) {
-  if (error instanceof Response) {
-    const body = await error.text().catch(() => "");
-    console.error("[checkBilling] failed", { status: error.status, body: body.slice(0, 300) });
-  } else {
-    console.error("[checkBilling] failed", { error: String(error) });
+    if (error instanceof Response) {
+      const body = await error.text().catch(() => "");
+      console.error("[checkBilling] failed", {
+        status: error.status,
+        body: body.slice(0, 300),
+      });
+    } else {
+      console.error("[checkBilling] failed", { error: String(error) });
+    }
+    return { appSubscriptions: [] };
   }
-  return { appSubscriptions: [] };
-}
 }
