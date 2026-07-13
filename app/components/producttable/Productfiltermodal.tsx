@@ -1,5 +1,5 @@
 import { useState } from "react";
-
+import { Checkbox } from "@shopify/polaris";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface ProductFilters {
@@ -40,33 +40,11 @@ function Checkbox({
   onChange: () => void;
 }) {
   return (
-    <div
-      onClick={onChange}
-      style={{
-        width: "16px",
-        height: "16px",
-        borderRadius: "4px",
-        flexShrink: 0,
-        border: checked ? "none" : "1.5px solid #8c9196",
-        background: checked ? "#005bd3" : "#fff",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        cursor: "pointer",
-      }}
-    >
-      {checked && (
-        <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
-          <path
-            d="M1 4l3 3 5-6"
-            stroke="#fff"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      )}
-    </div>
+    <Checkbox
+  label={opt}
+  checked={selected.includes(opt)}
+  onChange={() => onToggle(opt)}
+/>
   );
 }
 

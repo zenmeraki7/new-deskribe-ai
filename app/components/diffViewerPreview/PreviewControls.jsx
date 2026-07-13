@@ -1,6 +1,11 @@
-// FILE: app/components/diffViewerPreview/PreviewControls.jsx
 import React, { useCallback } from "react";
-import { Card, InlineStack, TextField, Button, Checkbox, BlockStack } from "@shopify/polaris";
+import {
+  Card,
+  InlineStack,
+  TextField,
+  Checkbox,
+  BlockStack,
+} from "@shopify/polaris";
 
 /**
  * PreviewControls (DEMO-ONLY)
@@ -9,21 +14,6 @@ import { Card, InlineStack, TextField, Button, Checkbox, BlockStack } from "@sho
  * - Demo UI only. Must never be reused in production flows for saving/applying content.
  * - Keyword input is for preview rendering only.
  */
-
-function ToggleButton({ label, value, onToggle }) {
-  return (
-    <Button
-      pressed={value}
-      onClick={onToggle}
-      size="small"
-      variant={value ? "primary" : "secondary"}
-      accessibilityLabel={`${label} ${value ? "enabled" : "disabled"}`}
-    >
-      {value ? "✓ " : ""}
-      {label}
-    </Button>
-  );
-}
 
 export function PreviewControls({
   kwInput,
@@ -52,29 +42,28 @@ export function PreviewControls({
           value={kwInput}
           onChange={handleKwChange}
           autoComplete="off"
+          maxLength={2000}
           placeholder="organic cotton, sustainable, ..."
           helpText="Preview-only. Production keywords must come from server-owned settings."
         />
 
         <InlineStack gap="300" wrap blockAlign="center">
-          <ToggleButton label="Show Draft" value={showDraft} onToggle={() => setShowDraft(!showDraft)} />
-          <ToggleButton label="Show Before" value={showBefore} onToggle={() => setShowBefore(!showBefore)} />
-          <ToggleButton
-            label="Simulate Loading"
-            value={showLoading}
-            onToggle={() => setShowLoading(!showLoading)}
-          />
-
-          {/* Optional semantic checkboxes for clarity (kept simple) */}
           <Checkbox
-            label="Draft Visible"
+            label="Show Draft"
             checked={showDraft}
             onChange={setShowDraft}
           />
+
           <Checkbox
-            label="Before Visible"
+            label="Show Before"
             checked={showBefore}
             onChange={setShowBefore}
+          />
+
+          <Checkbox
+            label="Simulate Loading"
+            checked={showLoading}
+            onChange={setShowLoading}
           />
         </InlineStack>
       </BlockStack>
