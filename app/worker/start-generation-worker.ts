@@ -7,7 +7,7 @@
 
 import "dotenv/config";
 import "../lib/queue.server";
-import { startGenerationWorker } from "./generation.worker"; // ← FIXED
+import { startGenerationWorker } from "../worker/generation.worker";
 
 const worker = startGenerationWorker();
 

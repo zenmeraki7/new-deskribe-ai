@@ -807,49 +807,73 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
 
   // â”€â”€ Intent: generate_meta 
   if (intent === "generate_meta") {
-    const plan = await getShopPlan(admin.graphql);
+  const plan = await getShopPlan(admin.graphql);
 
-    if (!canUseFeature(plan, "metaGeneration")) {
+  if (!canUseFeature(plan, "metaGeneration")) {
+    return json(
+      { ok: false, kind: "error", error: "Meta title & description generation requires a Basic plan or higher.", code: "PLAN_UPGRADE_REQUIRED", plan },
+      { status: 403 },
+    );
+  }
+
+  const jobId = String(form.get("jobId") ?? "");
+
+  let creditRequestId: string | null = null;
+  try {
+    creditRequestId = crypto.randomUUID();
+    const credit = await deductCredits({
+      shopId: shopDomain, plan, amount: CREDIT_COSTS.metaGeneration,
+      requestId: creditRequestId, kind: "generation",
+      metadata: { intent: "generate_meta", productId: productGid },
+    });
+
+    if (!credit.allowed) {
       return json(
-        { ok: false, kind: "error", error: "Meta title & description generation requires a Basic plan or higher.", code: "PLAN_UPGRADE_REQUIRED", plan },
-        { status: 403 },
+        { ok: false, kind: "error", code: "INSUFFICIENT_CREDITS", error: "Not enough credits", creditsRemaining: credit.creditsRemaining, plan },
+        { status: 402 },
       );
     }
 
-    let creditRequestId: string | null = null;
-    try {
-      creditRequestId = crypto.randomUUID();
-      const credit = await deductCredits({
-        shopId: shopDomain, plan, amount: CREDIT_COSTS.metaGeneration,
-        requestId: creditRequestId, kind: "generation",
-        metadata: { intent: "generate_meta", productId: productGid },
+    const product = await fetchProductMeta(admin.graphql, productGid);
+    if (!product) throw new Response("Product not found", { status: 404 });
+
+    const keywords = normalizeKeywordList(String(form.get("keywords") ?? ""));
+    const result = await generateMetaOnly({ title: product.title, vendor: product.vendor, productType: product.productType, tags: product.tags, keywords });
+
+    // ── Persist onto the job so History can show it ──────────────────────
+    if (jobId && isUuidV4(jobId)) {
+      const job = await db.generationJob.findFirst({
+        where: { id: jobId, shopDomain, productId: productGid },
+        select: { result: true },
       });
-
-      if (!credit.allowed) {
-        return json(
-          { ok: false, kind: "error", code: "INSUFFICIENT_CREDITS", error: "Not enough credits", creditsRemaining: credit.creditsRemaining, plan },
-          { status: 402 },
-        );
-      }
-
-      const product = await fetchProductMeta(admin.graphql, productGid);
-      if (!product) throw new Response("Product not found", { status: 404 });
-
-      const keywords = normalizeKeywordList(String(form.get("keywords") ?? ""));
-      const result = await generateMetaOnly({ title: product.title, vendor: product.vendor, productType: product.productType, tags: product.tags, keywords });
-      return json({ ok: true, kind: "generate_meta", ...result });
-    } catch (err) {
-      if (creditRequestId) {
-        await refundCredits({
-          shopId: shopDomain, plan, amount: CREDIT_COSTS.metaGeneration,
-          requestId: `${creditRequestId}:meta-failed`,
-          metadata: { intent: "generate_meta", productId: productGid },
+      if (job) {
+        const existing = (job.result && typeof job.result === "object") ? job.result as Record<string, unknown> : {};
+        await db.generationJob.update({
+          where: { id: jobId },
+          data: {
+            result: {
+              ...existing,
+              meta_title: result.meta_title ?? existing.meta_title,
+              meta_description: result.meta_description ?? existing.meta_description,
+            },
+          },
         });
       }
-      const message = err instanceof Error ? err.message : "Unknown error";
-      return json({ ok: false, kind: "error", error: message, code: "META_FAILED" }, { status: 500 });
     }
+
+    return json({ ok: true, kind: "generate_meta", ...result });
+  } catch (err) {
+    if (creditRequestId) {
+      await refundCredits({
+        shopId: shopDomain, plan, amount: CREDIT_COSTS.metaGeneration,
+        requestId: `${creditRequestId}:meta-failed`,
+        metadata: { intent: "generate_meta", productId: productGid },
+      });
+    }
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return json({ ok: false, kind: "error", error: message, code: "META_FAILED" }, { status: 500 });
   }
+}
 
   // â”€â”€ Intent: apply_meta 
   if (intent === "apply_meta") {

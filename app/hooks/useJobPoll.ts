@@ -1,14 +1,4 @@
 // FILE: app/hooks/useJobPoll.ts
-// Polls /app/api/job/$jobId until terminal state.
-// Production hardening:
-// - Abort-safe (stops when unmounted / jobId changes)
-// - Jittered exponential backoff on transient failures (network/5xx/429)
-// - Tab-visibility aware (slows down when hidden to reduce load)
-// - Dedupes repeated fetcher responses by status signature, not object identity
-// - Safe defaults (fail closed; explicit errorMessage)
-// - Works with Remix useFetcher.load (no client auth assumptions)
-// - Guards against stale responses when jobId changes mid-flight
-
 import { useFetcher } from "@remix-run/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -77,6 +67,17 @@ function isTerminal(status: JobPollStatus) {
 export function useJobPoll() {
   const fetcher = useFetcher<PollResponse>();
 
+  // ── Stable handle to the latest fetcher ────────────────────────────────
+  // useFetcher() returns a NEW object on every state transition
+  // (idle → loading → idle). Anything that closes over `fetcher` directly
+  // in a useCallback/useEffect dependency array gets rebuilt/refired on
+  // every single poll tick, which cascades into an abort/refetch loop.
+  // Keep a ref instead, and read `.load` off the ref inside timers.
+  const fetcherRef = useRef(fetcher);
+  useEffect(() => {
+    fetcherRef.current = fetcher;
+  });
+
   const [jobId, setJobId] = useState<string | null>(null);
   const [lastCompletedJobId, setLastCompletedJobId] = useState<string | null>(null);
   const [pollState, setPollState] = useState<JobPollState>({
@@ -126,6 +127,10 @@ export function useJobPoll() {
     [stop],
   );
 
+  // ── scheduleNext is now stable across fetch ticks ──────────────────────
+  // Only depends on `isHidden` (which legitimately should change behavior)
+  // and stable refs/callbacks. It reads the fetcher via fetcherRef so it
+  // never needs `fetcher` itself as a dependency.
   const scheduleNext = useCallback(
     (reason: "normal" | "failure") => {
       clearTimer();
@@ -141,6 +146,18 @@ export function useJobPoll() {
         const id = activeJobIdRef.current;
         if (!id) return;
 
+        // Don't stack a new load on top of one already in flight.
+        if (fetcherRef.current.state !== "idle") {
+          timeoutRef.current = setTimeout(() => {
+            if (!mountedRef.current) return;
+            const delayedId = activeJobIdRef.current;
+            if (!delayedId) return;
+            lastRequestAtRef.current = Date.now();
+            fetcherRef.current.load(`/app/api/job/${delayedId}`);
+          }, LIMITS.MIN_SUCCESS_INTERVAL_MS);
+          return;
+        }
+
         const now = Date.now();
         if (now - lastRequestAtRef.current < LIMITS.MIN_SUCCESS_INTERVAL_MS) {
           timeoutRef.current = setTimeout(() => {
@@ -148,16 +165,16 @@ export function useJobPoll() {
             const delayedId = activeJobIdRef.current;
             if (!delayedId) return;
             lastRequestAtRef.current = Date.now();
-            fetcher.load(`/app/api/job/${delayedId}`);
+            fetcherRef.current.load(`/app/api/job/${delayedId}`);
           }, LIMITS.MIN_SUCCESS_INTERVAL_MS);
           return;
         }
 
         lastRequestAtRef.current = now;
-        fetcher.load(`/app/api/job/${id}`);
+        fetcherRef.current.load(`/app/api/job/${id}`);
       }, delay);
     },
-    [clearTimer, fetcher, isHidden],
+    [clearTimer, isHidden],
   );
 
   useEffect(() => {
@@ -185,13 +202,16 @@ export function useJobPoll() {
     }));
 
     lastRequestAtRef.current = Date.now();
-    fetcher.load(`/app/api/job/${jobId}`);
-  }, [fetcher, jobId, stop]);
+    fetcherRef.current.load(`/app/api/job/${jobId}`);
+  }, [jobId, stop]);
 
   useEffect(() => {
     if (!activeJobIdRef.current) return;
     if (!pollState.isPolling) return;
     scheduleNext("normal");
+    // Only re-run this when polling actually starts/stops or visibility
+    // changes — scheduleNext is stable now so this won't thrash.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isHidden, pollState.isPolling, scheduleNext]);
 
   useEffect(() => {
@@ -224,22 +244,17 @@ export function useJobPoll() {
       return;
     }
 
-   const status = (data.status ?? "IDLE") as JobPollStatus;
+    const status = (data.status ?? "IDLE") as JobPollStatus;
 
-// Only deduplicate terminal states — never skip PENDING/PROCESSING
-// because skipping them also skips the scheduleNext() call below,
-// which stalls the poll loop entirely.
-if (isTerminal(status)) {
-  const terminalSig = `${currentJobId}:${status}`;
-  if (terminalSig === lastProcessedSignatureRef.current) return;
-  lastProcessedSignatureRef.current = terminalSig;
-} else {
-  // For non-terminal, always process — never deduplicate
-  lastProcessedSignatureRef.current = null;
-}
+    // Dedupe on a signature that reflects the actual payload, not render
+    // churn — this stops the effect from re-triggering scheduleNext when
+    // nothing about the poll result has actually changed.
+    const signature = `${currentJobId}:${status}:${JSON.stringify(data.result)}:${data.errorMessage ?? ""}`;
+    if (signature === lastProcessedSignatureRef.current) return;
+    lastProcessedSignatureRef.current = signature;
+
     failureCountRef.current = 0;
 
-    // const status = (data.status ?? "IDLE") as JobPollStatus;
     const result = data.result ?? null;
     const errorMessage = data.errorMessage ?? null;
     const terminal = isTerminal(status);

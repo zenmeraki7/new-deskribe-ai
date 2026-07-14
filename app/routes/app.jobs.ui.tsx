@@ -34,7 +34,7 @@ import {
   Link,
 } from "@remix-run/react";
 
-import type { JobRow, LoaderData } from "./app.jobs.types";
+import type { JobRow, LoaderData, BadgeTone } from "./app.jobs.types";
 import { clampProgress, statusBadge } from "./app.jobs.types";
 import { POLL_INTERVAL_MS, UUID_RE } from "./app.jobs.constants";
 
@@ -58,6 +58,59 @@ function isUuidV4(x: string | null) {
   return !!x && UUID_RE.test(x);
 }
 
+// ── Add near the top helpers in app.jobs.ui.tsx ──────────────────────────
+
+type GeneratedType = "description" | "meta" | "alttext";
+
+function getGeneratedTypes(job: JobRow): GeneratedType[] {
+  const types: GeneratedType[] = [];
+  const draftHtml =
+    (job as any).draftBodyHtml || job.generatedDescription || "";
+  const metaTitle = (job as any).metaTitle || "";
+  const metaDescription = (job as any).metaDescription || "";
+  const altTexts: { imageId: string; altText: string }[] =
+    (job as any).altTexts || [];
+
+  if (draftHtml.trim()) types.push("description");
+  if (metaTitle.trim() || metaDescription.trim()) types.push("meta");
+  if (altTexts.length > 0) types.push("alttext");
+
+  return types;
+}
+
+function GeneratedTypeBadges({ job }: { job: JobRow }) {
+  const types = getGeneratedTypes(job);
+
+  if (types.length === 0) {
+    return (
+      <Text as="span" variant="bodySm" tone="subdued">
+        —
+      </Text>
+    );
+  }
+
+  const LABELS: Record<GeneratedType, string> = {
+    description: "Description",
+    meta: "Meta",
+    alttext: "Alt Text",
+  };
+  const TONES: Record<GeneratedType, BadgeTone> = {
+    description: "info",
+    meta: "attention",
+    alttext: "success",
+  };
+
+  return (
+    <InlineStack gap="100" wrap>
+      {types.map((t) => (
+        <Badge key={t} tone={TONES[t]} size="small">
+          {LABELS[t]}
+        </Badge>
+      ))}
+    </InlineStack>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Job Detail Modal
 // ---------------------------------------------------------------------------
@@ -68,71 +121,163 @@ interface JobDetailModalProps {
   onClose: () => void;
   shopDomain: string;
 }
- 
 
+function JobDetailModal({
+  job,
+  open,
+  onClose,
+  shopDomain,
+}: JobDetailModalProps) {
+  const undoFetcher = useFetcher<{
+    ok: boolean;
+    error?: string;
+    restored?: boolean;
+  }>();
+  const undoMetaFetcher = useFetcher<{
+    ok: boolean;
+    error?: string;
+    restored?: boolean;
+    kind?: string;
+  }>();
+  const applyFetcher = useFetcher<{
+    ok: boolean;
+    error?: string;
+    applied?: boolean;
+    kind?: string;
+  }>();
+  const applyMetaFetcher = useFetcher<{
+    ok: boolean;
+    error?: string;
+    applied?: boolean;
+    kind?: string;
+  }>();
+  const applyAltTextBulkFetcher = useFetcher<{
+    ok: boolean;
+    error?: string;
+    applied?: boolean;
+    count?: number;
+    kind?: string;
+  }>();
 
-function JobDetailModal({ job, open, onClose, shopDomain }: JobDetailModalProps) {
-  const undoFetcher = useFetcher<{ ok: boolean; error?: string; restored?: boolean }>();
-  const undoMetaFetcher = useFetcher<{ ok: boolean; error?: string; restored?: boolean; kind?: string }>();
-  const applyFetcher = useFetcher<{ ok: boolean; error?: string; applied?: boolean; kind?: string }>();
- 
   const [activeTab, setActiveTab] = useState(0);
- 
-  // Reset tab when modal opens for a new job
+
   useEffect(() => {
     if (open) setActiveTab(0);
   }, [open, job?.id]);
- 
+
   if (!job) return null;
- 
+
   const isUndoing = undoFetcher.state !== "idle";
   const isUndoingMeta = undoMetaFetcher.state !== "idle";
   const isApplying = applyFetcher.state !== "idle";
- 
+  const isApplyingMeta = applyMetaFetcher.state !== "idle";
+  const isApplyingAltText = applyAltTextBulkFetcher.state !== "idle";
+
+  const numericId = job.productId.split("/").pop();
+
   const handleUndo = () => {
     const fd = new FormData();
     fd.set("intent", "undo");
     fd.set("jobId", job.id);
     undoFetcher.submit(fd, { method: "post" });
   };
- 
+
   const handleUndoMeta = () => {
     const fd = new FormData();
     fd.set("intent", "undo_meta");
     fd.set("jobId", job.id);
     undoMetaFetcher.submit(fd, { method: "post" });
   };
- 
+
   const handleApply = () => {
-    const numericId = job.productId.split("/").pop();
     const fd = new FormData();
     fd.set("intent", "apply");
     fd.set("jobId", job.id);
-    applyFetcher.submit(fd, { method: "post", action: `/app/products/${numericId}` });
+    applyFetcher.submit(fd, {
+      method: "post",
+      action: `/app/products/${numericId}`,
+    });
   };
- 
-  const { label, tone } = statusBadge(job.status);
-  const applySuccess = applyFetcher.data?.ok === true && applyFetcher.data?.applied === true;
-  const undoDone = undoFetcher.data?.ok === true && undoFetcher.data?.restored === true;
-  const undoMetaDone = undoMetaFetcher.data?.ok === true && undoMetaFetcher.data?.restored === true;
- 
-  const draftHtml = (job as any).draftBodyHtml || job.generatedDescription || "";
+
+  const draftHtml =
+    (job as any).draftBodyHtml || job.generatedDescription || "";
   const metaTitle = (job as any).metaTitle || "";
   const metaDescription = (job as any).metaDescription || "";
-  const altTexts: { imageId: string; altText: string }[] = (job as any).altTexts || [];
- 
+  const altTexts: { imageId: string; altText: string }[] =
+    (job as any).altTexts || [];
+
+  // ── New: apply meta title/description straight to Shopify ─────────────────
+  const handleApplyMeta = () => {
+    if (!metaTitle.trim() && !metaDescription.trim()) return;
+    const fd = new FormData();
+    fd.set("intent", "apply_meta");
+    fd.set("metaTitle", metaTitle);
+    fd.set("metaDescription", metaDescription);
+    applyMetaFetcher.submit(fd, {
+      method: "post",
+      action: `/app/products/${numericId}`,
+    });
+  };
+
+  // ── New: apply all generated alt text straight to Shopify ─────────────────
+  const handleApplyAllAltText = () => {
+    if (altTexts.length === 0) return;
+    const fd = new FormData();
+    fd.set("intent", "apply_alt_text_bulk");
+    fd.set(
+      "items",
+      JSON.stringify(
+        altTexts.map((a) => ({ imageId: a.imageId, altText: a.altText })),
+      ),
+    );
+    applyAltTextBulkFetcher.submit(fd, {
+      method: "post",
+      action: `/app/products/${numericId}`,
+    });
+  };
+
+  const { label, tone } = statusBadge(job.status);
+  const applySuccess =
+    applyFetcher.data?.ok === true && applyFetcher.data?.applied === true;
+  const undoDone =
+    undoFetcher.data?.ok === true && undoFetcher.data?.restored === true;
+  const undoMetaDone =
+    undoMetaFetcher.data?.ok === true &&
+    undoMetaFetcher.data?.restored === true;
+  const metaApplySuccess =
+    applyMetaFetcher.data?.ok === true &&
+    applyMetaFetcher.data?.applied === true;
+  const altTextApplySuccess =
+    applyAltTextBulkFetcher.data?.ok === true &&
+    applyAltTextBulkFetcher.data?.applied === true;
+
   const canApply = job.status === "COMPLETED" && !applySuccess && !isApplying;
   const canUndoDesc = job.status === "COMPLETED" && !undoDone;
-  const canUndoMeta = job.status === "COMPLETED" && !undoMetaDone && (!!metaTitle || !!metaDescription);
- 
+  const canUndoMeta =
+    job.status === "COMPLETED" &&
+    !undoMetaDone &&
+    (!!metaTitle || !!metaDescription);
+  const canApplyMeta =
+    job.status === "COMPLETED" &&
+    (!!metaTitle.trim() || !!metaDescription.trim()) &&
+    !isApplyingMeta;
+  const canApplyAltText =
+    job.status === "COMPLETED" && altTexts.length > 0 && !isApplyingAltText;
+
   const tabs = [
     { id: "description", content: "Description", panelID: "desc-panel" },
     { id: "meta", content: "Meta SEO", panelID: "meta-panel" },
     ...(altTexts.length > 0
-      ? [{ id: "alttext", content: `Image Alt Text (${altTexts.length})`, panelID: "alt-panel" }]
+      ? [
+          {
+            id: "alttext",
+            content: `Image Alt Text (${altTexts.length})`,
+            panelID: "alt-panel",
+          },
+        ]
       : []),
   ];
- 
+
   // Primary action depends on active tab
   const primaryAction =
     activeTab === 0 && canApply
@@ -142,8 +287,22 @@ function JobDetailModal({ job, open, onClose, shopDomain }: JobDetailModalProps)
           loading: isApplying,
           disabled: isApplying,
         }
-      : undefined;
- 
+      : activeTab === 1 && canApplyMeta
+        ? {
+            content: isApplyingMeta ? "Applying…" : "Apply to Shopify",
+            onAction: handleApplyMeta,
+            loading: isApplyingMeta,
+            disabled: isApplyingMeta,
+          }
+        : activeTab === 2 && canApplyAltText
+          ? {
+              content: isApplyingAltText ? "Applying…" : "Apply all to Shopify",
+              onAction: handleApplyAllAltText,
+              loading: isApplyingAltText,
+              disabled: isApplyingAltText,
+            }
+          : undefined;
+
   return (
     <Modal
       open={open}
@@ -153,7 +312,11 @@ function JobDetailModal({ job, open, onClose, shopDomain }: JobDetailModalProps)
           <Text as="span" variant="headingMd">
             {job.productTitle ?? job.productId}
           </Text>
-          {applySuccess && <Badge tone="success">Applied</Badge>}
+          {applySuccess && <Badge tone="success">Description Applied</Badge>}
+          {metaApplySuccess && <Badge tone="success">Meta Applied</Badge>}
+          {altTextApplySuccess && (
+            <Badge tone="success">Alt Text Applied</Badge>
+          )}
         </InlineStack>
       }
       primaryAction={primaryAction}
@@ -162,7 +325,6 @@ function JobDetailModal({ job, open, onClose, shopDomain }: JobDetailModalProps)
     >
       <Modal.Section>
         <BlockStack gap="400">
- 
           {/* ── Global banners ── */}
           {undoFetcher.data?.ok && undoFetcher.data.restored && (
             <Banner tone="success" title="Description restored">
@@ -171,17 +333,20 @@ function JobDetailModal({ job, open, onClose, shopDomain }: JobDetailModalProps)
           )}
           {undoFetcher.data && !undoFetcher.data.ok && (
             <Banner tone="critical" title="Undo failed">
-              {undoFetcher.data.error ?? "Could not restore the previous description."}
+              {undoFetcher.data.error ??
+                "Could not restore the previous description."}
             </Banner>
           )}
           {undoMetaFetcher.data?.ok && undoMetaFetcher.data.restored && (
             <Banner tone="success" title="Meta SEO restored">
-              The previous meta title and description have been restored on Shopify.
+              The previous meta title and description have been restored on
+              Shopify.
             </Banner>
           )}
           {undoMetaFetcher.data && !undoMetaFetcher.data.ok && (
             <Banner tone="critical" title="Meta undo failed">
-              {undoMetaFetcher.data.error ?? "Could not restore the previous meta."}
+              {undoMetaFetcher.data.error ??
+                "Could not restore the previous meta."}
             </Banner>
           )}
           {applySuccess && (
@@ -194,66 +359,136 @@ function JobDetailModal({ job, open, onClose, shopDomain }: JobDetailModalProps)
               {applyFetcher.data.error ?? "An unexpected error occurred."}
             </Banner>
           )}
- 
+          {metaApplySuccess && (
+            <Banner tone="success" title="Meta title & description applied">
+              These are now live on the product's SEO settings.
+            </Banner>
+          )}
+          {applyMetaFetcher.data && !applyMetaFetcher.data.ok && (
+            <Banner tone="critical" title="Meta apply failed">
+              {applyMetaFetcher.data.error ?? "An unexpected error occurred."}
+            </Banner>
+          )}
+          {altTextApplySuccess && (
+            <Banner tone="success" title="Alt text applied">
+              {`${applyAltTextBulkFetcher.data?.count ?? altTexts.length} image(s) updated on Shopify.`}
+            </Banner>
+          )}
+          {applyAltTextBulkFetcher.data && !applyAltTextBulkFetcher.data.ok && (
+            <Banner tone="critical" title="Alt text apply failed">
+              {applyAltTextBulkFetcher.data.error ??
+                "An unexpected error occurred."}
+            </Banner>
+          )}
+
           {/* ── Status row ── */}
           <InlineStack gap="300" blockAlign="center">
-            <Text as="span" variant="bodyMd" fontWeight="semibold">Status:</Text>
+            <Text as="span" variant="bodyMd" fontWeight="semibold">
+              Status:
+            </Text>
             <Badge tone={tone}>{label}</Badge>
           </InlineStack>
- 
+
           <Divider />
- 
+
           {/* ── Timestamps ── */}
           <BlockStack gap="100">
             <InlineStack gap="200">
-              <Text as="span" variant="bodySm" tone="subdued" fontWeight="semibold">Created:</Text>
-              <Text as="span" variant="bodySm" tone="subdued">{safeDateLabel(job.createdAt)}</Text>
+              <Text
+                as="span"
+                variant="bodySm"
+                tone="subdued"
+                fontWeight="semibold"
+              >
+                Created:
+              </Text>
+              <Text as="span" variant="bodySm" tone="subdued">
+                {safeDateLabel(job.createdAt)}
+              </Text>
             </InlineStack>
             <InlineStack gap="200">
-              <Text as="span" variant="bodySm" tone="subdued" fontWeight="semibold">Updated:</Text>
-              <Text as="span" variant="bodySm" tone="subdued">{safeDateLabel(job.updatedAt)}</Text>
+              <Text
+                as="span"
+                variant="bodySm"
+                tone="subdued"
+                fontWeight="semibold"
+              >
+                Updated:
+              </Text>
+              <Text as="span" variant="bodySm" tone="subdued">
+                {safeDateLabel(job.updatedAt)}
+              </Text>
             </InlineStack>
           </BlockStack>
- 
+
           {(job.format || job.tone || job.costTokens > 0) && (
             <>
               <Divider />
               <BlockStack gap="150">
-                <Text as="p" variant="bodyMd" fontWeight="semibold">Generation settings</Text>
+                <Text as="p" variant="bodyMd" fontWeight="semibold">
+                  Generation settings
+                </Text>
                 <InlineStack gap="200" wrap>
                   {job.format && <Tag>Format: {job.format}</Tag>}
                   {job.tone && <Tag>Tone: {job.tone}</Tag>}
-                  {job.costTokens > 0 && <Tag>{job.costTokens.toLocaleString()} tokens</Tag>}
+                  {job.costTokens > 0 && (
+                    <Tag>{job.costTokens.toLocaleString()} tokens</Tag>
+                  )}
                 </InlineStack>
               </BlockStack>
             </>
           )}
- 
+
           {job.status === "FAILED" && job.errorMessage && (
             <>
               <Divider />
               <BlockStack gap="100">
-                <Text as="p" variant="bodyMd" fontWeight="semibold" tone="critical">Error</Text>
-                <Box padding="300" background="bg-surface-critical-subdued" borderRadius="200">
-                  <Text as="p" variant="bodySm" tone="critical">{job.errorMessage}</Text>
+                <Text
+                  as="p"
+                  variant="bodyMd"
+                  fontWeight="semibold"
+                  tone="critical"
+                >
+                  Error
+                </Text>
+                <Box
+                  padding="300"
+                  background="bg-surface-critical-subdued"
+                  borderRadius="200"
+                >
+                  <Text as="p" variant="bodySm" tone="critical">
+                    {job.errorMessage}
+                  </Text>
                 </Box>
               </BlockStack>
             </>
           )}
- 
+
           <Divider />
- 
+
           {/* ── Tabs ── */}
           <Tabs tabs={tabs} selected={activeTab} onSelect={setActiveTab} />
- 
+
           {/* ══ TAB 0: Description ══ */}
           {activeTab === 0 && (
             <BlockStack gap="300">
               {draftHtml ? (
                 <>
-                  <Box padding="300" background="bg-surface-secondary" borderRadius="200" borderWidth="025" borderColor="border">
+                  <Box
+                    padding="300"
+                    background="bg-surface-secondary"
+                    borderRadius="200"
+                    borderWidth="025"
+                    borderColor="border"
+                  >
                     <div
-                      style={{ fontSize: 13, lineHeight: 1.6, color: "#202223", maxHeight: 320, overflowY: "auto" }}
+                      style={{
+                        fontSize: 13,
+                        lineHeight: 1.6,
+                        color: "#202223",
+                        maxHeight: 320,
+                        overflowY: "auto",
+                      }}
                       dangerouslySetInnerHTML={{ __html: draftHtml }}
                     />
                   </Box>
@@ -278,29 +513,37 @@ function JobDetailModal({ job, open, onClose, shopDomain }: JobDetailModalProps)
                 </>
               ) : job.status === "COMPLETED" ? (
                 <Banner tone="warning" title="Description not available">
-                  Open the full product editor to preview and apply the generated description.
+                  Open the full product editor to preview and apply the
+                  generated description.
                 </Banner>
               ) : (
-                <Text as="p" variant="bodySm" tone="subdued">No description generated yet.</Text>
+                <Text as="p" variant="bodySm" tone="subdued">
+                  No description generated yet.
+                </Text>
               )}
- 
+
               {job.status === "COMPLETED" && (
                 <InlineStack>
-                  <Button variant="plain" url={`/app/products/${job.productId.split("/").pop()}`}>
+                  <Button variant="plain" url={`/app/products/${numericId}`}>
                     Open full editor ↗
                   </Button>
                 </InlineStack>
               )}
             </BlockStack>
           )}
- 
+
           {/* ══ TAB 1: Meta SEO ══ */}
           {activeTab === 1 && (
             <BlockStack gap="300">
               {metaTitle || metaDescription ? (
                 <>
                   {/* Live Google-style preview */}
-                  <Text as="p" variant="bodyMd" fontWeight="semibold">SEO Preview</Text>
+                  <InlineStack align="space-between" blockAlign="center">
+                    <Text as="p" variant="bodyMd" fontWeight="semibold">
+                      SEO Preview
+                    </Text>
+                    {metaApplySuccess && <Badge tone="success">Applied</Badge>}
+                  </InlineStack>
                   <div
                     style={{
                       padding: 16,
@@ -311,55 +554,115 @@ function JobDetailModal({ job, open, onClose, shopDomain }: JobDetailModalProps)
                       maxWidth: 600,
                     }}
                   >
-                    <div style={{ fontSize: 18, color: "#1a0dab", marginBottom: 4, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>
+                    <div
+                      style={{
+                        fontSize: 18,
+                        color: "#1a0dab",
+                        marginBottom: 4,
+                        overflow: "hidden",
+                        whiteSpace: "nowrap",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
                       {metaTitle || job.productTitle}
                     </div>
-                    <div style={{ fontSize: 13, color: "#006621", marginBottom: 4 }}>
+                    <div
+                      style={{
+                        fontSize: 13,
+                        color: "#006621",
+                        marginBottom: 4,
+                      }}
+                    >
                       {shopDomain} › products
                     </div>
                     <div style={{ fontSize: 14, color: "#545454" }}>
                       {metaDescription || "No meta description."}
                     </div>
                   </div>
- 
+
                   <Divider />
- 
+
                   {/* Raw fields */}
                   <BlockStack gap="200">
                     <BlockStack gap="050">
-                      <Text as="p" variant="bodySm" fontWeight="semibold" tone="subdued">
-                        Meta title ({metaTitle.length} chars{metaTitle.length > 60 ? " — over 60, may truncate" : ""})
+                      <Text
+                        as="p"
+                        variant="bodySm"
+                        fontWeight="semibold"
+                        tone="subdued"
+                      >
+                        Meta title ({metaTitle.length} chars
+                        {metaTitle.length > 60
+                          ? " — over 60, may truncate"
+                          : ""}
+                        )
                       </Text>
-                      <Box padding="200" background="bg-surface-secondary" borderRadius="100">
-                        <Text as="p" variant="bodySm">{metaTitle || "—"}</Text>
+                      <Box
+                        padding="200"
+                        background="bg-surface-secondary"
+                        borderRadius="100"
+                      >
+                        <Text as="p" variant="bodySm">
+                          {metaTitle || "—"}
+                        </Text>
                       </Box>
                     </BlockStack>
                     <BlockStack gap="050">
-                      <Text as="p" variant="bodySm" fontWeight="semibold" tone="subdued">
-                        Meta description ({metaDescription.length} chars{metaDescription.length > 155 ? " — over 155, may truncate" : ""})
+                      <Text
+                        as="p"
+                        variant="bodySm"
+                        fontWeight="semibold"
+                        tone="subdued"
+                      >
+                        Meta description ({metaDescription.length} chars
+                        {metaDescription.length > 155
+                          ? " — over 155, may truncate"
+                          : ""}
+                        )
                       </Text>
-                      <Box padding="200" background="bg-surface-secondary" borderRadius="100">
-                        <Text as="p" variant="bodySm">{metaDescription || "—"}</Text>
+                      <Box
+                        padding="200"
+                        background="bg-surface-secondary"
+                        borderRadius="100"
+                      >
+                        <Text as="p" variant="bodySm">
+                          {metaDescription || "—"}
+                        </Text>
                       </Box>
                     </BlockStack>
                   </BlockStack>
- 
-                  {canUndoMeta && (
-                    <InlineStack align="end" gap="200">
-                      <Text as="p" variant="bodySm" tone="subdued">
-                        Undo will restore the previous meta title and description on Shopify.
-                      </Text>
+
+                  <InlineStack align="end" gap="200">
+                    {canUndoMeta && (
+                      <>
+                        <Text as="p" variant="bodySm" tone="subdued">
+                          Undo will restore the previous meta title and
+                          description on Shopify.
+                        </Text>
+                        <Button
+                          size="slim"
+                          tone="critical"
+                          onClick={handleUndoMeta}
+                          loading={isUndoingMeta}
+                          disabled={isUndoingMeta}
+                        >
+                          ↩ Undo Meta SEO
+                        </Button>
+                      </>
+                    )}
+                    {canApplyMeta && (
                       <Button
                         size="slim"
-                        tone="critical"
-                        onClick={handleUndoMeta}
-                        loading={isUndoingMeta}
-                        disabled={isUndoingMeta}
+                        variant="primary"
+                        tone="success"
+                        onClick={handleApplyMeta}
+                        loading={isApplyingMeta}
+                        disabled={isApplyingMeta}
                       >
-                        ↩ Undo Meta SEO
+                        Apply to Shopify
                       </Button>
-                    </InlineStack>
-                  )}
+                    )}
+                  </InlineStack>
                 </>
               ) : (
                 <Text as="p" variant="bodySm" tone="subdued">
@@ -368,22 +671,43 @@ function JobDetailModal({ job, open, onClose, shopDomain }: JobDetailModalProps)
               )}
             </BlockStack>
           )}
- 
+
           {/* ══ TAB 2: Image Alt Text ══ */}
           {activeTab === 2 && (
             <BlockStack gap="300">
+              <InlineStack align="space-between" blockAlign="center">
+                <Text as="p" variant="bodyMd" fontWeight="semibold">
+                  {altTexts.length} image{altTexts.length !== 1 ? "s" : ""} with
+                  generated alt text
+                </Text>
+                {altTextApplySuccess && <Badge tone="success">Applied</Badge>}
+              </InlineStack>
+
               {altTexts.length > 0 ? (
                 altTexts.map((item, idx) => (
                   <BlockStack key={item.imageId} gap="100">
-                    <Text as="p" variant="bodySm" fontWeight="semibold" tone="subdued">
+                    <Text
+                      as="p"
+                      variant="bodySm"
+                      fontWeight="semibold"
+                      tone="subdued"
+                    >
                       Image {idx + 1}
                     </Text>
-                    <Box padding="200" background="bg-surface-secondary" borderRadius="100">
-                      <Text as="p" variant="bodySm">{item.altText}</Text>
+                    <Box
+                      padding="200"
+                      background="bg-surface-secondary"
+                      borderRadius="100"
+                    >
+                      <Text as="p" variant="bodySm">
+                        {item.altText}
+                      </Text>
                     </Box>
                     <Text as="p" variant="bodySm" tone="subdued">
                       {item.altText.length}/125 characters
-                      {item.altText.length > 125 ? " (longer than recommended)" : ""}
+                      {item.altText.length > 125
+                        ? " (longer than recommended)"
+                        : ""}
                     </Text>
                     {idx < altTexts.length - 1 && <Divider />}
                   </BlockStack>
@@ -393,23 +717,37 @@ function JobDetailModal({ job, open, onClose, shopDomain }: JobDetailModalProps)
                   No image alt text was generated for this job.
                 </Text>
               )}
-              <Text as="p" variant="bodySm" tone="subdued">
-                To edit or regenerate alt text, open the full product editor.
-              </Text>
+
+              {altTexts.length > 0 && (
+                <InlineStack align="end" gap="200">
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    This writes all {altTexts.length} alt text value(s) directly
+                    to the product's images.
+                  </Text>
+                  <Button
+                    variant="primary"
+                    tone="success"
+                    onClick={handleApplyAllAltText}
+                    loading={isApplyingAltText}
+                    disabled={!canApplyAltText}
+                  >
+                    Apply all to Shopify
+                  </Button>
+                </InlineStack>
+              )}
+
               <InlineStack>
-                <Button variant="plain" url={`/app/products/${job.productId.split("/").pop()}`}>
-                  Open full editor ↗
+                <Button variant="plain" url={`/app/products/${numericId}`}>
+                  Open full editor (edit individually) ↗
                 </Button>
               </InlineStack>
             </BlockStack>
           )}
- 
         </BlockStack>
       </Modal.Section>
     </Modal>
   );
 }
-
 // ---------------------------------------------------------------------------
 // Individual job row
 // ---------------------------------------------------------------------------
@@ -532,6 +870,9 @@ function JobTableRow({ job, index, onViewDetails }: JobRowProps) {
           {updatedDate}
         </Text>
       </IndexTable.Cell>
+      <IndexTable.Cell>
+  <GeneratedTypeBadges job={job} />
+</IndexTable.Cell>
       <IndexTable.Cell>
         <InlineStack gap="200" wrap blockAlign="center">
           {job.status === "FAILED" && (
@@ -707,8 +1048,14 @@ function BulkRunRow({ run, index }: { run: BulkRun; index: number }) {
 // ---------------------------------------------------------------------------
 
 export default function JobsRoute() {
-  const { jobs, hasActiveJobs, hasNextPage, nextCursor, totalPending, shopDomain  } =
-    useLoaderData<LoaderData>();
+  const {
+    jobs,
+    hasActiveJobs,
+    hasNextPage,
+    nextCursor,
+    totalPending,
+    shopDomain,
+  } = useLoaderData<LoaderData>();
 
   const revalidator = useRevalidator();
   const cancelAllFetcher = useFetcher<{
@@ -866,11 +1213,12 @@ export default function JobsRoute() {
           resourceName={{ singular: "job", plural: "jobs" }}
           itemCount={jobList.length}
           headings={[
-            { title: "Product", width: "30%" },
+            { title: "Product", width: "24%" },
+            { title: "Generated", width: "16%" }, // ← new column
             { title: "Status", width: "12%" },
-            { title: "Details", width: "20%" },
-            { title: "Updated", width: "20%" },
-            { title: "Actions", width: "18%" },
+            { title: "Details", width: "18%" },
+            { title: "Updated", width: "16%" },
+            { title: "Actions", width: "14%" },
           ]}
           selectable={false}
         >

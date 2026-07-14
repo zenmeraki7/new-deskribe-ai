@@ -1394,6 +1394,7 @@ export default function ProductEditorModalRoute() {
                         setLocalCreditError("");
                         const fd = new FormData();
                         fd.set("intent", "generate_meta");
+                          if (latestDraft?.id) fd.set("jobId", latestDraft.id);
                         fd.set("keywords", keywords);
                         metaFetcher.submit(fd, { method: "post" });
                       }}

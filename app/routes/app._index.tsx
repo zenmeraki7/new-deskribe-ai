@@ -1056,7 +1056,7 @@ export default function IndexPage() {
   // ── Error state — unchanged logic ───────────────────────────────────────────
   if (error) {
     return (
-      <Page title="DescribeAI" subtitle="AI Product Description Generator">
+      <Page title="DeskribeAI" subtitle="AI Product Description Generator">
         <Layout>
           <Layout.Section>
             <Banner tone="critical" title="Error loading product">
@@ -1070,7 +1070,7 @@ export default function IndexPage() {
 
   if (!product) {
     return (
-      <Page title="DescribeAI" subtitle="AI Product Description Generator">
+      <Page title="DeskribeAI" subtitle="AI Product Description Generator">
         <Layout>
           <Layout.Section>
             <Card>
@@ -1094,7 +1094,7 @@ export default function IndexPage() {
             <InlineStack gap="300" blockAlign="center">
               <BlockStack gap="0">
                 <Text as="h1" variant="headingLg">
-                  DescribeAI
+                  DeskribeAI
                 </Text>
                 <Text as="p" variant="bodySm" tone="subdued">
                   AI Product Description Generator
