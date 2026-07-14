@@ -182,7 +182,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   };
 };
 
-// â”€â”€â”€ Helpers 
+// â”€â”€â”€ Helpers
 
 function getStockCategory(qty: number): string {
   if (qty === 0) return "Out of stock";
@@ -190,7 +190,7 @@ function getStockCategory(qty: number): string {
   return "In stock";
 }
 
-// â”€â”€â”€ StatCard 
+// â”€â”€â”€ StatCard
 
 interface StatCardProps {
   label: string;
@@ -277,7 +277,7 @@ function StatCard({ label, value, icon, accent, iconColor }: StatCardProps) {
   );
 }
 
-// â”€â”€â”€ Page 
+// â”€â”€â”€ Page
 
 export default function ProductsDashboard() {
   const {
@@ -315,7 +315,7 @@ export default function ProductsDashboard() {
 
   const resourceName = { singular: "product", plural: "products" };
 
-  // â”€â”€ Filtering 
+  // â”€â”€ Filtering
   const filteredProducts = products.filter((p: any) => {
     if (
       appliedFilters.statuses.length > 0 &&
@@ -346,7 +346,7 @@ export default function ProductsDashboard() {
     return true;
   });
 
-  // â”€â”€ IndexTable selection (Polaris hook) 
+  // â”€â”€ IndexTable selection (Polaris hook)
   // useIndexResourceState tracks selected row IDs (the Shopify GID strings).
   const {
     selectedResources,
@@ -369,7 +369,7 @@ export default function ProductsDashboard() {
     appliedFilters.stock.length +
     (appliedFilters.productTypes?.length || 0);
 
-  // â”€â”€ Active filter pills 
+  // â”€â”€ Active filter pills
   const STATUS_LABEL: Record<string, string> = {
     ACTIVE: "Active",
     DRAFT: "Draft",
@@ -394,7 +394,7 @@ export default function ProductsDashboard() {
     })),
   ];
 
-  // â”€â”€ Handlers 
+  // â”€â”€ Handlers
   const handleRemovePill = (pill: FilterPill) => {
     if (pill.value !== undefined) {
       const next = {
@@ -434,33 +434,35 @@ export default function ProductsDashboard() {
   );
 
   // â”€â”€ Promoted bulk actions (shown in IndexTable toolbar when rows selected) â”€â”€
-  // â”€â”€ Bulk selection cap warning 
+  // â”€â”€ Bulk selection cap warning
   const bulkCreditCost = selectedResources.length;
-  const hasEnoughBulkCredits = hasCredits(credits.creditsRemaining, bulkCreditCost);
+  const hasEnoughBulkCredits = hasCredits(
+    credits.creditsRemaining,
+    bulkCreditCost,
+  );
 
-  // â”€â”€ Promoted bulk actions 
-  const promotedBulkActions =
-    false
-      ? [
-          {
-            content: "Generate AI Descriptions",
-            onAction: () => setBulkModalOpen(true),
-            disabled: true,
+  // â”€â”€ Promoted bulk actions
+  const promotedBulkActions = false
+    ? [
+        {
+          content: "Generate AI Descriptions",
+          onAction: () => setBulkModalOpen(true),
+          disabled: true,
+        },
+      ]
+    : [
+        {
+          content: ` Generate AI Descriptions (${selectedResources.length})`,
+          onAction: () => {
+            if (!hasEnoughBulkCredits) return;
+            setBulkModalOpen(true);
           },
-        ]
-      : [
-          {
-            content: ` Generate AI Descriptions (${selectedResources.length})`,
-            onAction: () => {
-              if (!hasEnoughBulkCredits) return;
-              setBulkModalOpen(true);
-            },
-            disabled: !hasEnoughBulkCredits,
-          },
-        ];
+          disabled: !hasEnoughBulkCredits,
+        },
+      ];
 
-  // â”€â”€ Row markup 
-  // â”€â”€ Row markup â€” click row = navigate, NO modal open 
+  // â”€â”€ Row markup
+  // â”€â”€ Row markup â€” click row = navigate, NO modal open
   const rowMarkup = filteredProducts.map((product: any, index: number) => {
     const numericId = product.id.split("/").pop();
     return (
@@ -474,50 +476,50 @@ export default function ProductsDashboard() {
           // Navigation is handled by the explicit button below
         }}
       >
-  <IndexTable.Cell>
-  <InlineStack gap="200" blockAlign="center" wrap={false}>
-    <div
-      style={{
-        width: "40px",
-        height: "40px",
-        borderRadius: "6px",
-        overflow: "hidden",
-        flexShrink: 0,
-        background: "#f1f2f3",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
-    >
-      <img
-        src={
-          product.featuredImage?.url ??
-          "https://static.vecteezy.com/system/resources/previews/048/910/778/original/default-image-missing-placeholder-free-vector.jpg"
-        }
-        alt={product.featuredImage?.altText ?? product.title}
-        style={{
-          width: "100%",
-          height: "100%",
-          objectFit: product.featuredImage?.url ? "cover" : "contain",
-          padding: product.featuredImage?.url ? "0" : "6px",
-        }}
-      />
-    </div>
-    <div
-      style={{
-        maxWidth: "260px",
-        whiteSpace: "nowrap",
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-      }}
-      title={product.title}
-    >
-      <Text variant="bodyMd" fontWeight="semibold" as="span">
-        {product.title}
-      </Text>
-    </div>
-  </InlineStack>
-</IndexTable.Cell>
+        <IndexTable.Cell>
+          <InlineStack gap="200" blockAlign="center" wrap={false}>
+            <div
+              style={{
+                width: "40px",
+                height: "40px",
+                borderRadius: "6px",
+                overflow: "hidden",
+                flexShrink: 0,
+                background: "#f1f2f3",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <img
+                src={
+                  product.featuredImage?.url ??
+                  "https://static.vecteezy.com/system/resources/previews/048/910/778/original/default-image-missing-placeholder-free-vector.jpg"
+                }
+                alt={product.featuredImage?.altText ?? product.title}
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  objectFit: product.featuredImage?.url ? "cover" : "contain",
+                  padding: product.featuredImage?.url ? "0" : "6px",
+                }}
+              />
+            </div>
+            <div
+              style={{
+                maxWidth: "260px",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+              title={product.title}
+            >
+              <Text variant="bodyMd" fontWeight="semibold" as="span">
+                {product.title}
+              </Text>
+            </div>
+          </InlineStack>
+        </IndexTable.Cell>
         <IndexTable.Cell>
           <Badge
             tone={
@@ -638,9 +640,7 @@ export default function ProductsDashboard() {
               <>
                 <Box paddingInline="400" paddingBlock="300">
                   <Banner tone="critical" title="Products could not be loaded">
-                    <Text as="p">
-                      {loadError}
-                    </Text>
+                    <Text as="p">{loadError}</Text>
                   </Banner>
                 </Box>
                 <Divider />
@@ -716,13 +716,15 @@ export default function ProductsDashboard() {
                       target: "_self",
                     }}
                   >
-                    This action costs {formatCredits(bulkCreditCost)} credits. You have{" "}
-                    {formatCredits(credits.creditsRemaining)} remaining.
+                    This action costs {formatCredits(bulkCreditCost)} credits.
+                    You have {formatCredits(credits.creditsRemaining)}{" "}
+                    remaining.
                   </Banner>
                 ) : (
                   <Text as="p" variant="bodySm" tone="subdued">
-                    Credit cost before generation: {formatCredits(bulkCreditCost)}.{" "}
-                    Remaining credits before action: {formatCredits(credits.creditsRemaining)}.
+                    Credit cost before generation:{" "}
+                    {formatCredits(bulkCreditCost)}. Remaining credits before
+                    action: {formatCredits(credits.creditsRemaining)}.
                   </Text>
                 )}
               </Box>
@@ -772,12 +774,13 @@ export default function ProductsDashboard() {
       <ProductFilterModal
         open={filterModalOpen}
         onClose={() => setFilterModalOpen(false)}
-        filters={pendingFilters}
-        onFiltersChange={setPendingFilters}
-        onApply={() => setAppliedFilters({ ...pendingFilters })}
-        onClear={() => setPendingFilters(EMPTY_FILTERS)}
-        productTypeOptions={productTypes as string[]}
-        collectionOptions={collections as string[]}
+        filters={appliedFilters}
+        onApply={(filters) => {
+          setAppliedFilters(filters);
+          setPendingFilters(filters);
+        }}
+        productTypeOptions={productTypes}
+        collectionOptions={collections}
       />
 
       {/* â”€â”€ Bulk Generate modal */}

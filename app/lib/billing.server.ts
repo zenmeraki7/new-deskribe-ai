@@ -28,6 +28,13 @@ export interface ManagedSubscription {
   name: string;
   status: string;
   test: boolean;
+  lineItems: {
+    plan: {
+      pricingDetails: {
+        price?: { amount: string; currencyCode: string };
+      };
+    };
+  }[];
 }
 
 export interface CheckBillingResult {
@@ -47,15 +54,24 @@ export async function checkBilling(
     const response = await adminGraphql(`
       #graphql
       query CurrentSubscription {
-        currentAppInstallation {
-          activeSubscriptions {
-            id
-            name
-            status
-            test
+  currentAppInstallation {
+    activeSubscriptions {
+      id
+      name
+      status
+      test
+      lineItems {
+        plan {
+          pricingDetails {
+            ... on AppRecurringPricing {
+              price { amount currencyCode }
+            }
           }
         }
       }
+    }
+  }
+}
     `);
 
     if (!response.ok) {
@@ -77,21 +93,15 @@ export async function checkBilling(
 
     const appSubscriptions: ManagedSubscription[] =
       data?.data?.currentAppInstallation?.activeSubscriptions ?? [];
-    console.log(
-      "[Billing] Active subscriptions:",
-      JSON.stringify(appSubscriptions, null, 2),
-    );
+      console.log("[checkBilling] raw activeSubscriptions:", JSON.stringify(appSubscriptions, null, 2));
     return { appSubscriptions };
   } catch (error) {
-    if (error instanceof Response) {
-      const body = await error.text().catch(() => "");
-      console.error("[checkBilling] failed", {
-        status: error.status,
-        body: body.slice(0, 300),
-      });
-    } else {
-      console.error("[checkBilling] failed", { error: String(error) });
-    }
-    return { appSubscriptions: [] };
+  if (error instanceof Response) {
+    const body = await error.text().catch(() => "");
+    console.error("[checkBilling] failed", { status: error.status, body: body.slice(0, 300) });
+  } else {
+    console.error("[checkBilling] failed", { error: String(error) });
   }
+  return { appSubscriptions: [] };
+}
 }

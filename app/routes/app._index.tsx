@@ -291,7 +291,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
   const { appSubscriptions } = await checkBilling(admin.graphql);
   const plan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
-
+  console.log("[loader] appSubscriptions[0]?.name:", appSubscriptions?.[0]?.name, "→ resolved plan:", plan);
   const credits = await getCreditBalance(shopDomain, plan);
 
   try {

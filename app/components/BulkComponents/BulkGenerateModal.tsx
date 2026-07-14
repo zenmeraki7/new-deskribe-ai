@@ -1,6 +1,6 @@
 // FILE: app/components/BulkComponents/BulkGenerateModal.tsx
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect,  useRef, useState } from "react";
 import {
   Modal,
   BlockStack,
@@ -34,6 +34,13 @@ const FORMAT_OPTIONS = [
 
 function clamp(value: string, max: number) {
   return typeof value === "string" ? value.slice(0, max) : "";
+}
+
+function generateIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `idem-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 function parseKeywords(input: string): string[] {
@@ -72,13 +79,19 @@ interface BulkResult {
 
 interface BulkMetaResult {
   ok: boolean;
-  results?: { productId: string; meta_title: string; meta_description: string }[];
+  previewId?: string;
+  results?: {
+    productId: string;
+    meta_title: string;
+    meta_description: string;
+  }[];
   error?: string;
   code?: string;
 }
 
 interface BulkAltTextResult {
   ok: boolean;
+  previewId?: string;
   results?: { productId: string; imageId: string; altText: string }[];
   applied?: number;
   error?: string;
@@ -95,12 +108,22 @@ export function BulkGenerateModal({
   const fetcher = useFetcher<BulkResult>();
   const keywordFetcher = useFetcher<BulkKeywordResult>();
   const metaFetcher = useFetcher<BulkMetaResult>();
-  const applyMetaFetcher = useFetcher<{ ok: boolean; error?: string; applied?: number }>();
+  const applyMetaFetcher = useFetcher<{
+    ok: boolean;
+    error?: string;
+    applied?: number;
+  }>();
   const altTextFetcher = useFetcher<BulkAltTextResult>();
-  const applyAltTextFetcher = useFetcher<{ ok: boolean; error?: string; applied?: number }>();
+  const applyAltTextFetcher = useFetcher<{
+    ok: boolean;
+    error?: string;
+    applied?: number;
+  }>();
 
   // ── Tab state ─────────────────────────────────────────────────────────────
-  const [activeTab, setActiveTab] = useState<"description" | "meta" | "alttext">("description");
+  const [activeTab, setActiveTab] = useState<
+    "description" | "meta" | "alttext"
+  >("description");
 
   // ── Description state ─────────────────────────────────────────────────────
   const [vibe, setVibe] = useState("casual");
@@ -109,16 +132,25 @@ export function BulkGenerateModal({
 
   // ── Meta state ────────────────────────────────────────────────────────────
   const [metaResults, setMetaResults] = useState<
-  { productId: string; meta_title: string; meta_description: string }[]
->([]);
+    { productId: string; meta_title: string; meta_description: string }[]
+  >([]);
+  const [previewId, setPreviewId] = useState<string | null>(null);
   const [metaApplied, setMetaApplied] = useState(false);
 
   // ── Alt text state ────────────────────────────────────────────────────────
   const [altTextResults, setAltTextResults] = useState<
-  { productId: string; imageId: string; altText: string }[]
->([]);
+    { productId: string; imageId: string; altText: string }[]
+  >([]);
+  const [altPreviewId, setAltPreviewId] = useState<string | null>(null);
 
   const [altTextApplied, setAltTextApplied] = useState(false);
+   // ── Idempotency keys — persisted per operation, survive retries, rotate on success ──
+  const submitKeyRef = useRef<string | null>(null);
+  const suggestKeywordsKeyRef = useRef<string | null>(null);
+  const generateMetaKeyRef = useRef<string | null>(null);
+  const applyMetaKeyRef = useRef<string | null>(null);
+  const generateAltTextKeyRef = useRef<string | null>(null);
+  const applyAltTextKeyRef = useRef<string | null>(null);
 
   const isSubmitting = fetcher.state !== "idle";
   const isSuggestingKeywords = keywordFetcher.state !== "idle";
@@ -140,44 +172,64 @@ export function BulkGenerateModal({
   const altTextCreditCost = count * CREDIT_COSTS.altTextGeneration;
 
   const canGenerateWithCredits = hasCredits(creditsRemaining, creditCost);
-  const canGenerateMetaWithCredits = hasCredits(creditsRemaining, metaCreditCost);
-  const canGenerateAltTextWithCredits = hasCredits(creditsRemaining, altTextCreditCost);
-  const canSuggestWithCredits = hasCredits(creditsRemaining, CREDIT_COSTS.keywordSuggestion);
+  const canGenerateMetaWithCredits = hasCredits(
+    creditsRemaining,
+    metaCreditCost,
+  );
+  const canGenerateAltTextWithCredits = hasCredits(
+    creditsRemaining,
+    altTextCreditCost,
+  );
+  const canSuggestWithCredits = hasCredits(
+    creditsRemaining,
+    CREDIT_COSTS.keywordSuggestion,
+  );
 
   // ── Notify parent on description success ──────────────────────────────────
-  useEffect(() => {
-    if (result?.ok && Array.isArray(result.jobIds) && result.jobIds.length > 0) {
+useEffect(() => {
+    if (
+      result?.ok &&
+      Array.isArray(result.jobIds) &&
+      result.jobIds.length > 0
+    ) {
       onSuccess(result.jobIds, result.bulkId ?? null);
+      submitKeyRef.current = null;
     }
   }, [result, onSuccess]);
 
   // ── Handle meta generation result ─────────────────────────────────────────
-  useEffect(() => {
+useEffect(() => {
     if (metaFetcher.data?.ok && Array.isArray(metaFetcher.data.results)) {
       setMetaResults(metaFetcher.data.results);
+      setPreviewId(metaFetcher.data.previewId ?? null);
       setMetaApplied(false);
+      generateMetaKeyRef.current = null;
     }
   }, [metaFetcher.data]);
 
   // ── Handle meta apply result ──────────────────────────────────────────────
-  useEffect(() => {
+useEffect(() => {
     if (applyMetaFetcher.data?.ok) {
       setMetaApplied(true);
+      applyMetaKeyRef.current = null;
     }
   }, [applyMetaFetcher.data]);
 
   // ── Handle alt text generation result ────────────────────────────────────
   useEffect(() => {
-    if (altTextFetcher.data?.ok && Array.isArray(altTextFetcher.data.results)) {
-      setAltTextResults(altTextFetcher.data.results);
-      setAltTextApplied(false);
-    }
-  }, [altTextFetcher.data]);
+  if (altTextFetcher.data?.ok && Array.isArray(altTextFetcher.data.results)) {
+    setAltTextResults(altTextFetcher.data.results);
+    setAltPreviewId(altTextFetcher.data.previewId ?? null);
+    setAltTextApplied(false);
+    generateAltTextKeyRef.current = null;
+  }
+}, [altTextFetcher.data]);
 
   // ── Handle alt text apply result ──────────────────────────────────────────
   useEffect(() => {
     if (applyAltTextFetcher.data?.ok) {
       setAltTextApplied(true);
+      applyAltTextKeyRef.current = null;
     }
   }, [applyAltTextFetcher.data]);
 
@@ -192,6 +244,14 @@ export function BulkGenerateModal({
       setMetaApplied(false);
       setAltTextResults([]);
       setAltTextApplied(false);
+      setAltPreviewId(null);
+
+      submitKeyRef.current = null;
+      suggestKeywordsKeyRef.current = null;
+      generateMetaKeyRef.current = null;
+      applyMetaKeyRef.current = null;
+      generateAltTextKeyRef.current = null;
+      applyAltTextKeyRef.current = null;
     }
   }, [open]);
 
@@ -199,64 +259,106 @@ export function BulkGenerateModal({
   const handleSubmit = useCallback(() => {
     if (selectedProductIds.length === 0 || isSubmitting) return;
     if (!canGenerateWithCredits) return;
+    if (!submitKeyRef.current) submitKeyRef.current = generateIdempotencyKey();
     const fd = new FormData();
     fd.set("intent", "bulk_generate");
+    fd.set("idempotencyKey", submitKeyRef.current);
     fd.set("productIds", JSON.stringify(selectedProductIds));
     fd.set("vibe", clamp(vibe, 40));
     fd.set("format", clamp(format, 40));
     fd.set("keywords", clamp(keywords, 2000));
     fd.set("includeSocials", "false");
     fetcher.submit(fd, { method: "post", action: "/app/bulk-generate" });
-  }, [selectedProductIds, vibe, format, keywords, isSubmitting, canGenerateWithCredits, fetcher]);
+  }, [
+    selectedProductIds,
+    vibe,
+    format,
+    keywords,
+    isSubmitting,
+    canGenerateWithCredits,
+    fetcher,
+  ]);
 
   const handleSuggestKeywords = useCallback(() => {
     if (isSuggestingKeywords || selectedProductIds.length === 0) return;
+    if (!suggestKeywordsKeyRef.current) suggestKeywordsKeyRef.current = generateIdempotencyKey();
     const fd = new FormData();
     fd.set("intent", "suggest_keywords_bulk");
+    fd.set("idempotencyKey", suggestKeywordsKeyRef.current);
     fd.set("productIds", JSON.stringify(selectedProductIds));
     keywordFetcher.submit(fd, { method: "post", action: "/app/bulk-generate" });
   }, [isSuggestingKeywords, selectedProductIds, keywordFetcher]);
 
   const handleAddSuggestedKeyword = useCallback((kw: string) => {
     setKeywords((prev) => {
-      const existing = prev.split(",").map((k) => k.trim()).filter(Boolean);
-      if (existing.some((k) => k.toLowerCase() === kw.toLowerCase())) return prev;
+      const existing = prev
+        .split(",")
+        .map((k) => k.trim())
+        .filter(Boolean);
+      if (existing.some((k) => k.toLowerCase() === kw.toLowerCase()))
+        return prev;
       return [...existing, kw].join(", ");
     });
   }, []);
 
   const handleGenerateMeta = useCallback(() => {
     if (!canGenerateMetaWithCredits || isGeneratingMeta) return;
+    if (!generateMetaKeyRef.current) generateMetaKeyRef.current = generateIdempotencyKey();
     const fd = new FormData();
     fd.set("intent", "bulk_generate_meta");
+    fd.set("idempotencyKey", generateMetaKeyRef.current);
     fd.set("productIds", JSON.stringify(selectedProductIds));
     fd.set("keywords", clamp(keywords, 2000));
     metaFetcher.submit(fd, { method: "post", action: "/app/bulk-generate" });
-  }, [canGenerateMetaWithCredits, isGeneratingMeta, selectedProductIds, keywords, metaFetcher]);
+  }, [
+    canGenerateMetaWithCredits,
+    isGeneratingMeta,
+    selectedProductIds,
+    keywords,
+    metaFetcher,
+  ]);
 
   const handleApplyMeta = useCallback(() => {
     if (metaResults.length === 0 || isApplyingMeta) return;
+    if (!applyMetaKeyRef.current) applyMetaKeyRef.current = generateIdempotencyKey();
     const fd = new FormData();
     fd.set("intent", "bulk_apply_meta");
-    fd.set("items", JSON.stringify(metaResults));
-    applyMetaFetcher.submit(fd, { method: "post", action: "/app/bulk-generate" });
-  }, [metaResults, isApplyingMeta, applyMetaFetcher]);
+    fd.set("idempotencyKey", applyMetaKeyRef.current);
+    fd.set("previewId", previewId!);
+    applyMetaFetcher.submit(fd, {
+      method: "post",
+      action: "/app/bulk-generate",
+    });
+  }, [previewId, isApplyingMeta, applyMetaFetcher]);
 
-  const handleGenerateAltText = useCallback(() => {
+ const handleGenerateAltText = useCallback(() => {
     if (!canGenerateAltTextWithCredits || isGeneratingAltText) return;
+    if (!generateAltTextKeyRef.current) generateAltTextKeyRef.current = generateIdempotencyKey();
     const fd = new FormData();
     fd.set("intent", "bulk_generate_alt_text");
+    fd.set("idempotencyKey", generateAltTextKeyRef.current);
     fd.set("productIds", JSON.stringify(selectedProductIds));
     altTextFetcher.submit(fd, { method: "post", action: "/app/bulk-generate" });
-  }, [canGenerateAltTextWithCredits, isGeneratingAltText, selectedProductIds, altTextFetcher]);
+  }, [
+    canGenerateAltTextWithCredits,
+    isGeneratingAltText,
+    selectedProductIds,
+    altTextFetcher,
+  ]);
 
   const handleApplyAltText = useCallback(() => {
-    if (altTextResults.length === 0 || isApplyingAltText) return;
-    const fd = new FormData();
-    fd.set("intent", "bulk_apply_alt_text");
-    fd.set("items", JSON.stringify(altTextResults));
-    applyAltTextFetcher.submit(fd, { method: "post", action: "/app/bulk-generate" });
-  }, [altTextResults, isApplyingAltText, applyAltTextFetcher]);
+  if (!altPreviewId || isApplyingAltText) return;
+  if (!applyAltTextKeyRef.current) applyAltTextKeyRef.current = generateIdempotencyKey();
+
+  const fd = new FormData();
+  fd.set("intent", "bulk_apply_alt_text");
+  fd.set("idempotencyKey", applyAltTextKeyRef.current);
+  fd.set("previewId", altPreviewId);
+  applyAltTextFetcher.submit(fd, {
+    method: "post",
+    action: "/app/bulk-generate",
+  });
+}, [altPreviewId, isApplyingAltText, applyAltTextFetcher]);
 
   const kwList = parseKeywords(keywords);
 
@@ -272,40 +374,44 @@ export function BulkGenerateModal({
           disabled: isSubmitting || count === 0 || !canGenerateWithCredits,
         }
       : activeTab === "meta"
-      ? metaResults.length > 0
-        ? {
-            content: isApplyingMeta
-              ? "Applying…"
-              : `Apply to Shopify (${metaResults.length})`,
-            onAction: handleApplyMeta,
-            loading: isApplyingMeta,
-            disabled: isApplyingMeta || metaApplied,
-          }
-        : {
-            content: isGeneratingMeta
-              ? "Generating…"
-              : `✨ Generate meta (${formatCredits(metaCreditCost)} credits)`,
-            onAction: handleGenerateMeta,
-            loading: isGeneratingMeta,
-            disabled: isGeneratingMeta || count === 0 || !canGenerateMetaWithCredits,
-          }
-      : altTextResults.length > 0
-      ? {
-          content: isApplyingAltText
-            ? "Applying…"
-            : `Apply all to Shopify (${altTextResults.length})`,
-          onAction: handleApplyAltText,
-          loading: isApplyingAltText,
-          disabled: isApplyingAltText || altTextApplied,
-        }
-      : {
-          content: isGeneratingAltText
-            ? "Generating…"
-            : `✨ Generate alt text (${formatCredits(altTextCreditCost)} credits)`,
-          onAction: handleGenerateAltText,
-          loading: isGeneratingAltText,
-          disabled: isGeneratingAltText || count === 0 || !canGenerateAltTextWithCredits,
-        };
+        ? metaResults.length > 0
+          ? {
+              content: isApplyingMeta
+                ? "Applying…"
+                : `Apply to Shopify (${metaResults.length})`,
+              onAction: handleApplyMeta,
+              loading: isApplyingMeta,
+              disabled: isApplyingMeta || metaApplied,
+            }
+          : {
+              content: isGeneratingMeta
+                ? "Generating…"
+                : `✨ Generate meta (${formatCredits(metaCreditCost)} credits)`,
+              onAction: handleGenerateMeta,
+              loading: isGeneratingMeta,
+              disabled:
+                isGeneratingMeta || count === 0 || !canGenerateMetaWithCredits,
+            }
+        : altTextResults.length > 0
+          ? {
+              content: isApplyingAltText
+                ? "Applying…"
+                : `Apply all to Shopify (${altTextResults.length})`,
+              onAction: handleApplyAltText,
+              loading: isApplyingAltText,
+              disabled: isApplyingAltText || altTextApplied,
+            }
+          : {
+              content: isGeneratingAltText
+                ? "Generating…"
+                : `✨ Generate alt text (${formatCredits(altTextCreditCost)} credits)`,
+              onAction: handleGenerateAltText,
+              loading: isGeneratingAltText,
+              disabled:
+                isGeneratingAltText ||
+                count === 0 ||
+                !canGenerateAltTextWithCredits,
+            };
 
   return (
     <Modal
@@ -325,7 +431,6 @@ export function BulkGenerateModal({
     >
       <Modal.Section>
         <BlockStack gap="400">
-
           {/* ── Credits summary ── */}
           <Card>
             <BlockStack gap="200">
@@ -359,7 +464,9 @@ export function BulkGenerateModal({
                   background: "none",
                   border: "none",
                   borderBottom:
-                    activeTab === tab ? "2px solid #202223" : "2px solid transparent",
+                    activeTab === tab
+                      ? "2px solid #202223"
+                      : "2px solid transparent",
                   color: activeTab === tab ? "#202223" : "#6d7175",
                   fontWeight: activeTab === tab ? 600 : 400,
                   marginBottom: -1,
@@ -368,8 +475,8 @@ export function BulkGenerateModal({
                 {tab === "description"
                   ? "Description"
                   : tab === "meta"
-                  ? "Meta title & description"
-                  : "Image alt text"}
+                    ? "Meta title & description"
+                    : "Image alt text"}
               </button>
             ))}
           </div>
@@ -379,7 +486,6 @@ export function BulkGenerateModal({
           ══════════════════════════════════════════════ */}
           {activeTab === "description" && (
             <BlockStack gap="400">
-
               {/* Success banner */}
               {result?.ok && (
                 <Banner
@@ -389,11 +495,16 @@ export function BulkGenerateModal({
                   <BlockStack gap="100">
                     <Text as="p" variant="bodySm">
                       Jobs are now processing. Track progress on the{" "}
-                      <a href="/app/jobs" style={{ color: "#2c6ecb" }}>History</a> page.
+                      <a href="/app/jobs" style={{ color: "#2c6ecb" }}>
+                        History
+                      </a>{" "}
+                      page.
                     </Text>
                     {(result.skipped?.length ?? 0) > 0 && (
                       <Text as="p" variant="bodySm" tone="subdued">
-                        {result.skipped!.length} product{result.skipped!.length !== 1 ? "s" : ""} skipped (metadata unavailable).
+                        {result.skipped!.length} product
+                        {result.skipped!.length !== 1 ? "s" : ""} skipped
+                        (metadata unavailable).
                       </Text>
                     )}
                   </BlockStack>
@@ -401,27 +512,30 @@ export function BulkGenerateModal({
               )}
 
               {/* Error banner */}
-              {result && !result.ok && (() => {
-                const isRateLimit =
-                  result.code === "RATE_LIMIT_EXCEEDED" ||
-                  result.code === "GLOBAL_LIMIT_REACHED";
-                return (
-                  <Banner
-                    tone={isRateLimit ? "warning" : "critical"}
-                    title={
-                      result.code === "INSUFFICIENT_CREDITS"
-                        ? "Not enough credits"
-                        : isRateLimit
-                        ? "Generation unavailable"
-                        : "Failed to queue jobs"
-                    }
-                  >
-                    <Text as="p" variant="bodySm">
-                      {result.error ?? "An unexpected error occurred. Please try again."}
-                    </Text>
-                  </Banner>
-                );
-              })()}
+              {result &&
+                !result.ok &&
+                (() => {
+                  const isRateLimit =
+                    result.code === "RATE_LIMIT_EXCEEDED" ||
+                    result.code === "GLOBAL_LIMIT_REACHED";
+                  return (
+                    <Banner
+                      tone={isRateLimit ? "warning" : "critical"}
+                      title={
+                        result.code === "INSUFFICIENT_CREDITS"
+                          ? "Not enough credits"
+                          : isRateLimit
+                            ? "Generation unavailable"
+                            : "Failed to queue jobs"
+                      }
+                    >
+                      <Text as="p" variant="bodySm">
+                        {result.error ??
+                          "An unexpected error occurred. Please try again."}
+                      </Text>
+                    </Banner>
+                  );
+                })()}
 
               <Card>
                 <BlockStack gap="200">
@@ -443,7 +557,9 @@ export function BulkGenerateModal({
 
               <Card>
                 <BlockStack gap="300">
-                  <Text as="h3" variant="headingSm">Generation Settings</Text>
+                  <Text as="h3" variant="headingSm">
+                    Generation Settings
+                  </Text>
                   <Text as="p" variant="bodySm" tone="subdued">
                     These settings apply to all selected products.
                   </Text>
@@ -482,7 +598,11 @@ export function BulkGenerateModal({
                         <Button
                           onClick={handleSuggestKeywords}
                           loading={isSuggestingKeywords}
-                          disabled={isSubmitting || count === 0 || !canSuggestWithCredits}
+                          disabled={
+                            isSubmitting ||
+                            count === 0 ||
+                            !canSuggestWithCredits
+                          }
                           size="slim"
                         >
                           ✨ Suggest
@@ -577,7 +697,6 @@ export function BulkGenerateModal({
                   </InlineStack>
                 </Card>
               )}
-
             </BlockStack>
           )}
 
@@ -586,7 +705,6 @@ export function BulkGenerateModal({
           ══════════════════════════════════════════════ */}
           {activeTab === "meta" && (
             <BlockStack gap="400">
-
               {metaFetcher.data?.ok === false && (
                 <Banner tone="critical" title="Generation failed">
                   {String(metaFetcher.data.error ?? "")}
@@ -602,7 +720,8 @@ export function BulkGenerateModal({
               {metaApplied && (
                 <Banner tone="success" title="Applied to Shopify">
                   <Text as="p" variant="bodySm">
-                    Meta titles and descriptions are now live on all {metaResults.length} products.
+                    Meta titles and descriptions are now live on all{" "}
+                    {metaResults.length} products.
                   </Text>
                 </Banner>
               )}
@@ -611,7 +730,8 @@ export function BulkGenerateModal({
                 <BlockStack gap="200">
                   <InlineStack align="space-between">
                     <Text as="p" variant="bodySm" tone="subdued">
-                      Credit cost ({count} products × {formatCredits(CREDIT_COSTS.metaGeneration)})
+                      Credit cost ({count} products ×{" "}
+                      {formatCredits(CREDIT_COSTS.metaGeneration)})
                     </Text>
                     <Text as="p" variant="bodySm" fontWeight="semibold">
                       {formatCredits(metaCreditCost)} credits
@@ -619,7 +739,8 @@ export function BulkGenerateModal({
                   </InlineStack>
                   {!canGenerateMetaWithCredits && (
                     <Banner tone="critical" title="Not enough credits">
-                      This selection needs {formatCredits(metaCreditCost)} credits.
+                      This selection needs {formatCredits(metaCreditCost)}{" "}
+                      credits.
                     </Banner>
                   )}
                 </BlockStack>
@@ -628,14 +749,20 @@ export function BulkGenerateModal({
               {metaResults.length === 0 ? (
                 <Card>
                   <BlockStack gap="200">
-                    <Text as="h3" variant="headingSm">Generate meta for all products</Text>
+                    <Text as="h3" variant="headingSm">
+                      Generate meta for all products
+                    </Text>
                     <Text as="p" variant="bodySm" tone="subdued">
-                      AI will generate an SEO-optimised meta title and description for each of the {count} selected products independently.
+                      AI will generate an SEO-optimised meta title and
+                      description for each of the {count} selected products
+                      independently.
                     </Text>
                     {isGeneratingMeta && (
                       <InlineStack gap="300" blockAlign="center">
                         <Spinner size="small" />
-                        <Text as="p" tone="subdued">Generating meta for {count} products…</Text>
+                        <Text as="p" tone="subdued">
+                          Generating meta for {count} products…
+                        </Text>
                       </InlineStack>
                     )}
                   </BlockStack>
@@ -643,12 +770,18 @@ export function BulkGenerateModal({
               ) : (
                 <BlockStack gap="300">
                   <Text as="h3" variant="headingSm">
-                    Generated meta — {metaResults.length} product{metaResults.length !== 1 ? "s" : ""}
+                    Generated meta — {metaResults.length} product
+                    {metaResults.length !== 1 ? "s" : ""}
                   </Text>
                   {metaResults.map((r, idx) => (
                     <Card key={r.productId}>
                       <BlockStack gap="200">
-                        <Text as="p" variant="bodySm" fontWeight="semibold" tone="subdued">
+                        <Text
+                          as="p"
+                          variant="bodySm"
+                          fontWeight="semibold"
+                          tone="subdued"
+                        >
                           Product {idx + 1}
                         </Text>
                         <div
@@ -672,7 +805,13 @@ export function BulkGenerateModal({
                           >
                             {r.meta_title}
                           </div>
-                          <div style={{ fontSize: 12, color: "#006621", marginBottom: 3 }}>
+                          <div
+                            style={{
+                              fontSize: 12,
+                              color: "#006621",
+                              marginBottom: 3,
+                            }}
+                          >
                             yourstore.myshopify.com › products
                           </div>
                           <div
@@ -701,7 +840,6 @@ export function BulkGenerateModal({
                   ))}
                 </BlockStack>
               )}
-
             </BlockStack>
           )}
 
@@ -710,7 +848,6 @@ export function BulkGenerateModal({
           ══════════════════════════════════════════════ */}
           {activeTab === "alttext" && (
             <BlockStack gap="400">
-
               {altTextFetcher.data?.ok === false && (
                 <Banner tone="critical" title="Generation failed">
                   {String(altTextFetcher.data.error ?? "")}
@@ -726,7 +863,9 @@ export function BulkGenerateModal({
               {altTextApplied && (
                 <Banner tone="success" title="Applied to Shopify">
                   <Text as="p" variant="bodySm">
-                    Alt text has been applied to {altTextResults.length} image{altTextResults.length !== 1 ? "s" : ""} across all selected products.
+                    Alt text has been applied to {altTextResults.length} image
+                    {altTextResults.length !== 1 ? "s" : ""} across all selected
+                    products.
                   </Text>
                 </Banner>
               )}
@@ -742,11 +881,13 @@ export function BulkGenerateModal({
                     </Text>
                   </InlineStack>
                   <Text as="p" variant="bodySm" tone="subdued">
-                    Exact cost depends on the number of images per product. You will only be charged for images that are processed.
+                    Exact cost depends on the number of images per product. You
+                    will only be charged for images that are processed.
                   </Text>
                   {!canGenerateAltTextWithCredits && (
                     <Banner tone="critical" title="Not enough credits">
-                      You need at least {formatCredits(altTextCreditCost)} credits to proceed.
+                      You need at least {formatCredits(altTextCreditCost)}{" "}
+                      credits to proceed.
                     </Banner>
                   )}
                 </BlockStack>
@@ -755,14 +896,19 @@ export function BulkGenerateModal({
               {altTextResults.length === 0 ? (
                 <Card>
                   <BlockStack gap="200">
-                    <Text as="h3" variant="headingSm">Generate alt text for all product images</Text>
+                    <Text as="h3" variant="headingSm">
+                      Generate alt text for all product images
+                    </Text>
                     <Text as="p" variant="bodySm" tone="subdued">
-                      AI will generate accessible, SEO-friendly alt text for every image across all {count} selected products.
+                      AI will generate accessible, SEO-friendly alt text for
+                      every image across all {count} selected products.
                     </Text>
                     {isGeneratingAltText && (
                       <InlineStack gap="300" blockAlign="center">
                         <Spinner size="small" />
-                        <Text as="p" tone="subdued">Generating alt text for {count} products…</Text>
+                        <Text as="p" tone="subdued">
+                          Generating alt text for {count} products…
+                        </Text>
                       </InlineStack>
                     )}
                   </BlockStack>
@@ -770,7 +916,8 @@ export function BulkGenerateModal({
               ) : (
                 <BlockStack gap="300">
                   <Text as="h3" variant="headingSm">
-                    Generated alt text — {altTextResults.length} image{altTextResults.length !== 1 ? "s" : ""}
+                    Generated alt text — {altTextResults.length} image
+                    {altTextResults.length !== 1 ? "s" : ""}
                   </Text>
                   {altTextResults.slice(0, 10).map((r, idx) => (
                     <div
@@ -786,7 +933,9 @@ export function BulkGenerateModal({
                         <Text as="p" variant="bodySm" tone="subdued">
                           Image {idx + 1}
                         </Text>
-                        <Text as="p" variant="bodySm">{r.altText}</Text>
+                        <Text as="p" variant="bodySm">
+                          {r.altText}
+                        </Text>
                         <Text
                           as="p"
                           variant="bodySm"
@@ -799,15 +948,14 @@ export function BulkGenerateModal({
                   ))}
                   {altTextResults.length > 10 && (
                     <Text as="p" variant="bodySm" tone="subdued">
-                      …and {altTextResults.length - 10} more images. All will be applied when you click Apply.
+                      …and {altTextResults.length - 10} more images. All will be
+                      applied when you click Apply.
                     </Text>
                   )}
                 </BlockStack>
               )}
-
             </BlockStack>
           )}
-
         </BlockStack>
       </Modal.Section>
     </Modal>

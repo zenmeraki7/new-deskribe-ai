@@ -29,12 +29,13 @@ export interface RateLimitResult {
   reason?: "shop_limit" | "global_limit";
 }
 
-export function resolvePlan(subscriptionName: string | null | undefined): Plan {
-  if (!subscriptionName) return "free";
-  const lower = subscriptionName.toLowerCase();
-  if (lower.includes("pro")) return "pro";
-  if (lower.includes("advanced")) return "advanced";
-  if (lower.includes("basic")) return "basic";
+export function resolvePlan(
+  priceAmount: number | null | undefined,
+): Plan {
+  if (priceAmount == null) return "free";
+  if (priceAmount >= 24.99) return "pro";
+  if (priceAmount >= 14.99) return "advanced";
+  if (priceAmount >= 9.99) return "basic";
   return "free";
 }
 
