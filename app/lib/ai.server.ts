@@ -7,17 +7,6 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-export const DraftSchema = z.object({
-  body_html: z.string(),
-  meta_title: z.string(),
-  meta_description: z.string(),
-  keywords: z.array(z.string().max(50)).max(30),
-  social_caption: z.string().optional(),
-});
-
-export type DraftResult = z.infer<typeof DraftSchema>;
-
-// ── Helper: strip markdown fences the AI sometimes wraps around JSON ──────────
 function stripJsonFences(text: string): string {
   return text
     .replace(/^```json\s*/i, "")
@@ -25,6 +14,16 @@ function stripJsonFences(text: string): string {
     .replace(/\s*```$/i, "")
     .trim();
 }
+
+export const DraftSchema = z.object({
+  body_html: z.string(),
+  meta_title: z.string().optional(),
+  meta_description: z.string().optional(),
+  keywords: z.array(z.string().max(50)).max(30),
+  social_caption: z.string().optional(),
+});
+
+export type DraftResult = z.infer<typeof DraftSchema>;
 
 export async function generateProductDescription(params: {
   title: string;
@@ -35,21 +34,12 @@ export async function generateProductDescription(params: {
   format: string;
   keywords: string[];
   includeSocials: boolean;
+  includeMeta: boolean;          // ← new
   customInstruction?: string;
 }): Promise<DraftResult> {
-  const { customInstruction } = params;
-  const {
-    title,
-    vendor,
-    productType,
-    tags,
-    vibe,
-    format,
-    keywords,
-    includeSocials,
-  } = params;
+  const { customInstruction, includeMeta } = params;
+  const { title, vendor, productType, tags, vibe, format, keywords, includeSocials } = params;
 
-  // Build the format instruction based on user's choice
   const formatInstruction =
     format === "bullets"
       ? "Use bullet points for ALL sections. No paragraphs."
@@ -57,16 +47,36 @@ export async function generateProductDescription(params: {
         ? "Use short paragraphs for intro and closing. Use bullet points for features."
         : "Use paragraphs throughout. No bullet points.";
 
+  // Only ask for social caption if requested — and only mention social_caption
+  // in the schema/output at all when relevant, so the model doesn't spend
+  // tokens filling in an unused field or an explicit "" placeholder.
   const socialsInstruction = includeSocials
     ? `Also generate a short, engaging Instagram caption with 3–5 relevant hashtags in "social_caption".`
-    : `Set "social_caption" to an empty string.`;
+    : "";
 
-const styleInstruction: string =
-  vibe === "custom" && typeof customInstruction === "string"
-    ? `Follow these custom writing instructions exactly:\n"${customInstruction}"\nDo not default to any built-in style — follow the instructions above precisely.`
-    : `Writing Style: ${vibe}`;
+  const styleInstruction: string =
+    vibe === "custom" && typeof customInstruction === "string"
+      ? `Follow these custom writing instructions exactly:\n"${customInstruction}"\nDo not default to any built-in style — follow the instructions above precisely.`
+      : `Writing Style: ${vibe}`;
 
-const prompt = `
+  const metaInstruction = includeMeta
+    ? `
+SEO META FIELDS:
+- meta_title: under 60 characters, include primary keyword
+- meta_description: under 155 characters, compelling and keyword-rich`
+    : "";
+
+  // Build the output shape dynamically so the model isn't asked to emit
+  // (and isn't billed for generating) fields nobody wants.
+  const outputFields = [
+    `"body_html": "..."`,
+    includeMeta ? `"meta_title": "..."` : null,
+    includeMeta ? `"meta_description": "..."` : null,
+    `"keywords": []`,
+    includeSocials ? `"social_caption": "..."` : null,
+  ].filter(Boolean).join(",\n  ");
+
+  const prompt = `
 You are an expert Shopify ecommerce copywriter.
 
 Write a high-converting SEO-optimized product description.
@@ -92,19 +102,14 @@ HTML RULES:
 - Wrap section headings in <p><strong>Heading</strong></p>
 
 SEO RULES:
-- meta_title: under 60 characters, include primary keyword
-- meta_description: under 155 characters, compelling and keyword-rich
 - keywords: up to 15 relevant SEO keywords as a JSON array of strings
+${metaInstruction}
 
 ${socialsInstruction}
 
 Return ONLY valid JSON, no markdown, no explanation:
 {
-  "body_html": "...",
-  "meta_title": "...",
-  "meta_description": "...",
-  "keywords": [],
-  "social_caption": "..."
+  ${outputFields}
 }
 `;
 
@@ -113,15 +118,8 @@ Return ONLY valid JSON, no markdown, no explanation:
     temperature: 0.6,
     response_format: { type: "json_object" },
     messages: [
-      {
-        role: "system",
-        content:
-          "You are an SEO copywriter for Shopify stores. Always respond with valid JSON only.",
-      },
-      {
-        role: "user",
-        content: prompt,
-      },
+      { role: "system", content: "You are an SEO copywriter for Shopify stores. Always respond with valid JSON only." },
+      { role: "user", content: prompt },
     ],
   });
 
@@ -144,67 +142,6 @@ Return ONLY valid JSON, no markdown, no explanation:
 
   return parsed.data;
 }
-
-// ── Keyword suggestion ─────────────────────────────────────────────────────────
-export async function suggestKeywords(
-  title: string,
-  vendor: string,
-  productType: string,
-  tags: string[],
-): Promise<string[]> {
-  if (!title) return [];
-
-  const prompt = `
-Generate SEO keywords for a Shopify product listing.
-
-Product Title: ${title}
-Brand / Vendor: ${vendor}
-Category / Type: ${productType}
-Tags: ${tags.join(", ")}
-
-Rules:
-- Return ONLY a valid JSON array of strings
-- No markdown, no explanation, no code fences
-- Maximum 20 keywords
-- Mix short-tail and long-tail keywords
-- Include brand + category combinations
-
-Example output:
-["keyword one", "keyword two", "keyword three"]
-`;
-
-  const completion = await openai.chat.completions.create({
-    model: "gpt-4.1-mini",
-    temperature: 0.4,
-    // Note: NOT using response_format json_object here because we want a raw array
-    messages: [
-      {
-        role: "system",
-        content:
-          "You generate SEO keyword lists. Always respond with a plain JSON array of strings only.",
-      },
-      { role: "user", content: prompt },
-    ],
-  });
-
-  const raw = completion.choices?.[0]?.message?.content ?? "[]";
-  const text = stripJsonFences(raw);
-
-  console.log("AI keyword response (cleaned):", text);
-
-  try {
-    const parsed = JSON.parse(text);
-    if (!Array.isArray(parsed)) return [];
-    // Ensure all items are strings
-    return parsed
-      .filter((k): k is string => typeof k === "string")
-      .slice(0, 20);
-  } catch (err) {
-    console.error("Suggest keyword parse error:", err, "Raw:", raw);
-    throw new Error("AI returned invalid keyword format");
-  }
-}
-
 // ── Bulk keyword suggestion ────────────────────────────────────────────────────
 // Takes meta from multiple products, finds common themes, suggests shared keywords.
 export async function suggestKeywordsBulk(products: {

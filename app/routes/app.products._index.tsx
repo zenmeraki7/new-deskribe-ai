@@ -29,7 +29,6 @@ import {
   EMPTY_FILTERS,
 } from "../components/producttable/Productfiltermodal";
 import { BulkGenerateModal } from "../components/BulkComponents/BulkGenerateModal";
-import { BulkProgressBar } from "../components/BulkComponents/BulkProgressBar";
 import { resolvePlan, type Plan } from "../lib/rateLimiter.server";
 import { CreditUsageCard } from "../components/CreditUsageCard";
 import { formatCredits, hasCredits } from "../lib/credits";
@@ -44,7 +43,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const { appSubscriptions } = await checkBilling(admin.graphql);
     shopPlan = resolvePlan(appSubscriptions?.[0]?.name ?? null);
   } catch {
-    // fail open â€” treat as free
+    // fail open — treat as free
   }
 
   const credits = await getCreditBalance(shopDomain, shopPlan);
@@ -179,10 +178,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       resetDate: credits.resetDate.toISOString(),
     },
     loadError,
+    shopDomain,
   };
 };
 
-// â”€â”€â”€ Helpers
+// ─── Helpers
 
 function getStockCategory(qty: number): string {
   if (qty === 0) return "Out of stock";
@@ -190,7 +190,7 @@ function getStockCategory(qty: number): string {
   return "In stock";
 }
 
-// â”€â”€â”€ StatCard
+// ─── StatCard
 
 interface StatCardProps {
   label: string;
@@ -277,7 +277,7 @@ function StatCard({ label, value, icon, accent, iconColor }: StatCardProps) {
   );
 }
 
-// â”€â”€â”€ Page
+// ─── Page
 
 export default function ProductsDashboard() {
   const {
@@ -291,6 +291,7 @@ export default function ProductsDashboard() {
     generatedDescriptions,
     credits,
     loadError,
+    shopDomain,
   } = useLoaderData<typeof loader>();
 
   const navigate = useNavigate();
@@ -302,20 +303,15 @@ export default function ProductsDashboard() {
   const [appliedFilters, setAppliedFilters] =
     useState<ProductFilters>(EMPTY_FILTERS);
 
-  // â”€â”€ Bulk generate state
+  // ── Bulk generate state
+  // NOTE: activeBulk / BulkProgressBar / bulkSuccessBanner are gone.
+  // Progress + apply now live entirely inside BulkGenerateModal via
+  // BulkLiveResults, which stays open instead of closing on success.
   const [bulkModalOpen, setBulkModalOpen] = useState(false);
-  const [bulkSuccessBanner, setBulkSuccessBanner] = useState<{
-    count: number;
-  } | null>(null);
-  // Track the active bulk run for the progress bar
-  const [activeBulk, setActiveBulk] = useState<{
-    bulkId: string;
-    productCount: number;
-  } | null>(null);
 
   const resourceName = { singular: "product", plural: "products" };
 
-  // â”€â”€ Filtering
+  // ── Filtering
   const filteredProducts = products.filter((p: any) => {
     if (
       appliedFilters.statuses.length > 0 &&
@@ -346,7 +342,7 @@ export default function ProductsDashboard() {
     return true;
   });
 
-  // â”€â”€ IndexTable selection (Polaris hook)
+  // ── IndexTable selection (Polaris hook)
   // useIndexResourceState tracks selected row IDs (the Shopify GID strings).
   const {
     selectedResources,
@@ -369,7 +365,7 @@ export default function ProductsDashboard() {
     appliedFilters.stock.length +
     (appliedFilters.productTypes?.length || 0);
 
-  // â”€â”€ Active filter pills
+  // ── Active filter pills
   const STATUS_LABEL: Record<string, string> = {
     ACTIVE: "Active",
     DRAFT: "Draft",
@@ -394,7 +390,7 @@ export default function ProductsDashboard() {
     })),
   ];
 
-  // â”€â”€ Handlers
+  // ── Handlers
   const handleRemovePill = (pill: FilterPill) => {
     if (pill.value !== undefined) {
       const next = {
@@ -415,54 +411,37 @@ export default function ProductsDashboard() {
     navigate("/app/products");
   };
 
-  // Called by BulkGenerateModal after successful enqueue
+  // Called by BulkGenerateModal once jobs are queued.
+  // The modal now stays open and shows live progress itself (BulkLiveResults),
+  // so this just clears the table selection — no redirect, no banner state.
   const handleBulkSuccess = useCallback(
-    (jobIds: string[], bulkId: string | null) => {
-      setBulkModalOpen(false);
+    (_jobIds: string[], _bulkId: string | null) => {
       clearSelection();
-      setBulkSuccessBanner({ count: jobIds.length });
-
-      // If we have a bulkId, show the inline progress bar instead of redirecting
-      if (bulkId) {
-        setActiveBulk({ bulkId, productCount: jobIds.length });
-      } else {
-        // Single product â€” just redirect to jobs after a moment
-        setTimeout(() => navigate("/app/jobs"), 2000);
-      }
     },
-    [clearSelection, navigate],
+    [clearSelection],
   );
 
-  // â”€â”€ Promoted bulk actions (shown in IndexTable toolbar when rows selected) â”€â”€
-  // â”€â”€ Bulk selection cap warning
+  // ── Promoted bulk actions (shown in IndexTable toolbar when rows selected) ──
+  // ── Bulk selection cap warning
   const bulkCreditCost = selectedResources.length;
   const hasEnoughBulkCredits = hasCredits(
     credits.creditsRemaining,
     bulkCreditCost,
   );
 
-  // â”€â”€ Promoted bulk actions
-  const promotedBulkActions = false
-    ? [
-        {
-          content: "Generate AI Descriptions",
-          onAction: () => setBulkModalOpen(true),
-          disabled: true,
-        },
-      ]
-    : [
-        {
-          content: ` Generate AI Descriptions (${selectedResources.length})`,
-          onAction: () => {
-            if (!hasEnoughBulkCredits) return;
-            setBulkModalOpen(true);
-          },
-          disabled: !hasEnoughBulkCredits,
-        },
-      ];
+  // ── Promoted bulk actions
+  const promotedBulkActions = [
+    {
+      content: `Generate AI Descriptions (${selectedResources.length})`,
+      onAction: () => {
+        if (!hasEnoughBulkCredits) return;
+        setBulkModalOpen(true);
+      },
+      disabled: !hasEnoughBulkCredits,
+    },
+  ];
 
-  // â”€â”€ Row markup
-  // â”€â”€ Row markup â€” click row = navigate, NO modal open
+  // ── Row markup — click row = navigate, NO modal open
   const rowMarkup = filteredProducts.map((product: any, index: number) => {
     const numericId = product.id.split("/").pop();
     return (
@@ -539,7 +518,7 @@ export default function ProductsDashboard() {
           </Text>
         </IndexTable.Cell>
         <IndexTable.Cell>
-          {/* Explicit generate button â€” the ONLY way to open the single editor */}
+          {/* Explicit generate button — the ONLY way to open the single editor */}
           <Button
             size="slim"
             variant="primary"
@@ -554,7 +533,8 @@ export default function ProductsDashboard() {
       </IndexTable.Row>
     );
   });
-  //  Render
+
+  // Render
   return (
     <Page
       title="Products"
@@ -565,28 +545,7 @@ export default function ProductsDashboard() {
       }}
     >
       <BlockStack gap="600">
-        {/*  Bulk progress bar (replaces the redirect for multi-product runs)  */}
-        {activeBulk && (
-          <BulkProgressBar
-            bulkId={activeBulk.bulkId}
-            productCount={activeBulk.productCount}
-            onDone={() => {
-              // Keep the bar visible so user can read the result; they can dismiss it
-            }}
-            onDismiss={() => setActiveBulk(null)}
-          />
-        )}
-
-        {/*  Bulk success banner (single product or fallback)  */}
-        {bulkSuccessBanner && !activeBulk && (
-          <Banner
-            tone="success"
-            title={`${bulkSuccessBanner.count} job${bulkSuccessBanner.count !== 1 ? "s" : ""} queued â€” redirecting to Historyâ€¦`}
-            onDismiss={() => setBulkSuccessBanner(null)}
-          />
-        )}
-
-        {/* Stat Cards  */}
+        {/* Stat Cards */}
         <CreditUsageCard
           compact
           title="Credits remaining"
@@ -633,7 +592,7 @@ export default function ProductsDashboard() {
           />
         </div>
 
-        {/*  Products Table  */}
+        {/* Products Table */}
         <div style={{ marginBottom: "10px" }}>
           <Card padding="0">
             {loadError && (
@@ -730,7 +689,7 @@ export default function ProductsDashboard() {
               </Box>
             )}
 
-            {/* â”€â”€ IndexTable â€” now selectable  */}
+            {/* ── IndexTable — now selectable */}
             <IndexTable
               resourceName={resourceName}
               itemCount={filteredProducts.length}
@@ -743,7 +702,7 @@ export default function ProductsDashboard() {
                 { title: "Product" },
                 { title: "Status" },
                 { title: "Inventory", alignment: "end" },
-                { title: "" }, // Generate button column â€” no heading
+                { title: "" }, // Generate button column — no heading
               ]}
               selectable={true}
               emptyState={
@@ -770,7 +729,7 @@ export default function ProductsDashboard() {
         </div>
       </BlockStack>
 
-      {/* â”€â”€ Filter modal  */}
+      {/* ── Filter modal */}
       <ProductFilterModal
         open={filterModalOpen}
         onClose={() => setFilterModalOpen(false)}
@@ -783,13 +742,14 @@ export default function ProductsDashboard() {
         collectionOptions={collections}
       />
 
-      {/* â”€â”€ Bulk Generate modal */}
+      {/* ── Bulk Generate modal */}
       <BulkGenerateModal
         open={bulkModalOpen}
         selectedProductIds={selectedResources}
         onClose={() => setBulkModalOpen(false)}
         onSuccess={handleBulkSuccess}
         creditsRemaining={credits.creditsRemaining}
+        shopDomain={shopDomain}
       />
     </Page>
   );

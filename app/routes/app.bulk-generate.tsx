@@ -13,6 +13,10 @@ import {
   resolvePlan,
 } from "../lib/rateLimiter.server";
 import { CREDIT_COSTS, deductCredits, refundCredits } from "../lib/creditService.server";
+import { upsertAltTextDrafts, markAltTextApplied } from "../lib/altTextJob.server";
+import { fetchProductMeta, PRODUCT_GID_RE, MEDIA_IMAGE_GID_RE } from "../lib/productMeta.server";
+import { stripHtml } from "../lib/html.server";
+import { normalizeKeywordList } from "../features/products/product-editor.server"; 
 
 const MAX_BULK = 50;
 
@@ -342,7 +346,7 @@ export async function action({ request }: ActionFunctionArgs) {
 if (intent === "bulk_generate_meta") {
   let productIds: string[];
   try {
-    productIds = JSON.parse(String(form.get("productIds") ?? "[]"));
+    productIds = JSON.parse(String(fd.get("productIds") ?? "[]"));
   } catch {
     return json({ ok: false, error: "Invalid productIds", code: "INVALID_INPUT" }, { status: 400 });
   }
@@ -375,7 +379,7 @@ if (intent === "bulk_generate_meta") {
       );
     }
 
-    const keywordsCsv = String(form.get("keywords") ?? "");
+    const keywordsCsv = String(fd.get("keywords") ?? "");
     const keywords = normalizeKeywordList(keywordsCsv);
 
     const results: { productId: string; meta_title: string; meta_description: string }[] = [];
@@ -431,7 +435,7 @@ if (intent === "bulk_generate_meta") {
 if (intent === "bulk_apply_meta") {
   let items: { productId: string; meta_title: string; meta_description: string }[];
   try {
-    items = JSON.parse(String(form.get("items") ?? "[]"));
+    items = JSON.parse(String(fd.get("items") ?? "[]"));
   } catch {
     return json({ ok: false, error: "Invalid items", code: "INVALID_INPUT" }, { status: 400 });
   }
@@ -491,7 +495,7 @@ if (intent === "bulk_apply_meta") {
 if (intent === "bulk_generate_alt_text") {
   let productIds: string[];
   try {
-    productIds = JSON.parse(String(form.get("productIds") ?? "[]"));
+    productIds = JSON.parse(String(fd.get("productIds") ?? "[]"));
   } catch {
     return json({ ok: false, error: "Invalid productIds", code: "INVALID_INPUT" }, { status: 400 });
   }
@@ -539,7 +543,9 @@ if (intent === "bulk_generate_alt_text") {
       );
     }
 
+    const sharedBulkId = crypto.randomUUID();
     const results: { productId: string; imageId: string; altText: string }[] = [];
+    const jobIdByProduct = new Map<string, string>();
     let processedImages = 0;
 
     for (const product of productMetas) {
@@ -553,14 +559,20 @@ if (intent === "bulk_generate_alt_text") {
           imageCount: product.images.length,
         });
 
-        product.images.forEach((img, i) => {
-          results.push({
-            productId: product.id,
-            imageId: img.id,
-            altText: altTexts[i] ?? "",
-          });
-        });
+        const entries = product.images.map((img, i) => ({ imageId: img.id, altText: altTexts[i] ?? "" }));
 
+        const jobId = await upsertAltTextDrafts({
+          shopDomain,
+          productId: product.id,
+          productTitle: product.title,
+          entries,
+          creditRequestId: creditRequestId!,
+          creditCost: CREDIT_COSTS.altTextGeneration * entries.length,
+          bulkId: sharedBulkId,
+        });
+        jobIdByProduct.set(product.id, jobId);
+
+        for (const e of entries) results.push({ productId: product.id, ...e });
         processedImages += product.images.length;
       } catch (err) {
         console.error(`bulk_generate_alt_text: failed for ${product.id}`, err);
@@ -579,7 +591,13 @@ if (intent === "bulk_generate_alt_text") {
       });
     }
 
-    return json({ ok: true, kind: "bulk_generate_alt_text", results });
+    return json({
+      ok: true,
+      kind: "bulk_generate_alt_text",
+      results,
+      jobIds: Array.from(jobIdByProduct.values()),
+      bulkId: sharedBulkId,
+    });
   } catch (err) {
     if (creditRequestId) {
       await refundCredits({
@@ -599,7 +617,7 @@ if (intent === "bulk_generate_alt_text") {
 if (intent === "bulk_apply_alt_text") {
   let items: { productId: string; imageId: string; altText: string }[];
   try {
-    items = JSON.parse(String(form.get("items") ?? "[]"));
+    items = JSON.parse(String(fd.get("items") ?? "[]"));
   } catch {
     return json({ ok: false, error: "Invalid items", code: "INVALID_INPUT" }, { status: 400 });
   }
@@ -645,12 +663,17 @@ if (intent === "bulk_apply_alt_text") {
         },
       );
 
-      const userErrors = gql.data?.productUpdateMedia?.mediaUserErrors ?? [];
-      if (userErrors.length > 0) {
-        failed += mediaItems.length;
-      } else {
-        succeeded += mediaItems.length;
-      }
+     const userErrors = gql.data?.productUpdateMedia?.mediaUserErrors ?? [];
+if (userErrors.length > 0) {
+  failed += mediaItems.length;
+} else {
+  succeeded += mediaItems.length;
+  await markAltTextApplied({
+    shopDomain,
+    productId: productGid,
+    imageIds: mediaItems.map((m) => m.imageId),
+  });
+}
     } catch (err) {
       console.error(`bulk_apply_alt_text: failed for ${productGid}`, err);
       failed += mediaItems.length;

@@ -194,3 +194,25 @@ model ShopProductStats {
 
   @@index([lastSyncedAt])
 }
+model AltTextRecord {
+  id              String    @id @default(uuid())
+  shopDomain      String
+  productId       String
+  imageId         String
+  altText         String
+  status          AltTextStatus @default(DRAFT)
+  bulkId          String?
+  creditRequestId String?
+  appliedAt       DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([shopDomain, imageId])
+  @@index([shopDomain, productId])
+  @@index([bulkId])
+}
+
+enum AltTextStatus {
+  DRAFT
+  APPLIED
+}

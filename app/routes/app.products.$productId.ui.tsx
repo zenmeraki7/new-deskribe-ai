@@ -20,6 +20,9 @@ import {
   Spinner,
   InlineGrid,
   Tooltip,
+  Popover,
+  Checkbox,
+  Box,
 } from "@shopify/polaris";
 import { useFetcher, useLoaderData, useNavigate, useRevalidator } from "@remix-run/react";
 import { useJobPoll } from "../hooks/useJobPoll";
@@ -69,6 +72,12 @@ function clampTextInput(value: string, maxChars: number) {
   const s = typeof value === "string" ? value : "";
   return s.length <= maxChars ? s : s.slice(0, maxChars);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Section selector (replaces tab bar)
+// ─────────────────────────────────────────────────────────────────────────────
+
+type SectionKey = "description" | "meta" | "alttext";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Template Builder Modal
@@ -272,8 +281,25 @@ export default function ProductEditorModalRoute() {
   const [isClosing, setIsClosing] = useState(false);
   const generationSubmitLockedRef = useRef(false);
 
-  // ── Tab state ─────────────────────────────────────────────────────────────
-  const [activeTab, setActiveTab] = useState<"description" | "meta" | "alttext">("description");
+  // ── Section selector state (replaces tabs) ────────────────────────────────
+  const SECTION_LABELS: Record<SectionKey, string> = {
+    description: "Description",
+    meta: "Meta title & description",
+    alttext: `Image alt text${product.images.length > 0 ? ` (${product.images.length})` : ""}`,
+  };
+
+  const [selectedSections, setSelectedSections] = useState<SectionKey[]>(["description"]);
+  // What was actually generated in the last run — gates things like the SEO Preview
+  // so toggling checkboxes afterwards doesn't retroactively show/hide existing content.
+  const [sectionsGenerated, setSectionsGenerated] = useState<SectionKey[]>(["description"]);
+  const [sectionPopoverActive, setSectionPopoverActive] = useState(false);
+
+  const toggleSection = useCallback((key: SectionKey, checked: boolean) => {
+    setSelectedSections((prev) => {
+      if (checked) return prev.includes(key) ? prev : [...prev, key];
+      return prev.filter((s) => s !== key);
+    });
+  }, []);
 
   // ── Custom template state ─────────────────────────────────────────────────
   const [showTemplateBuilder, setShowTemplateBuilder] = useState(false);
@@ -465,12 +491,14 @@ export default function ProductEditorModalRoute() {
           fd.set("format", format);
           fd.set("keywords", clampTextInput(keywords, 2000));
           fd.set("includeSocials", String(includeSocials));
+          fd.set("includeMeta", String(selectedSections.includes("meta")));
           fd.set("customInstruction", clampTextInput(savedInstruction, 1000));
+          setSectionsGenerated(selectedSections);
           generateFetcher.submit(fd, { method: "post" });
         }
       }
     }
-  }, [templateFetcher.data, credits.creditsRemaining, format, generateFetcher, includeSocials, keywords]);
+  }, [templateFetcher.data, credits.creditsRemaining, format, generateFetcher, includeSocials, keywords, selectedSections]);
 
   // ── Generation effects ────────────────────────────────────────────────────
   useEffect(() => {
@@ -748,38 +776,55 @@ export default function ProductEditorModalRoute() {
     }
   }, [metaFetcher.data]);
 
-  // ── Generate handler ──────────────────────────────────────────────────────
+  // ── Generate handler (single action, fans out by selected sections) ──────
   const handleGenerate = useCallback(() => {
-    if (isGenerationBusy) return;
-    if (!canGenerateWithCredits) {
+    if (isGenerationBusy || selectedSections.length === 0) return;
+
+    const wantsDescription = selectedSections.includes("description");
+    const wantsMeta = selectedSections.includes("meta");
+    const wantsAltText = selectedSections.includes("alttext");
+
+    let totalCost = 0;
+    if (wantsDescription) totalCost += CREDIT_COSTS.standardGeneration; // meta bundled in, free when combined
+    if (wantsMeta && !wantsDescription) totalCost += CREDIT_COSTS.metaGeneration;
+    if (wantsAltText) totalCost += CREDIT_COSTS.altTextGeneration * product.images.length;
+
+    if (!hasCredits(credits.creditsRemaining, totalCost)) {
       setLocalCreditError("Not enough credits");
       return;
     }
 
-    generationSubmitLockedRef.current = true;
-    setGenerationRequestPending(true);
     setLocalCreditError("");
+    setSectionsGenerated(selectedSections);
 
-    const fd = new FormData();
-    fd.set("intent", "generate");
-    fd.set("vibe", clampTextInput(vibe, 40));
-    fd.set("format", clampTextInput(format, 40));
-    fd.set("keywords", clampTextInput(keywords, 2000));
-    fd.set("includeSocials", String(includeSocials));
-    if (isCustomVibeSelected && activeCustomInstruction) {
-      fd.set("customInstruction", clampTextInput(activeCustomInstruction, 1000));
+    if (wantsDescription) {
+      generationSubmitLockedRef.current = true;
+      setGenerationRequestPending(true);
+      const fd = new FormData();
+      fd.set("intent", "generate");
+      fd.set("vibe", clampTextInput(vibe, 40));
+      fd.set("format", clampTextInput(format, 40));
+      fd.set("keywords", clampTextInput(keywords, 2000));
+      fd.set("includeSocials", String(includeSocials));
+      fd.set("includeMeta", String(wantsMeta));
+      if (isCustomVibeSelected && activeCustomInstruction) {
+        fd.set("customInstruction", clampTextInput(activeCustomInstruction, 1000));
+      }
+      generateFetcher.submit(fd, { method: "post" });
+    } else if (wantsMeta) {
+      const fd = new FormData();
+      fd.set("intent", "generate_meta");
+      fd.set("keywords", keywords);
+      metaFetcher.submit(fd, { method: "post" });
     }
-    generateFetcher.submit(fd, { method: "post" });
+
+    if (wantsAltText) {
+      handleGenerateAllAltText();
+    }
   }, [
-    activeCustomInstruction,
-    canGenerateWithCredits,
-    format,
-    generateFetcher,
-    includeSocials,
-    isCustomVibeSelected,
-    isGenerationBusy,
-    keywords,
-    vibe,
+    selectedSections, isGenerationBusy, credits.creditsRemaining, product.images.length,
+    vibe, format, keywords, includeSocials, isCustomVibeSelected, activeCustomInstruction,
+    generateFetcher, metaFetcher, handleGenerateAllAltText,
   ]);
 
   const handleClose = useCallback(() => {
@@ -788,6 +833,28 @@ export default function ProductEditorModalRoute() {
     resetPolling();
     navigate("/app/products");
   }, [isClosing, navigate, resetPolling]);
+
+  // ── Combined cost + busy state for the single Generate button ────────────
+  const totalGenerateCost = useMemo(() => {
+    let cost = 0;
+    if (selectedSections.includes("description")) cost += CREDIT_COSTS.standardGeneration;
+    if (selectedSections.includes("meta") && !selectedSections.includes("description")) {
+      cost += CREDIT_COSTS.metaGeneration;
+    }
+    if (selectedSections.includes("alttext")) {
+      cost += CREDIT_COSTS.altTextGeneration * product.images.length;
+    }
+    return cost;
+  }, [selectedSections, product.images.length]);
+
+  const canGenerateSelected =
+    selectedSections.length > 0 && hasCredits(credits.creditsRemaining, totalGenerateCost);
+
+  const isAltTextBusy =
+    altTextBulkFetcher.state !== "idle" ||
+    (selectedSections.includes("alttext") && altTextFetcher.state !== "idle");
+
+  const isAnyGenerationBusy = isGenerationBusy || metaFetcher.state !== "idle" || isAltTextBusy;
 
   // ─────────────────────────────────────────────────────────────────────────
   // Render
@@ -821,34 +888,14 @@ export default function ProductEditorModalRoute() {
             {isGenerating && <Badge tone="attention">Generating…</Badge>}
           </InlineStack>
         }
-        primaryAction={
-          activeTab === "description"
-            ? {
-                content: isGenerating ? "Generating…" : "Generate Draft",
-                onAction: handleGenerate,
-                loading: isGenerating,
-                disabled: isGenerationBusy || !canGenerateWithCredits,
-              }
-            : activeTab === "meta"
-            ? {
-                content: applyMetaFetcher.state !== "idle" ? "Applying…" : "Apply to Shopify",
-                onAction: () => {
-                  const fd = new FormData();
-                  fd.set("intent", "apply_meta");
-                  fd.set("metaTitle", metaTitle);
-                  fd.set("metaDescription", metaDescription);
-                  applyMetaFetcher.submit(fd, { method: "post" });
-                },
-                loading: applyMetaFetcher.state !== "idle",
-                disabled: !metaTitle.trim() && !metaDescription.trim(),
-              }
-            : {
-                content: "Apply all to Shopify",
-                onAction: handleApplyAllAltText,
-                loading: applyAltTextBulkFetcher.state !== "idle",
-                disabled: !Object.values(altTextDrafts).some((v) => v?.trim()),
-              }
-        }
+        primaryAction={{
+          content: isAnyGenerationBusy
+            ? "Generating…"
+            : `Generate${selectedSections.length ? ` (${formatCredits(totalGenerateCost)} credits)` : ""}`,
+          onAction: handleGenerate,
+          loading: isAnyGenerationBusy,
+          disabled: isAnyGenerationBusy || !canGenerateSelected,
+        }}
         secondaryActions={[{ content: "Close", onAction: handleClose }]}
       >
         <Modal.Section>
@@ -864,131 +911,146 @@ export default function ProductEditorModalRoute() {
                 creditsRemaining={credits.creditsRemaining}
               />
 
-              {/* ── Tab bar ── */}
-              <div
-                style={{
-                  display: "flex",
-                  borderBottom: "1px solid #e1e3e5",
-                  marginBottom: -16,
-                }}
-              >
-                {(["description", "meta", "alttext"] as const).map((tab) => (
-                  <button
-                    key={tab}
-                    onClick={() => setActiveTab(tab)}
-                    style={{
-                      padding: "10px 18px",
-                      fontSize: 13,
-                      cursor: "pointer",
-                      background: "none",
-                      border: "none",
-                      borderBottom: activeTab === tab ? "2px solid #202223" : "2px solid transparent",
-                      color: activeTab === tab ? "#202223" : "#6d7175",
-                      fontWeight: activeTab === tab ? 600 : 400,
-                      marginBottom: -1,
-                    }}
-                  >
-                    {tab === "description"
-                      ? "Description"
-                      : tab === "meta"
-                      ? "Meta title & description"
-                      : `Image alt text${product.images.length > 0 ? ` (${product.images.length})` : ""}`}
-                  </button>
-                ))}
-              </div>
+              {/* ── Section selector dropdown (replaces tab bar) ── */}
+              <Card>
+  <BlockStack gap="300">
+    <Text as="h3" variant="headingSm">What do you want to generate?</Text>
+
+    <Popover
+      active={sectionPopoverActive}
+      onClose={() => setSectionPopoverActive(false)}
+      fullWidth
+      activator={
+        <Button
+          disclosure
+          fullWidth
+          textAlign="left"
+          onClick={() => setSectionPopoverActive((v) => !v)}
+        >
+          {selectedSections.length
+            ? selectedSections.map((s) => SECTION_LABELS[s]).join(", ")
+            : "Select sections"}
+        </Button>
+      }
+    >
+      <Box padding="300">
+        <BlockStack gap="200">
+          <Checkbox
+            label={SECTION_LABELS.description}
+            checked={selectedSections.includes("description")}
+            onChange={(checked) => toggleSection("description", checked)}
+          />
+          <Checkbox
+            label={SECTION_LABELS.meta}
+            checked={selectedSections.includes("meta")}
+            onChange={(checked) => toggleSection("meta", checked)}
+          />
+          <Checkbox
+            label={SECTION_LABELS.alttext}
+            checked={selectedSections.includes("alttext")}
+            onChange={(checked) => toggleSection("alttext", checked)}
+            disabled={product.images.length === 0}
+          />
+        </BlockStack>
+      </Box>
+    </Popover>
+
+    <InlineStack align="space-between">
+      <Text as="p" variant="bodySm" tone="subdued">
+        Estimated credit cost
+      </Text>
+      <Text as="p" variant="bodySm" fontWeight="semibold">
+        {formatCredits(totalGenerateCost)} credit{totalGenerateCost === 1 ? "" : "s"}
+      </Text>
+    </InlineStack>
+    <InlineStack align="space-between">
+      <Text as="p" variant="bodySm" tone="subdued">
+        Remaining credits before action
+      </Text>
+      <Text as="p" variant="bodySm" fontWeight="semibold">
+        {formatCredits(credits.creditsRemaining)}
+      </Text>
+    </InlineStack>
+  </BlockStack>
+</Card>
+
+              {localCreditError && (
+                <Banner tone="critical" title="Not enough credits">
+                  <Text as="p" variant="bodySm">{localCreditError}</Text>
+                </Banner>
+              )}
+
+              {policyWarnings.length > 0 && (
+                <Banner tone="warning" title="SEO Policy Warnings">
+                  <ul>
+                    {policyWarnings.map((w) => (
+                      <li key={w}>{w}</li>
+                    ))}
+                  </ul>
+                </Banner>
+              )}
+
+              {latestDraft?.isStale && (
+                <Banner tone="warning" title="Draft may be outdated">
+                  <Text as="p" variant="bodySm">
+                    This draft was generated before the product was last updated.
+                  </Text>
+                </Banner>
+              )}
+
+              {generateError && (
+                <Banner
+                  tone={isRateLimited ? "warning" : "critical"}
+                  title={isRateLimited ? "Generation unavailable" : "Generation failed"}
+                >
+                  <BlockStack gap="100">
+                    <Text as="p" variant="bodySm">{generateError}</Text>
+                  </BlockStack>
+                </Banner>
+              )}
+
+              {pollStatus === "FAILED" && (
+                <Banner tone="critical" title="Generation failed">
+                  {pollErrorMessage ?? "The AI job failed. Please try again."}
+                </Banner>
+              )}
+
+              {pollStatus === "CANCELLED" && (
+                <Banner tone="warning" title="Generation cancelled">
+                  The job was cancelled.
+                </Banner>
+              )}
+
+              {applyError && (
+                <Banner tone="critical" title="Apply failed">
+                  {applyError}
+                </Banner>
+              )}
+
+              {applySuccess && (
+                <Banner tone="success" title="Applied to Shopify">
+                  <BlockStack gap="100">
+                    <Text as="p" variant="bodySm">
+                      The draft description is now live on this product.
+                    </Text>
+                    {(draftResult?.meta_title || draftResult?.meta_description) && (
+                      <Text as="p" variant="bodySm">
+                        SEO title and meta description were also updated on Shopify.
+                      </Text>
+                    )}
+                  </BlockStack>
+                </Banner>
+              )}
 
               {/* ══════════════════════════════════════════════
-                  TAB: Description
+                  SECTION: Description
               ══════════════════════════════════════════════ */}
-              {activeTab === "description" && (
+              {selectedSections.includes("description") && (
                 <BlockStack gap="400">
 
                   <Card>
-                    <BlockStack gap="200">
-                      <InlineStack align="space-between">
-                        <Text as="p" variant="bodySm" tone="subdued">
-                          Credit cost before generation
-                        </Text>
-                        <Text as="p" variant="bodySm" fontWeight="semibold">
-                          {formatCredits(CREDIT_COSTS.standardGeneration)} credit
-                        </Text>
-                      </InlineStack>
-                      <InlineStack align="space-between">
-                        <Text as="p" variant="bodySm" tone="subdued">
-                          Remaining credits before action
-                        </Text>
-                        <Text as="p" variant="bodySm" fontWeight="semibold">
-                          {formatCredits(credits.creditsRemaining)}
-                        </Text>
-                      </InlineStack>
-                    </BlockStack>
-                  </Card>
-
-                  {policyWarnings.length > 0 && (
-                    <Banner tone="warning" title="SEO Policy Warnings">
-                      <ul>
-                        {policyWarnings.map((w) => (
-                          <li key={w}>{w}</li>
-                        ))}
-                      </ul>
-                    </Banner>
-                  )}
-
-                  {latestDraft?.isStale && (
-                    <Banner tone="warning" title="Draft may be outdated">
-                      <Text as="p" variant="bodySm">
-                        This draft was generated before the product was last updated.
-                      </Text>
-                    </Banner>
-                  )}
-
-                  {generateError && (
-                    <Banner
-                      tone={isRateLimited ? "warning" : "critical"}
-                      title={isRateLimited ? "Generation unavailable" : "Generation failed"}
-                    >
-                      <BlockStack gap="100">
-                        <Text as="p" variant="bodySm">{generateError}</Text>
-                      </BlockStack>
-                    </Banner>
-                  )}
-
-                  {pollStatus === "FAILED" && (
-                    <Banner tone="critical" title="Generation failed">
-                      {pollErrorMessage ?? "The AI job failed. Please try again."}
-                    </Banner>
-                  )}
-
-                  {pollStatus === "CANCELLED" && (
-                    <Banner tone="warning" title="Generation cancelled">
-                      The job was cancelled.
-                    </Banner>
-                  )}
-
-                  {applyError && (
-                    <Banner tone="critical" title="Apply failed">
-                      {applyError}
-                    </Banner>
-                  )}
-
-                  {applySuccess && (
-                    <Banner tone="success" title="Applied to Shopify">
-                      <BlockStack gap="100">
-                        <Text as="p" variant="bodySm">
-                          The draft description is now live on this product.
-                        </Text>
-                        {(draftResult?.meta_title || draftResult?.meta_description) && (
-                          <Text as="p" variant="bodySm">
-                            SEO title and meta description were also updated on Shopify.
-                          </Text>
-                        )}
-                      </BlockStack>
-                    </Banner>
-                  )}
-
-                  <Card>
                     <BlockStack gap="300">
-                      <Text as="h3" variant="headingSm">Generation Settings</Text>
+                      <Text as="h3" variant="headingSm">Description Settings</Text>
 
                       {shopPlan === "free" && (
                         <Text as="p" variant="bodySm" tone="subdued">
@@ -1174,48 +1236,52 @@ export default function ProductEditorModalRoute() {
                   {draftResult && (
                     <Card>
                       <BlockStack gap="200">
-                        <InlineStack align="space-between" blockAlign="center">
-                          <Text as="h3" variant="headingSm">SEO Preview</Text>
-                          {applySuccess && <Badge tone="success">Synced to Shopify</Badge>}
-                        </InlineStack>
-                        <div
-                          style={{
-                            padding: 16,
-                            background: "#fff",
-                            border: "1px solid #dadce0",
-                            borderRadius: 8,
-                            fontFamily: "arial, sans-serif",
-                            maxWidth: 600,
-                          }}
-                        >
-                          <div
-                            style={{
-                              fontSize: 18,
-                              color: "#1a0dab",
-                              marginBottom: 4,
-                              overflow: "hidden",
-                              whiteSpace: "nowrap",
-                              textOverflow: "ellipsis",
-                            }}
-                          >
-                            {draftResult.meta_title ?? product.title}
-                          </div>
-                          <div style={{ fontSize: 13, color: "#006621", marginBottom: 4 }}>
-                            {product.vendor || "Shopify"} › products
-                          </div>
-                          <div
-                            style={{
-                              fontSize: 14,
-                              color: "#545454",
-                              display: "-webkit-box",
-                              WebkitLineClamp: 2,
-                              WebkitBoxOrient: "vertical",
-                              overflow: "hidden",
-                            }}
-                          >
-                            {draftResult.meta_description ?? ""}
-                          </div>
-                        </div>
+                        {sectionsGenerated.includes("meta") && (
+                          <>
+                            <InlineStack align="space-between" blockAlign="center">
+                              <Text as="h3" variant="headingSm">SEO Preview</Text>
+                              {applySuccess && <Badge tone="success">Synced to Shopify</Badge>}
+                            </InlineStack>
+                            <div
+                              style={{
+                                padding: 16,
+                                background: "#fff",
+                                border: "1px solid #dadce0",
+                                borderRadius: 8,
+                                fontFamily: "arial, sans-serif",
+                                maxWidth: 600,
+                              }}
+                            >
+                              <div
+                                style={{
+                                  fontSize: 18,
+                                  color: "#1a0dab",
+                                  marginBottom: 4,
+                                  overflow: "hidden",
+                                  whiteSpace: "nowrap",
+                                  textOverflow: "ellipsis",
+                                }}
+                              >
+                                {draftResult.meta_title ?? product.title}
+                              </div>
+                              <div style={{ fontSize: 13, color: "#006621", marginBottom: 4 }}>
+                                {product.vendor || "Shopify"} › products
+                              </div>
+                              <div
+                                style={{
+                                  fontSize: 14,
+                                  color: "#545454",
+                                  display: "-webkit-box",
+                                  WebkitLineClamp: 2,
+                                  WebkitBoxOrient: "vertical",
+                                  overflow: "hidden",
+                                }}
+                              >
+                                {draftResult.meta_description ?? ""}
+                              </div>
+                            </div>
+                          </>
+                        )}
 
                         {Array.isArray(draftResult.keywords) && draftResult.keywords.length > 0 && (
                           <InlineStack gap="200" wrap>
@@ -1230,7 +1296,7 @@ export default function ProductEditorModalRoute() {
                           </InlineStack>
                         )}
 
-                        {draftResult.social_caption && (
+                        {sectionsGenerated.includes("meta") && draftResult.social_caption && (
                           <BlockStack gap="100">
                             <Text as="p" variant="bodySm" tone="subdued">
                               Instagram caption:
@@ -1296,9 +1362,9 @@ export default function ProductEditorModalRoute() {
               )}
 
               {/* ══════════════════════════════════════════════
-                  TAB: Meta title & description
+                  SECTION: Meta title & description
               ══════════════════════════════════════════════ */}
-              {activeTab === "meta" && (
+              {selectedSections.includes("meta") && (
                 <BlockStack gap="400">
 
                   {applyMetaFetcher.data?.ok === true && (
@@ -1384,36 +1450,9 @@ export default function ProductEditorModalRoute() {
                     </BlockStack>
                   </Card>
 
-                  <InlineStack gap="300" blockAlign="center">
-                    <Button
-                      onClick={() => {
-                        if (!hasCredits(credits.creditsRemaining, CREDIT_COSTS.metaGeneration)) {
-                          setLocalCreditError("Not enough credits");
-                          return;
-                        }
-                        setLocalCreditError("");
-                        const fd = new FormData();
-                        fd.set("intent", "generate_meta");
-                          if (latestDraft?.id) fd.set("jobId", latestDraft.id);
-                        fd.set("keywords", keywords);
-                        metaFetcher.submit(fd, { method: "post" });
-                      }}
-                      loading={metaFetcher.state !== "idle"}
-                      disabled={!hasCredits(credits.creditsRemaining, CREDIT_COSTS.metaGeneration)}
-                      size="slim"
-                    >
-                      ✨ AI generate ({formatCredits(CREDIT_COSTS.metaGeneration)} credits)
-                    </Button>
-                    <Text as="p" variant="bodySm" tone="subdued">
-                      or edit the fields above manually
-                    </Text>
-                  </InlineStack>
-
-                  {localCreditError && (
-                    <Banner tone="critical" title="Not enough credits">
-                      <Text as="p" variant="bodySm">{localCreditError}</Text>
-                    </Banner>
-                  )}
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    Use the Generate button above, or edit the fields above manually.
+                  </Text>
 
                   {(metaTitle || metaDescription) && (
                     <Card>
@@ -1461,13 +1500,31 @@ export default function ProductEditorModalRoute() {
                     </Card>
                   )}
 
+                  <InlineStack align="end">
+                    <Button
+                      variant="primary"
+                      tone="success"
+                      loading={applyMetaFetcher.state !== "idle"}
+                      disabled={!metaTitle.trim() && !metaDescription.trim()}
+                      onClick={() => {
+                        const fd = new FormData();
+                        fd.set("intent", "apply_meta");
+                        fd.set("metaTitle", metaTitle);
+                        fd.set("metaDescription", metaDescription);
+                        applyMetaFetcher.submit(fd, { method: "post" });
+                      }}
+                    >
+                      Apply to Shopify
+                    </Button>
+                  </InlineStack>
+
                 </BlockStack>
               )}
 
               {/* ══════════════════════════════════════════════
-                  TAB: Image alt text
+                  SECTION: Image alt text
               ══════════════════════════════════════════════ */}
-              {activeTab === "alttext" && (
+              {selectedSections.includes("alttext") && (
                 <BlockStack gap="400">
 
                   {product.images.length === 0 ? (
@@ -1610,6 +1667,16 @@ export default function ProductEditorModalRoute() {
                   )}
 
                 </BlockStack>
+              )}
+
+              {selectedSections.length === 0 && (
+                <Card>
+                  <Box padding="400">
+                    <Text as="p" tone="subdued" alignment="center">
+                      Select at least one section above to get started.
+                    </Text>
+                  </Box>
+                </Card>
               )}
 
             </BlockStack>

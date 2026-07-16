@@ -1,6 +1,6 @@
-// FILE: app/components/BulkGenerateModal.tsx
+// FILE: app/components/BulkComponents/BulkGenerateModal.tsx
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Modal,
   BlockStack,
@@ -14,9 +14,13 @@ import {
   Card,
   Spinner,
   Button,
+  Popover,
+  Checkbox,
+  Box,
 } from "@shopify/polaris";
 import { useFetcher } from "@remix-run/react";
 import { CREDIT_COSTS, formatCredits, hasCredits } from "../../lib/credits";
+import { BulkLiveResults } from "./BulkLiveResults";
 
 const VIBE_OPTIONS = [
   { label: "Casual", value: "casual" },
@@ -31,6 +35,14 @@ const FORMAT_OPTIONS = [
   { label: "Bullets", value: "bullets" },
   { label: "Hybrid", value: "hybrid" },
 ];
+
+type SectionKey = "description" | "meta" | "alttext";
+
+const SECTION_LABELS: Record<SectionKey, string> = {
+  description: "Description",
+  meta: "Meta title & description",
+  alttext: "Image alt text",
+};
 
 function clamp(value: string, max: number) {
   return typeof value === "string" ? value.slice(0, max) : "";
@@ -50,6 +62,7 @@ interface BulkGenerateModalProps {
   onClose: () => void;
   onSuccess: (jobIds: string[], bulkId: string | null) => void;
   creditsRemaining: number;
+  shopDomain: string;
 }
 
 interface BulkKeywordResult {
@@ -91,6 +104,7 @@ export function BulkGenerateModal({
   onClose,
   onSuccess,
   creditsRemaining,
+  shopDomain,
 }: BulkGenerateModalProps) {
   const fetcher = useFetcher<BulkResult>();
   const keywordFetcher = useFetcher<BulkKeywordResult>();
@@ -99,13 +113,28 @@ export function BulkGenerateModal({
   const altTextFetcher = useFetcher<BulkAltTextResult>();
   const applyAltTextFetcher = useFetcher<{ ok: boolean; error?: string; applied?: number }>();
 
-  // ── Tab state ─────────────────────────────────────────────────────────────
-  const [activeTab, setActiveTab] = useState<"description" | "meta" | "alttext">("description");
+  // ── Section selector state (replaces tabs) ────────────────────────────────
+  const [selectedSections, setSelectedSections] = useState<SectionKey[]>(["description"]);
+  const [sectionsGenerated, setSectionsGenerated] = useState<SectionKey[]>([]);
+  const [sectionPopoverActive, setSectionPopoverActive] = useState(false);
+
+  const toggleSection = useCallback((key: SectionKey, checked: boolean) => {
+    setSelectedSections((prev) => {
+      if (checked) return prev.includes(key) ? prev : [...prev, key];
+      return prev.filter((s) => s !== key);
+    });
+  }, []);
 
   // ── Description state ─────────────────────────────────────────────────────
   const [vibe, setVibe] = useState("casual");
   const [format, setFormat] = useState("paragraph");
   const [keywords, setKeywords] = useState("");
+
+  // ── Live bulk run state (NEW) ──────────────────────────────────────────────
+  // Once a description run is queued, we stop showing the settings form and
+  // switch to the live progress/results view. The modal stays open.
+  const [queuedBulkId, setQueuedBulkId] = useState<string | null>(null);
+  const [hasNotifiedQueued, setHasNotifiedQueued] = useState(false);
 
   // ── Meta state ────────────────────────────────────────────────────────────
   const [metaResults, setMetaResults] = useState<
@@ -144,12 +173,21 @@ export function BulkGenerateModal({
   const canGenerateAltTextWithCredits = hasCredits(creditsRemaining, altTextCreditCost);
   const canSuggestWithCredits = hasCredits(creditsRemaining, CREDIT_COSTS.keywordSuggestion);
 
-  // ── Notify parent on description success ──────────────────────────────────
+  // ── Switch to live results once a run is queued (NEW) ─────────────────────
   useEffect(() => {
-    if (result?.ok && Array.isArray(result.jobIds) && result.jobIds.length > 0) {
-      onSuccess(result.jobIds, result.bulkId ?? null);
+    if (result?.ok && result.bulkId && !queuedBulkId) {
+      setQueuedBulkId(result.bulkId);
     }
-  }, [result, onSuccess]);
+  }, [result, queuedBulkId]);
+
+  // Notify parent exactly once so it can clear the IndexTable selection —
+  // does NOT close the modal (see prop doc comment above).
+  useEffect(() => {
+    if (queuedBulkId && result?.jobIds && !hasNotifiedQueued) {
+      setHasNotifiedQueued(true);
+      onSuccess(result.jobIds, queuedBulkId);
+    }
+  }, [queuedBulkId, result, hasNotifiedQueued, onSuccess]);
 
   // ── Handle meta generation result ─────────────────────────────────────────
   useEffect(() => {
@@ -184,7 +222,8 @@ export function BulkGenerateModal({
   // ── Reset form when modal re-opens ────────────────────────────────────────
   useEffect(() => {
     if (open) {
-      setActiveTab("description");
+      setSelectedSections(["description"]);
+      setSectionsGenerated([]);
       setVibe("casual");
       setFormat("paragraph");
       setKeywords("");
@@ -192,12 +231,14 @@ export function BulkGenerateModal({
       setMetaApplied(false);
       setAltTextResults([]);
       setAltTextApplied(false);
+      setQueuedBulkId(null);
+      setHasNotifiedQueued(false);
     }
   }, [open]);
 
   // ── Handlers ──────────────────────────────────────────────────────────────
-  const handleSubmit = useCallback(() => {
-    if (selectedProductIds.length === 0 || isSubmitting) return;
+  const handleGenerateDescription = useCallback(() => {
+    if (selectedProductIds.length === 0 || isSubmitting || queuedBulkId) return;
     if (!canGenerateWithCredits) return;
     const fd = new FormData();
     fd.set("intent", "bulk_generate");
@@ -207,7 +248,7 @@ export function BulkGenerateModal({
     fd.set("keywords", clamp(keywords, 2000));
     fd.set("includeSocials", "false");
     fetcher.submit(fd, { method: "post", action: "/app/bulk-generate" });
-  }, [selectedProductIds, vibe, format, keywords, isSubmitting, canGenerateWithCredits, fetcher]);
+  }, [selectedProductIds, vibe, format, keywords, isSubmitting, canGenerateWithCredits, queuedBulkId, fetcher]);
 
   const handleSuggestKeywords = useCallback(() => {
     if (isSuggestingKeywords || selectedProductIds.length === 0) return;
@@ -258,54 +299,128 @@ export function BulkGenerateModal({
     applyAltTextFetcher.submit(fd, { method: "post", action: "/app/bulk-generate" });
   }, [altTextResults, isApplyingAltText, applyAltTextFetcher]);
 
+  // ── Combined Generate handler — fans out to whichever sections are selected ─
+  const handleGenerateSelected = useCallback(() => {
+    if (selectedSections.length === 0) return;
+    setSectionsGenerated(selectedSections);
+
+    // Description is skipped here once a run is already queued — re-clicking
+    // Generate must never re-queue (and re-charge) an in-flight bulk run.
+    if (
+      selectedSections.includes("description") &&
+      !isSubmitting &&
+      !queuedBulkId &&
+      canGenerateWithCredits
+    ) {
+      handleGenerateDescription();
+    }
+    if (
+      selectedSections.includes("meta") &&
+      metaResults.length === 0 &&
+      !isGeneratingMeta &&
+      canGenerateMetaWithCredits
+    ) {
+      handleGenerateMeta();
+    }
+    if (
+      selectedSections.includes("alttext") &&
+      altTextResults.length === 0 &&
+      !isGeneratingAltText &&
+      canGenerateAltTextWithCredits
+    ) {
+      handleGenerateAltText();
+    }
+  }, [
+    selectedSections,
+    isSubmitting,
+    queuedBulkId,
+    canGenerateWithCredits,
+    handleGenerateDescription,
+    metaResults.length,
+    isGeneratingMeta,
+    canGenerateMetaWithCredits,
+    handleGenerateMeta,
+    altTextResults.length,
+    isGeneratingAltText,
+    canGenerateAltTextWithCredits,
+    handleGenerateAltText,
+  ]);
+
   const kwList = parseKeywords(keywords);
 
-  // ── Primary action per tab ────────────────────────────────────────────────
-  const primaryAction =
-    activeTab === "description"
-      ? {
-          content: isSubmitting
-            ? "Queuing…"
-            : `✨ Generate for ${count} product${count !== 1 ? "s" : ""}`,
-          onAction: handleSubmit,
-          loading: isSubmitting,
-          disabled: isSubmitting || count === 0 || !canGenerateWithCredits,
-        }
-      : activeTab === "meta"
-      ? metaResults.length > 0
-        ? {
-            content: isApplyingMeta
-              ? "Applying…"
-              : `Apply to Shopify (${metaResults.length})`,
-            onAction: handleApplyMeta,
-            loading: isApplyingMeta,
-            disabled: isApplyingMeta || metaApplied,
-          }
-        : {
-            content: isGeneratingMeta
-              ? "Generating…"
-              : `✨ Generate meta (${formatCredits(metaCreditCost)} credits)`,
-            onAction: handleGenerateMeta,
-            loading: isGeneratingMeta,
-            disabled: isGeneratingMeta || count === 0 || !canGenerateMetaWithCredits,
-          }
-      : altTextResults.length > 0
-      ? {
-          content: isApplyingAltText
-            ? "Applying…"
-            : `Apply all to Shopify (${altTextResults.length})`,
-          onAction: handleApplyAltText,
-          loading: isApplyingAltText,
-          disabled: isApplyingAltText || altTextApplied,
-        }
-      : {
-          content: isGeneratingAltText
-            ? "Generating…"
-            : `✨ Generate alt text (${formatCredits(altTextCreditCost)} credits)`,
-          onAction: handleGenerateAltText,
-          loading: isGeneratingAltText,
-          disabled: isGeneratingAltText || count === 0 || !canGenerateAltTextWithCredits,
-        };
+  // ── Combined cost + busy state ─────────────────────────────────────────────
+  const totalGenerateCost = useMemo(() => {
+    let cost = 0;
+    if (selectedSections.includes("description") && !queuedBulkId) cost += creditCost;
+    if (selectedSections.includes("meta")) cost += metaCreditCost;
+    if (selectedSections.includes("alttext")) cost += altTextCreditCost;
+    return cost;
+  }, [selectedSections, creditCost, metaCreditCost, altTextCreditCost, queuedBulkId]);
+
+  const canGenerateSelected =
+    selectedSections.length > 0 &&
+    count > 0 &&
+    hasCredits(creditsRemaining, totalGenerateCost);
+
+  const isAltTextGenBusy = isGeneratingAltText;
+  const isAnyGenerationBusy = isSubmitting || isGeneratingMeta || isAltTextGenBusy;
+
+  const hasAnyApplyableResults =
+    (selectedSections.includes("meta") && metaResults.length > 0) ||
+    (selectedSections.includes("alttext") && altTextResults.length > 0);
+
+  const handleApplySelected = useCallback(() => {
+    if (selectedSections.includes("meta") && metaResults.length > 0 && !metaApplied) {
+      handleApplyMeta();
+    }
+    if (selectedSections.includes("alttext") && altTextResults.length > 0 && !altTextApplied) {
+      handleApplyAltText();
+    }
+  }, [
+    selectedSections,
+    metaResults.length,
+    metaApplied,
+    handleApplyMeta,
+    altTextResults.length,
+    altTextApplied,
+    handleApplyAltText,
+  ]);
+
+  const isApplyingAny = isApplyingMeta || isApplyingAltText;
+
+  // ── Whether there's anything left for the modal-level primary action to do (NEW) ──
+  // Once description is queued, its own Generate/Apply lives entirely inside
+  // BulkLiveResults. The modal's primary action now only concerns meta/alttext.
+  // If description is the *only* selected section and it's queued, there's
+  // nothing left to do here — hide the primary action entirely.
+  const onlyDescriptionSelected =
+    selectedSections.length === 1 && selectedSections[0] === "description";
+
+  const primaryAction = (() => {
+    if (queuedBulkId && onlyDescriptionSelected) {
+      return undefined; // Apply All lives inside BulkLiveResults now
+    }
+    if (hasAnyApplyableResults) {
+      return {
+        content: isApplyingAny ? "Applying…" : "Apply to Shopify",
+        onAction: handleApplySelected,
+        loading: isApplyingAny,
+        disabled: isApplyingAny || (metaApplied && altTextApplied),
+      };
+    }
+    // Still-to-generate sections remain (meta/alttext), or nothing queued yet
+    const remainingCost = totalGenerateCost;
+    return {
+      content: isAnyGenerationBusy
+        ? "Generating…"
+        : `✨ Generate${selectedSections.length ? ` (${formatCredits(remainingCost)} credits)` : ""}`,
+      onAction: handleGenerateSelected,
+      loading: isAnyGenerationBusy,
+      disabled: isAnyGenerationBusy || !canGenerateSelected,
+    };
+  })();
+
+  const hasStartedAnyRun = Boolean(queuedBulkId) || metaResults.length > 0 || altTextResults.length > 0;
 
   return (
     <Modal
@@ -321,7 +436,9 @@ export function BulkGenerateModal({
         </InlineStack>
       }
       primaryAction={primaryAction}
-      secondaryActions={[{ content: "Cancel", onAction: onClose }]}
+      secondaryActions={[
+        { content: hasStartedAnyRun ? "Close" : "Cancel", onAction: onClose },
+      ]}
     >
       <Modal.Section>
         <BlockStack gap="400">
@@ -340,251 +457,263 @@ export function BulkGenerateModal({
             </BlockStack>
           </Card>
 
-          {/* ── Tab bar ── */}
-          <div
-            style={{
-              display: "flex",
-              borderBottom: "1px solid #e1e3e5",
-              marginBottom: -16,
-            }}
-          >
-            {(["description", "meta", "alttext"] as const).map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                style={{
-                  padding: "10px 18px",
-                  fontSize: 13,
-                  cursor: "pointer",
-                  background: "none",
-                  border: "none",
-                  borderBottom:
-                    activeTab === tab ? "2px solid #202223" : "2px solid transparent",
-                  color: activeTab === tab ? "#202223" : "#6d7175",
-                  fontWeight: activeTab === tab ? 600 : 400,
-                  marginBottom: -1,
-                }}
+          {/* ── Section selector dropdown — locked once a run has started ── */}
+          <Card>
+            <BlockStack gap="300">
+              <Text as="h3" variant="headingSm">What do you want to generate?</Text>
+
+              <Popover
+                active={sectionPopoverActive}
+                onClose={() => setSectionPopoverActive(false)}
+                fullWidth
+                activator={
+                  <Button
+                    disclosure
+                    fullWidth
+                    textAlign="left"
+                    disabled={hasStartedAnyRun}
+                    onClick={() => setSectionPopoverActive((v) => !v)}
+                  >
+                    {selectedSections.length
+                      ? selectedSections.map((s) => SECTION_LABELS[s]).join(", ")
+                      : "Select sections"}
+                  </Button>
+                }
               >
-                {tab === "description"
-                  ? "Description"
-                  : tab === "meta"
-                  ? "Meta title & description"
-                  : "Image alt text"}
-              </button>
-            ))}
-          </div>
-
-          {/* ══════════════════════════════════════════════
-              TAB: Description
-          ══════════════════════════════════════════════ */}
-          {activeTab === "description" && (
-            <BlockStack gap="400">
-
-              {/* Success banner */}
-              {result?.ok && (
-                <Banner
-                  tone="success"
-                  title={`${result.jobIds?.length ?? 0} job${(result.jobIds?.length ?? 0) !== 1 ? "s" : ""} queued successfully`}
-                >
-                  <BlockStack gap="100">
-                    <Text as="p" variant="bodySm">
-                      Jobs are now processing. Track progress on the{" "}
-                      <a href="/app/jobs" style={{ color: "#2c6ecb" }}>History</a> page.
-                    </Text>
-                    {(result.skipped?.length ?? 0) > 0 && (
-                      <Text as="p" variant="bodySm" tone="subdued">
-                        {result.skipped!.length} product{result.skipped!.length !== 1 ? "s" : ""} skipped (metadata unavailable).
-                      </Text>
-                    )}
+                <Box padding="300">
+                  <BlockStack gap="200">
+                    <Checkbox
+                      label={SECTION_LABELS.description}
+                      checked={selectedSections.includes("description")}
+                      onChange={(checked) => toggleSection("description", checked)}
+                    />
+                    <Checkbox
+                      label={SECTION_LABELS.meta}
+                      checked={selectedSections.includes("meta")}
+                      onChange={(checked) => toggleSection("meta", checked)}
+                    />
+                    <Checkbox
+                      label={SECTION_LABELS.alttext}
+                      checked={selectedSections.includes("alttext")}
+                      onChange={(checked) => toggleSection("alttext", checked)}
+                    />
                   </BlockStack>
+                </Box>
+              </Popover>
+
+              <InlineStack align="space-between">
+                <Text as="p" variant="bodySm" tone="subdued">
+                  Estimated credit cost
+                </Text>
+                <Text as="p" variant="bodySm" fontWeight="semibold">
+                  {formatCredits(totalGenerateCost)} credit{totalGenerateCost === 1 ? "" : "s"}
+                </Text>
+              </InlineStack>
+
+              {!canGenerateSelected && selectedSections.length > 0 && !queuedBulkId && (
+                <Banner tone="critical" title="Not enough credits">
+                  This selection needs {formatCredits(totalGenerateCost)} credits.
                 </Banner>
               )}
+            </BlockStack>
+          </Card>
 
-              {/* Error banner */}
-              {result && !result.ok && (() => {
-                const isRateLimit =
-                  result.code === "RATE_LIMIT_EXCEEDED" ||
-                  result.code === "GLOBAL_LIMIT_REACHED";
-                return (
-                  <Banner
-                    tone={isRateLimit ? "warning" : "critical"}
-                    title={
-                      result.code === "INSUFFICIENT_CREDITS"
-                        ? "Not enough credits"
-                        : isRateLimit
-                        ? "Generation unavailable"
-                        : "Failed to queue jobs"
-                    }
-                  >
-                    <Text as="p" variant="bodySm">
-                      {result.error ?? "An unexpected error occurred. Please try again."}
-                    </Text>
-                  </Banner>
-                );
-              })()}
+          {/* ══════════════════════════════════════════════
+              SECTION: Description
+              Two states: settings form (before queued) →
+              live results (after queued). Never both.
+          ══════════════════════════════════════════════ */}
+          {selectedSections.includes("description") && (
+            queuedBulkId ? (
+              <BulkLiveResults
+                bulkId={queuedBulkId}
+                shopDomain={shopDomain}
+              />
+            ) : (
+              <BlockStack gap="400">
 
-              <Card>
-                <BlockStack gap="200">
-                  <InlineStack align="space-between">
-                    <Text as="p" variant="bodySm" tone="subdued">
-                      Credit cost
-                    </Text>
-                    <Text as="p" variant="bodySm" fontWeight="semibold">
-                      {formatCredits(creditCost)} credits
-                    </Text>
-                  </InlineStack>
-                  {!canGenerateWithCredits && (
-                    <Banner tone="critical" title="Not enough credits">
-                      This selection needs {formatCredits(creditCost)} credits.
+                {/* Error banner (queueing failed) */}
+                {result && !result.ok && (() => {
+                  const isRateLimit =
+                    result.code === "RATE_LIMIT_EXCEEDED" ||
+                    result.code === "GLOBAL_LIMIT_REACHED";
+                  return (
+                    <Banner
+                      tone={isRateLimit ? "warning" : "critical"}
+                      title={
+                        result.code === "INSUFFICIENT_CREDITS"
+                          ? "Not enough credits"
+                          : isRateLimit
+                          ? "Generation unavailable"
+                          : "Failed to queue jobs"
+                      }
+                    >
+                      <Text as="p" variant="bodySm">
+                        {result.error ?? "An unexpected error occurred. Please try again."}
+                      </Text>
                     </Banner>
-                  )}
-                </BlockStack>
-              </Card>
+                  );
+                })()}
 
-              <Card>
-                <BlockStack gap="300">
-                  <Text as="h3" variant="headingSm">Generation Settings</Text>
-                  <Text as="p" variant="bodySm" tone="subdued">
-                    These settings apply to all selected products.
-                  </Text>
-
-                  <InlineGrid columns={2} gap="300">
-                    <Select
-                      label="Writing style"
-                      options={VIBE_OPTIONS}
-                      value={vibe}
-                      onChange={setVibe}
-                      disabled={isSubmitting}
-                    />
-                    <Select
-                      label="Format"
-                      options={FORMAT_OPTIONS}
-                      value={format}
-                      onChange={setFormat}
-                      disabled={isSubmitting}
-                    />
-                  </InlineGrid>
-
+                <Card>
                   <BlockStack gap="200">
-                    <InlineStack gap="200" blockAlign="end">
-                      <div style={{ flex: 1 }}>
-                        <TextField
-                          label="Keywords (optional)"
-                          value={keywords}
-                          onChange={(v) => setKeywords(clamp(v, 2000))}
-                          placeholder="e.g. organic cotton, eco-friendly, sustainable"
-                          autoComplete="off"
-                          disabled={isSubmitting}
-                          helpText="Comma-separated SEO keywords applied to all products."
-                        />
-                      </div>
-                      <div style={{ paddingTop: 22 }}>
-                        <Button
-                          onClick={handleSuggestKeywords}
-                          loading={isSuggestingKeywords}
-                          disabled={isSubmitting || count === 0 || !canSuggestWithCredits}
-                          size="slim"
-                        >
-                          ✨ Suggest
-                        </Button>
-                      </div>
+                    <InlineStack align="space-between">
+                      <Text as="p" variant="bodySm" tone="subdued">
+                        Description credit cost
+                      </Text>
+                      <Text as="p" variant="bodySm" fontWeight="semibold">
+                        {formatCredits(creditCost)} credits
+                      </Text>
                     </InlineStack>
+                  </BlockStack>
+                </Card>
 
-                    {kwList.length > 0 && (
-                      <InlineStack gap="100" wrap>
-                        {kwList.map((kw) => (
-                          <div
-                            key={kw}
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: 4,
-                              background: "#f1f2f3",
-                              border: "1px solid #c9cccf",
-                              borderRadius: 4,
-                              padding: "2px 8px",
-                              fontSize: 13,
-                            }}
+                <Card>
+                  <BlockStack gap="300">
+                    <Text as="h3" variant="headingSm">Generation Settings</Text>
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      These settings apply to all selected products.
+                    </Text>
+
+                    <InlineGrid columns={2} gap="300">
+                      <Select
+                        label="Writing style"
+                        options={VIBE_OPTIONS}
+                        value={vibe}
+                        onChange={setVibe}
+                        disabled={isSubmitting}
+                      />
+                      <Select
+                        label="Format"
+                        options={FORMAT_OPTIONS}
+                        value={format}
+                        onChange={setFormat}
+                        disabled={isSubmitting}
+                      />
+                    </InlineGrid>
+
+                    <BlockStack gap="200">
+                      <InlineStack gap="200" blockAlign="end">
+                        <div style={{ flex: 1 }}>
+                          <TextField
+                            label="Keywords (optional)"
+                            value={keywords}
+                            onChange={(v) => setKeywords(clamp(v, 2000))}
+                            placeholder="e.g. organic cotton, eco-friendly, sustainable"
+                            autoComplete="off"
+                            disabled={isSubmitting}
+                            helpText="Comma-separated SEO keywords applied to all products."
+                          />
+                        </div>
+                        <div style={{ paddingTop: 22 }}>
+                          <Button
+                            onClick={handleSuggestKeywords}
+                            loading={isSuggestingKeywords}
+                            disabled={isSubmitting || count === 0 || !canSuggestWithCredits}
+                            size="slim"
                           >
-                            {kw}
-                            <button
-                              onClick={() =>
-                                setKeywords(
-                                  parseKeywords(keywords)
-                                    .filter((k) => k !== kw)
-                                    .join(", "),
-                                )
-                              }
-                              style={{
-                                background: "none",
-                                border: "none",
-                                cursor: "pointer",
-                                padding: "0 2px",
-                                fontSize: 12,
-                                color: "#6d7175",
-                              }}
-                            >
-                              ×
-                            </button>
-                          </div>
-                        ))}
+                            ✨ Suggest
+                          </Button>
+                        </div>
                       </InlineStack>
-                    )}
 
-                    {suggestedKeywords.length > 0 && (
-                      <BlockStack gap="100">
-                        <Text as="p" variant="bodySm" tone="subdued">
-                          Suggested for your selection — click to add:
-                        </Text>
+                      {kwList.length > 0 && (
                         <InlineStack gap="100" wrap>
-                          {suggestedKeywords.map((kw) => (
-                            <button
+                          {kwList.map((kw) => (
+                            <div
                               key={kw}
-                              onClick={() => handleAddSuggestedKeyword(kw)}
                               style={{
-                                background: "none",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 4,
+                                background: "#f1f2f3",
                                 border: "1px solid #c9cccf",
                                 borderRadius: 4,
                                 padding: "2px 8px",
-                                cursor: "pointer",
                                 fontSize: 13,
-                                color: "#202223",
                               }}
                             >
-                              + {kw}
-                            </button>
+                              {kw}
+                              <button
+                                onClick={() =>
+                                  setKeywords(
+                                    parseKeywords(keywords)
+                                      .filter((k) => k !== kw)
+                                      .join(", "),
+                                  )
+                                }
+                                style={{
+                                  background: "none",
+                                  border: "none",
+                                  cursor: "pointer",
+                                  padding: "0 2px",
+                                  fontSize: 12,
+                                  color: "#6d7175",
+                                }}
+                              >
+                                ×
+                              </button>
+                            </div>
                           ))}
                         </InlineStack>
-                      </BlockStack>
-                    )}
+                      )}
 
-                    {keywordFetcher.data?.ok === false && (
-                      <Text as="p" variant="bodySm" tone="critical">
-                        Could not suggest keywords. Please try again.
-                      </Text>
-                    )}
+                      {suggestedKeywords.length > 0 && (
+                        <BlockStack gap="100">
+                          <Text as="p" variant="bodySm" tone="subdued">
+                            Suggested for your selection — click to add:
+                          </Text>
+                          <InlineStack gap="100" wrap>
+                            {suggestedKeywords.map((kw) => (
+                              <button
+                                key={kw}
+                                onClick={() => handleAddSuggestedKeyword(kw)}
+                                style={{
+                                  background: "none",
+                                  border: "1px solid #c9cccf",
+                                  borderRadius: 4,
+                                  padding: "2px 8px",
+                                  cursor: "pointer",
+                                  fontSize: 13,
+                                  color: "#202223",
+                                }}
+                              >
+                                + {kw}
+                              </button>
+                            ))}
+                          </InlineStack>
+                        </BlockStack>
+                      )}
+
+                      {keywordFetcher.data?.ok === false && (
+                        <Text as="p" variant="bodySm" tone="critical">
+                          Could not suggest keywords. Please try again.
+                        </Text>
+                      )}
+                    </BlockStack>
                   </BlockStack>
-                </BlockStack>
-              </Card>
-
-              {isSubmitting && (
-                <Card>
-                  <InlineStack gap="300" blockAlign="center">
-                    <Spinner size="small" />
-                    <Text as="p">
-                      Queueing {count} job{count !== 1 ? "s" : ""}…
-                    </Text>
-                  </InlineStack>
                 </Card>
-              )}
 
-            </BlockStack>
+                {isSubmitting && (
+                  <Card>
+                    <InlineStack gap="300" blockAlign="center">
+                      <Spinner size="small" />
+                      <Text as="p">
+                        Queueing {count} job{count !== 1 ? "s" : ""}…
+                      </Text>
+                    </InlineStack>
+                  </Card>
+                )}
+
+              </BlockStack>
+            )
           )}
 
           {/* ══════════════════════════════════════════════
-              TAB: Meta title & description
+              SECTION: Meta title & description
+              (unchanged — already inline/synchronous)
           ══════════════════════════════════════════════ */}
-          {activeTab === "meta" && (
+          {selectedSections.includes("meta") && (
             <BlockStack gap="400">
 
               {metaFetcher.data?.ok === false && (
@@ -611,17 +740,12 @@ export function BulkGenerateModal({
                 <BlockStack gap="200">
                   <InlineStack align="space-between">
                     <Text as="p" variant="bodySm" tone="subdued">
-                      Credit cost ({count} products × {formatCredits(CREDIT_COSTS.metaGeneration)})
+                      Meta credit cost ({count} products × {formatCredits(CREDIT_COSTS.metaGeneration)})
                     </Text>
                     <Text as="p" variant="bodySm" fontWeight="semibold">
                       {formatCredits(metaCreditCost)} credits
                     </Text>
                   </InlineStack>
-                  {!canGenerateMetaWithCredits && (
-                    <Banner tone="critical" title="Not enough credits">
-                      This selection needs {formatCredits(metaCreditCost)} credits.
-                    </Banner>
-                  )}
                 </BlockStack>
               </Card>
 
@@ -706,9 +830,10 @@ export function BulkGenerateModal({
           )}
 
           {/* ══════════════════════════════════════════════
-              TAB: Image alt text
+              SECTION: Image alt text
+              (unchanged — already inline/synchronous)
           ══════════════════════════════════════════════ */}
-          {activeTab === "alttext" && (
+          {selectedSections.includes("alttext") && (
             <BlockStack gap="400">
 
               {altTextFetcher.data?.ok === false && (
@@ -735,7 +860,7 @@ export function BulkGenerateModal({
                 <BlockStack gap="200">
                   <InlineStack align="space-between">
                     <Text as="p" variant="bodySm" tone="subdued">
-                      Estimated credit cost (per image across {count} products)
+                      Estimated alt text credit cost (per image across {count} products)
                     </Text>
                     <Text as="p" variant="bodySm" fontWeight="semibold">
                       {formatCredits(altTextCreditCost)}+ credits
@@ -744,11 +869,6 @@ export function BulkGenerateModal({
                   <Text as="p" variant="bodySm" tone="subdued">
                     Exact cost depends on the number of images per product. You will only be charged for images that are processed.
                   </Text>
-                  {!canGenerateAltTextWithCredits && (
-                    <Banner tone="critical" title="Not enough credits">
-                      You need at least {formatCredits(altTextCreditCost)} credits to proceed.
-                    </Banner>
-                  )}
                 </BlockStack>
               </Card>
 
@@ -806,6 +926,16 @@ export function BulkGenerateModal({
               )}
 
             </BlockStack>
+          )}
+
+          {selectedSections.length === 0 && (
+            <Card>
+              <Box padding="400">
+                <Text as="p" tone="subdued" alignment="center">
+                  Select at least one section above to get started.
+                </Text>
+              </Box>
+            </Card>
           )}
 
         </BlockStack>

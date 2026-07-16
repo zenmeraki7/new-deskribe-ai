@@ -9,6 +9,7 @@ import { enqueueGenerationJobs } from "../../lib/enqueue.server";
 import { suggestKeywords, generateImageAltText, generateImageAltTextBulk, generateMetaOnly } from "../../lib/ai.server";
 import { checkBilling } from "../../lib/billing.server";
 import { sanitiseHtml, stripHtml } from "../../lib/html.server";
+import { fetchProductMeta } from "../../lib/productMeta.server";
 
 import {
   ACTIVE_JOB_LOOKBACK_MS,
@@ -190,49 +191,6 @@ async function adminGraphqlWithRetry<T>(
   throw new Error("Shopify GraphQL retry attempts exhausted");
 }
 
-
-// Product meta fetch
-
-
-async function fetchProductMeta(adminGraphql: (query: string, opts?: any) => Promise<Response>, productGid: string) {
-  const gql = await adminGraphqlWithRetry<{
-    data?: {
-      product?: {
-        id: string;
-        title: string;
-        productType: string;
-        vendor: string;
-        tags: string[];
-        media?: { edges: { node: { id: string; alt: string | null; image?: { url: string } | null } }[] };
-      } | null;
-    };
-    errors?: any[];
-  }>(
-    adminGraphql,
-    `#graphql
-    query ProductMeta($id: ID!) {
-      product(id: $id) {
-        id title productType vendor tags
-        media(first: 50) {
-          edges { node { id alt ... on MediaImage { image { url } } } }
-        }
-      }
-    }`,
-    { id: productGid },
-  );
-
-  const p = gql.data?.product;
-  if (!p) return null;
-
-  const images = (p.media?.edges ?? [])
-    .map((e) => e.node)
-    .filter((n) => n?.image?.url)
-    .map((n) => ({ id: n.id, url: n.image!.url, altText: n.alt ?? null }));
-
-  return { id: p.id, title: p.title, productType: p.productType, vendor: p.vendor, tags: p.tags, images };
-}
-
-
 // Loader
 
 
@@ -405,89 +363,90 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
 
   // â”€â”€ Intent: generate 
   if (intent === "generate") {
-    const plan = await getShopPlan(admin.graphql);
-    const limitResult = await checkAndIncrementRateLimit(shopDomain, plan);
+  const plan = await getShopPlan(admin.graphql);
+  const limitResult = await checkAndIncrementRateLimit(shopDomain, plan);
 
-    if (!limitResult.allowed) {
-      const isGlobal = limitResult.reason === "global_limit";
-      return json(
-        {
-          ok: false, kind: "error",
-          code: isGlobal ? "GLOBAL_LIMIT_REACHED" : "RATE_LIMIT_EXCEEDED",
-          error: isGlobal ? "Service is temporarily at capacity." : "Too many generation requests. Please try again in a minute.",
-          plan,
-        },
-        { status: 429 },
-      );
-    }
-
-    const rawVibe = String(form.get("vibe") ?? "casual").slice(0, 40);
-    const format = String(form.get("format") ?? "paragraph").slice(0, 40);
-    const includeSocials = form.get("includeSocials") === "true";
-    const keywordsCsv = keywordCsvFromInput(form.get("keywords"));
-    const customInstruction = String(form.get("customInstruction") ?? "").trim().slice(0, 1000);
-    const vibe = rawVibe.startsWith("custom:") ? "custom" : rawVibe;
-
-    const lookback = new Date(Date.now() - ACTIVE_JOB_LOOKBACK_MS);
-    const existing = await db.generationJob.findFirst({
-      where: {
-        shopDomain, productId: productGid,
-        status: { in: [...ACTIVE_JOB_STATUSES] as any },
-        createdAt: { gte: lookback },
-        vibe, format, keywords: keywordsCsv, includeSocials,
-        customInstruction: customInstruction || null,
+  if (!limitResult.allowed) {
+    const isGlobal = limitResult.reason === "global_limit";
+    return json(
+      {
+        ok: false, kind: "error",
+        code: isGlobal ? "GLOBAL_LIMIT_REACHED" : "RATE_LIMIT_EXCEEDED",
+        error: isGlobal ? "Service is temporarily at capacity." : "Too many generation requests. Please try again in a minute.",
+        plan,
       },
-      orderBy: { createdAt: "desc" },
-      select: { id: true, status: true },
+      { status: 429 },
+    );
+  }
+
+  const rawVibe = String(form.get("vibe") ?? "casual").slice(0, 40);
+  const format = String(form.get("format") ?? "paragraph").slice(0, 40);
+  const includeSocials = form.get("includeSocials") === "true";
+  const includeMeta = form.get("includeMeta") === "true";        // ← new
+  const keywordsCsv = keywordCsvFromInput(form.get("keywords"));
+  const customInstruction = String(form.get("customInstruction") ?? "").trim().slice(0, 1000);
+  const vibe = rawVibe.startsWith("custom:") ? "custom" : rawVibe;
+
+  const lookback = new Date(Date.now() - ACTIVE_JOB_LOOKBACK_MS);
+  const existing = await db.generationJob.findFirst({
+    where: {
+      shopDomain, productId: productGid,
+      status: { in: [...ACTIVE_JOB_STATUSES] as any },
+      createdAt: { gte: lookback },
+      vibe, format, keywords: keywordsCsv, includeSocials, includeMeta,
+      customInstruction: customInstruction || null,
+    },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, status: true },
+  });
+
+  if (existing) {
+    return json({ ok: true, kind: "generate", jobId: existing.id, status: existing.status, alreadyQueued: true });
+  }
+
+  const creditRequestId = crypto.randomUUID();
+  const credit = await deductCredits({
+    shopId: shopDomain, plan, amount: CREDIT_COSTS.standardGeneration,
+    requestId: creditRequestId, kind: "generation",
+    metadata: { intent: "generate", productId: productGid, includeMeta },
+  });
+
+  if (!credit.allowed) {
+    return json(
+      { ok: false, kind: "error", code: "INSUFFICIENT_CREDITS", error: "Not enough credits",
+        creditsRemaining: credit.creditsRemaining, creditsLimit: credit.creditsLimit,
+        resetDate: credit.resetDate.toISOString(), plan },
+      { status: 402 },
+    );
+  }
+
+  try {
+    const { jobIds, skipped } = await enqueueGenerationJobs({
+      shopDomain, productIds: [productGid], vibe, format, keywords: keywordsCsv,
+      includeSocials, includeMeta, customInstruction: customInstruction || undefined,   // ← pass through
+      creditRequestId, creditCost: CREDIT_COSTS.standardGeneration, adminGraphql: admin.graphql,
     });
 
-    if (existing) {
-      return json({ ok: true, kind: "generate", jobId: existing.id, status: existing.status, alreadyQueued: true });
-    }
-
-    const creditRequestId = crypto.randomUUID();
-    const credit = await deductCredits({
-      shopId: shopDomain, plan, amount: CREDIT_COSTS.standardGeneration,
-      requestId: creditRequestId, kind: "generation",
-      metadata: { intent: "generate", productId: productGid },
-    });
-
-    if (!credit.allowed) {
-      return json(
-        { ok: false, kind: "error", code: "INSUFFICIENT_CREDITS", error: "Not enough credits",
-          creditsRemaining: credit.creditsRemaining, creditsLimit: credit.creditsLimit,
-          resetDate: credit.resetDate.toISOString(), plan },
-        { status: 402 },
-      );
-    }
-
-    try {
-      const { jobIds, skipped } = await enqueueGenerationJobs({
-        shopDomain, productIds: [productGid], vibe, format, keywords: keywordsCsv,
-        includeSocials, customInstruction: customInstruction || undefined,
-        creditRequestId, creditCost: CREDIT_COSTS.standardGeneration, adminGraphql: admin.graphql,
-      });
-
-      if (skipped.includes(productGid) || jobIds.length === 0) {
-        await refundCredits({
-          shopId: shopDomain, plan, amount: CREDIT_COSTS.standardGeneration,
-          requestId: `${creditRequestId}:enqueue-empty`,
-          metadata: { intent: "generate", productId: productGid },
-        });
-        return json({ ok: false, kind: "error", error: "Product not found or access denied", code: "NOT_FOUND_OR_DENIED" }, { status: 403 });
-      }
-
-      return json({ ok: true, kind: "generate", jobId: jobIds[0], status: "PENDING" });
-    } catch (err) {
+    if (skipped.includes(productGid) || jobIds.length === 0) {
       await refundCredits({
         shopId: shopDomain, plan, amount: CREDIT_COSTS.standardGeneration,
-        requestId: `${creditRequestId}:enqueue-error`,
+        requestId: `${creditRequestId}:enqueue-empty`,
         metadata: { intent: "generate", productId: productGid },
       });
-      const message = err instanceof Error ? err.message : "Unknown error";
-      return json({ ok: false, kind: "error", error: message, code: "GENERATE_FAILED" }, { status: 500 });
+      return json({ ok: false, kind: "error", error: "Product not found or access denied", code: "NOT_FOUND_OR_DENIED" }, { status: 403 });
     }
+
+    return json({ ok: true, kind: "generate", jobId: jobIds[0], status: "PENDING" });
+  } catch (err) {
+    await refundCredits({
+      shopId: shopDomain, plan, amount: CREDIT_COSTS.standardGeneration,
+      requestId: `${creditRequestId}:enqueue-error`,
+      metadata: { intent: "generate", productId: productGid },
+    });
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return json({ ok: false, kind: "error", error: message, code: "GENERATE_FAILED" }, { status: 500 });
   }
+}
 
   // â”€â”€ Intent: apply 
   if (intent === "apply") {
@@ -646,7 +605,17 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
       if (!product) throw new Response("Product not found", { status: 404 });
 
       const altText = await generateImageAltText({ title: product.title, vendor: product.vendor, productType: product.productType, imageIndex, totalImages });
-      return json({ ok: true, kind: "generate_alt_text", imageId, altText });
+
+const jobId = await upsertAltTextDrafts({
+  shopDomain,
+  productId: productGid,
+  productTitle: product.title,
+  entries: [{ imageId, altText }],
+  creditRequestId,
+  creditCost: CREDIT_COSTS.altTextGeneration,
+});
+
+return json({ ok: true, kind: "generate_alt_text", imageId, altText, jobId });
     } catch (err) {
       if (creditRequestId) {
         await refundCredits({
@@ -709,7 +678,16 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
 
       const altTexts = await generateImageAltTextBulk({ title: product.title, vendor: product.vendor, productType: product.productType, imageCount: imageIds.length });
       const results = imageIds.map((imageId, i) => ({ imageId, altText: altTexts[i] ?? "" }));
-      return json({ ok: true, kind: "generate_alt_text_bulk", results });
+      const standaloneJobId = await upsertAltTextDrafts({
+  shopDomain,
+  productId: productGid,
+  productTitle: product.title,
+  entries: results,
+  creditRequestId,
+  creditCost: totalCost,
+});
+
+      return json({ ok: true, kind: "generate_alt_text_bulk", results, jobId: standaloneJobId });
     } catch (err) {
       if (creditRequestId) {
         await refundCredits({
@@ -757,6 +735,7 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     if (Array.isArray(userErrors) && userErrors.length > 0) {
       return json({ ok: false, kind: "error", error: userErrors.map((e: { message: string }) => e.message).join("; "), code: "SHOPIFY_USER_ERRORS" }, { status: 422 });
     }
+    await markAltTextApplied({ shopDomain, productId: productGid, imageIds: [imageId] });
     return json({ ok: true, kind: "apply_alt_text", imageId, applied: true });
   }
 
@@ -802,11 +781,13 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     if (Array.isArray(userErrors) && userErrors.length > 0) {
       return json({ ok: false, kind: "error", error: userErrors.map((e: { message: string }) => e.message).join("; "), code: "SHOPIFY_USER_ERRORS" }, { status: 422 });
     }
+    await markAltTextApplied({ shopDomain, productId: productGid, imageIds: media.map((m) => m.id) });
     return json({ ok: true, kind: "apply_alt_text_bulk", applied: true, count: media.length });
   }
 
   // â”€â”€ Intent: generate_meta 
-  if (intent === "generate_meta") {
+  // ── Intent: generate_meta 
+if (intent === "generate_meta") {
   const plan = await getShopPlan(admin.graphql);
 
   if (!canUseFeature(plan, "metaGeneration")) {
@@ -840,7 +821,9 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     const keywords = normalizeKeywordList(String(form.get("keywords") ?? ""));
     const result = await generateMetaOnly({ title: product.title, vendor: product.vendor, productType: product.productType, tags: product.tags, keywords });
 
-    // ── Persist onto the job so History can show it ──────────────────────
+    let attachedJobId: string | null = null;
+
+    // ── Persist onto an existing job so History can show it ──────────────
     if (jobId && isUuidV4(jobId)) {
       const job = await db.generationJob.findFirst({
         where: { id: jobId, shopDomain, productId: productGid },
@@ -858,10 +841,39 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
             },
           },
         });
+        attachedJobId = jobId;
       }
     }
 
-    return json({ ok: true, kind: "generate_meta", ...result });
+    // ── No existing job to attach to (standalone meta-only generation) ───
+    // Create a completed job row of its own so it shows up in History.
+    if (!attachedJobId) {
+      const standaloneJob = await db.generationJob.create({
+        data: {
+          shopDomain,
+          productId: productGid,
+          productTitle: product.title,
+          vibe: "meta_only",
+          format: "meta_only",
+          keywords: keywords.join(", "),
+          status: "COMPLETED",
+          progress: 100,
+          traceId: crypto.randomUUID(),
+          inputHash: crypto.randomUUID(),
+          includeSocials: false,
+          creditRequestId,
+          creditCost: CREDIT_COSTS.metaGeneration,
+          result: {
+            meta_title: result.meta_title,
+            meta_description: result.meta_description,
+          },
+        },
+        select: { id: true },
+      });
+      attachedJobId = standaloneJob.id;
+    }
+
+    return json({ ok: true, kind: "generate_meta", jobId: attachedJobId, ...result });
   } catch (err) {
     if (creditRequestId) {
       await refundCredits({
@@ -874,7 +886,6 @@ export async function action({ request, params }: ActionFunctionArgs): Promise<R
     return json({ ok: false, kind: "error", error: message, code: "META_FAILED" }, { status: 500 });
   }
 }
-
   // â”€â”€ Intent: apply_meta 
   if (intent === "apply_meta") {
     const plan = await getShopPlan(admin.graphql);
