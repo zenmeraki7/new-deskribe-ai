@@ -24,6 +24,35 @@ export const DraftSchema = z.object({
 });
 
 export type DraftResult = z.infer<typeof DraftSchema>;
+async function requestKeywordArray(prompt: string): Promise<string[]> {
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4.1-mini",
+    temperature: 0.4,
+    messages: [
+      {
+        role: "system",
+        content:
+          "You generate SEO keyword lists for Shopify products. Always respond with a plain JSON array of strings only.",
+      },
+      { role: "user", content: prompt },
+    ],
+  });
+
+  const raw = completion.choices?.[0]?.message?.content ?? "[]";
+  const text = stripJsonFences(raw);
+
+  try {
+    const parsed = JSON.parse(text);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((k): k is string => typeof k === "string")
+      .slice(0, 20);
+  } catch (err) {
+    console.error("Keyword suggestion parse error:", err, "Raw:", raw);
+    throw new Error("AI returned invalid keyword format");
+  }
+}
+
 
 export async function generateProductDescription(params: {
   title: string;
@@ -86,6 +115,7 @@ Product Information:
 - Brand: ${vendor}
 - Category: ${productType}
 - Tags: ${tags.join(", ")}
+- Target Keywords: ${keywords.join(", ") || "none provided"}
 
 ${styleInstruction}
 
@@ -142,7 +172,39 @@ Return ONLY valid JSON, no markdown, no explanation:
 
   return parsed.data;
 }
-// ── Bulk keyword suggestion ────────────────────────────────────────────────────
+export async function suggestKeywords(
+  title: string,
+  vendor: string,
+  productType: string,
+  tags: string[],
+): Promise<string[]> {
+  const prompt = `
+You are an SEO expert for Shopify stores.
+
+Suggest SEO keywords for this single product.
+
+Product:
+- Title: ${title}
+- Brand: ${vendor || "unknown"}
+- Category: ${productType || "unknown"}
+- Tags: ${tags.slice(0, 12).join(", ") || "none"}
+
+Rules:
+- Return ONLY a valid JSON array of strings
+- No markdown, no explanation, no code fences
+- Maximum 20 keywords
+- Mix short-tail and long-tail keywords
+- Focus on search terms customers would actually use
+- Prioritize relevance over volume
+
+Example output:
+["keyword one", "keyword two", "keyword three"]
+`;
+
+  return requestKeywordArray(prompt);
+}
+
+// ?????? Bulk keyword suggestion ????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 // Takes meta from multiple products, finds common themes, suggests shared keywords.
 export async function suggestKeywordsBulk(products: {
   title: string;
@@ -152,7 +214,7 @@ export async function suggestKeywordsBulk(products: {
 }[]): Promise<string[]> {
   if (products.length === 0) return [];
 
-  // Build a compact product list for the prompt — avoid token bloat
+  // Build a compact product list for the prompt ??? avoid token bloat
   const productLines = products
     .slice(0, 50) // hard cap just in case
     .map((p, i) =>
@@ -182,34 +244,10 @@ Example output:
 ["keyword one", "keyword two", "keyword three"]
 `;
 
-  const completion = await openai.chat.completions.create({
-    model: "gpt-4.1-mini",
-    temperature: 0.4,
-    messages: [
-      {
-        role: "system",
-        content: "You generate SEO keyword lists for product collections. Always respond with a plain JSON array of strings only.",
-      },
-      { role: "user", content: prompt },
-    ],
-  });
-
-  const raw = completion.choices?.[0]?.message?.content ?? "[]";
-  const text = stripJsonFences(raw);
-
-  try {
-    const parsed = JSON.parse(text);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((k): k is string => typeof k === "string")
-      .slice(0, 20);
-  } catch (err) {
-    console.error("Bulk keyword suggestion parse error:", err, "Raw:", raw);
-    throw new Error("AI returned invalid keyword format");
-  }
+  return requestKeywordArray(prompt);
 }
 
-// ── Image alt text (single) ────────────────────────────────────────────────
+// ?????? Image alt text (single) ????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????????
 const ALT_TEXT_MAX_CHARS = 125; // accessibility / SEO best practice
 
 function clampAltText(s: string): string {

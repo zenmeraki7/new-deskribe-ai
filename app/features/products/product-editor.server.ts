@@ -7,6 +7,7 @@ import { db } from "../../lib/db.server";
 import { requireAdminSession, type AdminAuthContext } from "../../lib/auth.server";
 import { enqueueGenerationJobs } from "../../lib/enqueue.server";
 import { suggestKeywords, generateImageAltText, generateImageAltTextBulk, generateMetaOnly } from "../../lib/ai.server";
+import { markAltTextApplied, upsertAltTextDrafts } from "../../lib/altTextJob.server";
 import { checkBilling } from "../../lib/billing.server";
 import { sanitiseHtml, stripHtml } from "../../lib/html.server";
 import { fetchProductMeta } from "../../lib/productMeta.server";
@@ -21,7 +22,7 @@ import {
   UUID_V4_RE,
   MEDIA_IMAGE_GID_RE,
 } from "../../routes/app.products.$productId.constants";
-import type { LoaderData, ProductMeta, DraftResult } from "../../routes/app.products.$productId.types";
+import type { LoaderData, DraftResult } from "../../routes/app.products.$productId.types";
 import { checkAndIncrementRateLimit, checkAndIncrementKeywordLimit } from "../../lib/rateLimiter.server";
 import { resolvePlan, type Plan } from "../../lib/rateLimiter.server";
 import { CREDIT_COSTS, deductCredits, getCreditBalance, refundCredits } from "../../lib/creditService.server";
