@@ -47,7 +47,7 @@ const PRICING_PLANS: {
   {
     handle: "basic",
     name: "Basic",
-    price: "$9.99",
+    price: "$14.99",
     credits: "6,000 monthly credits",
     features: [
       "Bulk generation",

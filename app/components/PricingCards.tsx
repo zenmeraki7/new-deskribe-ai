@@ -22,7 +22,7 @@ const plans: Plan[] = [
   {
     id: "basic",
     name: "Basic Plan",
-    monthlyPrice: 9.99,
+    monthlyPrice:14.99,
     yearlyPrice: 83.92,
   },
   {

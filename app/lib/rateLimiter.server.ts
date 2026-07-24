@@ -33,9 +33,9 @@ export function resolvePlan(
   priceAmount: number | null | undefined,
 ): Plan {
   if (priceAmount == null) return "free";
-  if (priceAmount >= 24.99) return "pro";
-  if (priceAmount >= 14.99) return "advanced";
-  if (priceAmount >= 9.99) return "basic";
+  if (priceAmount >= 99.99) return "pro";
+  if (priceAmount >= 29.99) return "advanced";
+  if (priceAmount >= 14.99) return "basic";
   return "free";
 }
 
