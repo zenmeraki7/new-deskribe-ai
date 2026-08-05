@@ -259,25 +259,45 @@ async function getShopProductStats(
     };
   }
 
-  const [totalProducts, missingDescriptions] = await Promise.all([
-    getProductsCount(admin),
-    countProductsMissingDescriptions(admin),
-  ]);
+  // Define background sync function
+  const syncStats = async () => {
+    try {
+      const [totalProducts, missingDescriptions] = await Promise.all([
+        getProductsCount(admin),
+        countProductsMissingDescriptions(admin),
+      ]);
+      await db.shopProductStats.upsert({
+        where: { shopDomain },
+        create: { shopDomain, totalProducts, missingDescriptions },
+        update: {
+          totalProducts,
+          missingDescriptions,
+          lastSyncedAt: new Date(),
+        },
+      });
+    } catch (err) {
+      console.error("[getShopProductStats] Background sync failed:", err);
+    }
+  };
 
-  const updated = await db.shopProductStats.upsert({
-    where: { shopDomain },
-    create: { shopDomain, totalProducts, missingDescriptions },
-    update: {
-      totalProducts,
-      missingDescriptions,
-      lastSyncedAt: new Date(),
-    },
-  });
+  // Fire and forget background sync
+  syncStats();
 
+  // Return stale cache if available (Stale-While-Revalidate)
+  if (cached) {
+    return {
+      totalProducts: cached.totalProducts,
+      missingDescriptions: cached.missingDescriptions,
+      lastSyncedAt: cached.lastSyncedAt.toISOString(),
+    };
+  }
+
+  // If no cache exists, return 0s so the page loads instantly.
+  // The background sync will populate it shortly.
   return {
-    totalProducts: updated.totalProducts,
-    missingDescriptions: updated.missingDescriptions,
-    lastSyncedAt: updated.lastSyncedAt.toISOString(),
+    totalProducts: 0,
+    missingDescriptions: 0,
+    lastSyncedAt: new Date().toISOString(),
   };
 }
 
