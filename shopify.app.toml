@@ -2,7 +2,7 @@
 
 client_id = "edfa37793692fabbeabe10ec4f7e0151"
 name = "development"
-application_url = "https://economy-lynn-bids-limiting.trycloudflare.com"
+application_url = "https://phd-serving-ski-chambers.trycloudflare.com"
 embedded = true
 
 [webhooks]
@@ -14,7 +14,7 @@ scopes = "read_locations,read_products,write_products"
 
 [auth]
 redirect_urls = [
-  "https://economy-lynn-bids-limiting.trycloudflare.com/api/auth"
+  "https://phd-serving-ski-chambers.trycloudflare.com/api/auth"
 ]
 
 [build]

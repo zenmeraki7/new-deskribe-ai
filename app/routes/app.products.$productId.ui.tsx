@@ -24,10 +24,19 @@ import {
   Checkbox,
   Box,
 } from "@shopify/polaris";
-import { useFetcher, useLoaderData, useNavigate, useRevalidator } from "@remix-run/react";
+import {
+  useFetcher,
+  useLoaderData,
+  useNavigate,
+  useRevalidator,
+} from "@remix-run/react";
 import { useJobPoll } from "../hooks/useJobPoll";
 
-import type { LoaderData, DraftResult, CustomTemplate } from "./app.products.$productId.types";
+import type {
+  LoaderData,
+  DraftResult,
+  CustomTemplate,
+} from "./app.products.$productId.types";
 import { KEYWORDS, UUID_V4_RE } from "./app.products.$productId.constants";
 
 import { DiffViewer } from "../components/DiffViewer";
@@ -130,7 +139,8 @@ function TemplateBuilderModal({
     });
   };
 
-  const canSave = name.trim().length > 0 && instruction.trim().length > 0 && !isSaving;
+  const canSave =
+    name.trim().length > 0 && instruction.trim().length > 0 && !isSaving;
 
   return (
     <Modal
@@ -139,7 +149,8 @@ function TemplateBuilderModal({
       title="Custom Writing Style"
       primaryAction={{
         content: isSaving ? "Saving…" : "Save & Generate",
-        onAction: () => canSave && onSaveAndGenerate(name.trim(), instruction.trim()),
+        onAction: () =>
+          canSave && onSaveAndGenerate(name.trim(), instruction.trim()),
         loading: isSaving,
         disabled: !canSave,
       }}
@@ -154,10 +165,11 @@ function TemplateBuilderModal({
     >
       <Modal.Section>
         <BlockStack gap="400">
-
           {saveError && (
             <Banner tone="critical" title="Could not save template">
-              <Text as="p" variant="bodySm">{saveError}</Text>
+              <Text as="p" variant="bodySm">
+                {saveError}
+              </Text>
             </Banner>
           )}
 
@@ -232,7 +244,8 @@ function TemplateBuilderModal({
                       {t.name}
                     </Text>
                     <Text as="p" variant="bodySm" tone="subdued">
-                      {t.instruction.slice(0, 80)}{t.instruction.length > 80 ? "…" : ""}
+                      {t.instruction.slice(0, 80)}
+                      {t.instruction.length > 80 ? "…" : ""}
                     </Text>
                   </BlockStack>
                   <Button
@@ -246,7 +259,6 @@ function TemplateBuilderModal({
               ))}
             </BlockStack>
           )}
-
         </BlockStack>
       </Modal.Section>
     </Modal>
@@ -277,7 +289,9 @@ export default function ProductEditorModalRoute() {
   const [keywords, setKeywords] = useState<string>("");
   const [includeSocials, setIncludeSocials] = useState<boolean>(false);
   const [localCreditError, setLocalCreditError] = useState<string>("");
-  const [generationRequestPending, setGenerationRequestPending] = useState(false);
+  const [generationRequestPending, setGenerationRequestPending] =
+    useState(false);
+  const [appliedAltText, setAppliedAltText] = useState<Record<string, string>>({});
   const [isClosing, setIsClosing] = useState(false);
   const generationSubmitLockedRef = useRef(false);
 
@@ -288,10 +302,14 @@ export default function ProductEditorModalRoute() {
     alttext: `Image alt text${product.images.length > 0 ? ` (${product.images.length})` : ""}`,
   };
 
-  const [selectedSections, setSelectedSections] = useState<SectionKey[]>(["description"]);
+  const [selectedSections, setSelectedSections] = useState<SectionKey[]>([
+    "description",
+  ]);
   // What was actually generated in the last run — gates things like the SEO Preview
   // so toggling checkboxes afterwards doesn't retroactively show/hide existing content.
-  const [sectionsGenerated, setSectionsGenerated] = useState<SectionKey[]>(["description"]);
+  const [sectionsGenerated, setSectionsGenerated] = useState<SectionKey[]>([
+    "description",
+  ]);
   const [sectionPopoverActive, setSectionPopoverActive] = useState(false);
 
   const toggleSection = useCallback((key: SectionKey, checked: boolean) => {
@@ -303,7 +321,8 @@ export default function ProductEditorModalRoute() {
 
   // ── Custom template state ─────────────────────────────────────────────────
   const [showTemplateBuilder, setShowTemplateBuilder] = useState(false);
-  const [activeCustomInstruction, setActiveCustomInstruction] = useState<string>("");
+  const [activeCustomInstruction, setActiveCustomInstruction] =
+    useState<string>("");
 
   // ── Meta tab state ────────────────────────────────────────────────────────
   const [metaTitle, setMetaTitle] = useState<string>("");
@@ -318,7 +337,9 @@ export default function ProductEditorModalRoute() {
   const metaFetcher = useFetcher<any>();
   const applyMetaFetcher = useFetcher<any>();
 
-  const [altTextDrafts, setAltTextDrafts] = useState<Record<string, string>>({});
+  const [altTextDrafts, setAltTextDrafts] = useState<Record<string, string>>(
+    {},
+  );
   const altTextFetcher = useFetcher<any>();
   const altTextBulkFetcher = useFetcher<any>();
   const applyAltTextFetcher = useFetcher<any>();
@@ -366,12 +387,7 @@ export default function ProductEditorModalRoute() {
       ? [{ label: "✦ Create custom style", value: "custom_new" }]
       : [];
 
-    return [
-      ...builtIn,
-      ...paidVibes,
-      ...savedTemplates,
-      ...createCustomOption,
-    ];
+    return [...builtIn, ...paidVibes, ...savedTemplates, ...createCustomOption];
   }, [shopPlan, customTemplates, canUseCustomTemplates]);
 
   const formatOptions = useMemo(() => {
@@ -381,7 +397,9 @@ export default function ProductEditorModalRoute() {
       { label: "Hybrid", value: "hybrid" },
     ];
     if (shopPlan === "free") {
-      return all.filter((o) => o.value === "paragraph" || o.value === "bullets");
+      return all.filter(
+        (o) => o.value === "paragraph" || o.value === "bullets",
+      );
     }
     return all;
   }, [shopPlan]);
@@ -416,7 +434,11 @@ export default function ProductEditorModalRoute() {
   // ── Reset to valid defaults on free plan ──────────────────────────────────
   useEffect(() => {
     if (shopPlan === "free") {
-      if (vibe !== "casual" && vibe !== "minimalist" && !vibe.startsWith("custom:")) {
+      if (
+        vibe !== "casual" &&
+        vibe !== "minimalist" &&
+        !vibe.startsWith("custom:")
+      ) {
         setVibe("casual");
       }
       if (format !== "paragraph" && format !== "bullets") {
@@ -469,7 +491,10 @@ export default function ProductEditorModalRoute() {
 
   // ── Close builder on successful save ─────────────────────────────────────
   useEffect(() => {
-    if (templateFetcher.data?.ok && templateFetcher.data?.kind === "create_template") {
+    if (
+      templateFetcher.data?.ok &&
+      templateFetcher.data?.kind === "create_template"
+    ) {
       setShowTemplateBuilder(false);
       const newTemplate = templateFetcher.data.template;
       const savedInstruction = newTemplate?.instruction ?? "";
@@ -480,7 +505,12 @@ export default function ProductEditorModalRoute() {
         setActiveCustomInstruction(savedInstruction);
 
         if (pendingGenerateRef.current) {
-          if (!hasCredits(credits.creditsRemaining, CREDIT_COSTS.standardGeneration)) {
+          if (
+            !hasCredits(
+              credits.creditsRemaining,
+              CREDIT_COSTS.standardGeneration,
+            )
+          ) {
             setLocalCreditError("Not enough credits");
             return;
           }
@@ -498,7 +528,15 @@ export default function ProductEditorModalRoute() {
         }
       }
     }
-  }, [templateFetcher.data, credits.creditsRemaining, format, generateFetcher, includeSocials, keywords, selectedSections]);
+  }, [
+    templateFetcher.data,
+    credits.creditsRemaining,
+    format,
+    generateFetcher,
+    includeSocials,
+    keywords,
+    selectedSections,
+  ]);
 
   // ── Generation effects ────────────────────────────────────────────────────
   useEffect(() => {
@@ -552,8 +590,12 @@ export default function ProductEditorModalRoute() {
 
   const handleAddSuggestedKeyword = useCallback((kw: string) => {
     setKeywords((prev) => {
-      const existing = prev.split(",").map((k) => k.trim()).filter(Boolean);
-      if (existing.some((k) => k.toLowerCase() === kw.toLowerCase())) return prev;
+      const existing = prev
+        .split(",")
+        .map((k) => k.trim())
+        .filter(Boolean);
+      if (existing.some((k) => k.toLowerCase() === kw.toLowerCase()))
+        return prev;
       return [...existing, kw].join(", ");
     });
   }, []);
@@ -564,17 +606,18 @@ export default function ProductEditorModalRoute() {
 
   const latestDraftCompletesActiveJob = Boolean(
     latestDraft?.id &&
-      latestDraft.result &&
-      (latestDraft.id === lastCompletedJobId ||
-        latestDraft.id === pollingJobId ||
-        latestDraft.id === activeJob?.id),
+    latestDraft.result &&
+    (latestDraft.id === lastCompletedJobId ||
+      latestDraft.id === pollingJobId ||
+      latestDraft.id === activeJob?.id),
   );
 
   const isGenerating =
     (generationRequestPending && !latestDraftCompletesActiveJob) ||
     (isPolling && !latestDraftCompletesActiveJob) ||
     generateFetcher.state !== "idle" ||
-    ((pollStatus === "PENDING" || pollStatus === "PROCESSING") && !latestDraftCompletesActiveJob);
+    ((pollStatus === "PENDING" || pollStatus === "PROCESSING") &&
+      !latestDraftCompletesActiveJob);
 
   const isApplying = applyFetcher.state !== "idle";
 
@@ -632,11 +675,11 @@ export default function ProductEditorModalRoute() {
 
   useEffect(() => {
     if (!applySuccess) return;
-    const scrollContainer = (
-      modalSectionRef.current?.closest(".Polaris-Scrollable") ??
+    const scrollContainer = (modalSectionRef.current?.closest(
+      ".Polaris-Scrollable",
+    ) ??
       document.querySelector(".Polaris-Modal-Section") ??
-      document.querySelector(".Polaris-Scrollable")
-    ) as HTMLElement | null;
+      document.querySelector(".Polaris-Scrollable")) as HTMLElement | null;
     scrollContainer?.scrollTo({ top: 0, behavior: "smooth" });
   }, [applySuccess, applyFetcher.data]);
 
@@ -662,20 +705,20 @@ export default function ProductEditorModalRoute() {
 
   const hasCompletedDraft = Boolean(
     draftResult &&
-      draftHtml &&
-      applyJobId &&
-      isUuidV4(applyJobId) &&
-      hasCompletedStatus,
+    draftHtml &&
+    applyJobId &&
+    isUuidV4(applyJobId) &&
+    hasCompletedStatus,
   );
 
   const canApply = Boolean(
     hasCompletedDraft &&
-      !isApplying &&
-      (!isPolling || latestDraftCompletesActiveJob) &&
-      (pollStatus !== "PENDING" || latestDraftCompletesActiveJob) &&
-      (pollStatus !== "PROCESSING" || latestDraftCompletesActiveJob) &&
-      generateFetcher.state === "idle" &&
-      (!generationRequestPending || latestDraftCompletesActiveJob),
+    !isApplying &&
+    (!isPolling || latestDraftCompletesActiveJob) &&
+    (pollStatus !== "PENDING" || latestDraftCompletesActiveJob) &&
+    (pollStatus !== "PROCESSING" || latestDraftCompletesActiveJob) &&
+    generateFetcher.state === "idle" &&
+    (!generationRequestPending || latestDraftCompletesActiveJob),
   );
 
   const isCustomVibeSelected = vibe.startsWith("custom:");
@@ -689,22 +732,30 @@ export default function ProductEditorModalRoute() {
   );
 
   // ── Alt text handlers ─────────────────────────────────────────────────────
-  const handleGenerateAltText = useCallback((imageId: string, imageIndex: number, totalImages: number) => {
-    if (!hasCredits(credits.creditsRemaining, CREDIT_COSTS.altTextGeneration)) {
-      setLocalCreditError("Not enough credits");
-      return;
-    }
-    setLocalCreditError("");
-    const fd = new FormData();
-    fd.set("intent", "generate_alt_text");
-    fd.set("imageId", imageId);
-    fd.set("imageIndex", String(imageIndex));
-    fd.set("totalImages", String(totalImages));
-    altTextFetcher.submit(fd, { method: "post" });
-  }, [altTextFetcher, credits.creditsRemaining]);
+  const handleGenerateAltText = useCallback(
+    (imageId: string, imageIndex: number, totalImages: number) => {
+      if (
+        !hasCredits(credits.creditsRemaining, CREDIT_COSTS.altTextGeneration)
+      ) {
+        setLocalCreditError("Not enough credits");
+        return;
+      }
+      setLocalCreditError("");
+      const fd = new FormData();
+      fd.set("intent", "generate_alt_text");
+      fd.set("imageId", imageId);
+      fd.set("imageIndex", String(imageIndex));
+      fd.set("totalImages", String(totalImages));
+      altTextFetcher.submit(fd, { method: "post" });
+    },
+    [altTextFetcher, credits.creditsRemaining],
+  );
 
   useEffect(() => {
-    if (altTextFetcher.data?.ok && altTextFetcher.data?.kind === "generate_alt_text") {
+    if (
+      altTextFetcher.data?.ok &&
+      altTextFetcher.data?.kind === "generate_alt_text"
+    ) {
       const { imageId, altText } = altTextFetcher.data;
       setAltTextDrafts((prev) => ({ ...prev, [imageId]: altText }));
     }
@@ -724,8 +775,14 @@ export default function ProductEditorModalRoute() {
   }, [altTextBulkFetcher, credits.creditsRemaining, product.images]);
 
   useEffect(() => {
-    if (altTextBulkFetcher.data?.ok && altTextBulkFetcher.data?.kind === "generate_alt_text_bulk") {
-      const results = altTextBulkFetcher.data.results as { imageId: string; altText: string }[];
+    if (
+      altTextBulkFetcher.data?.ok &&
+      altTextBulkFetcher.data?.kind === "generate_alt_text_bulk"
+    ) {
+      const results = altTextBulkFetcher.data.results as {
+        imageId: string;
+        altText: string;
+      }[];
       setAltTextDrafts((prev) => {
         const next = { ...prev };
         for (const r of results) next[r.imageId] = r.altText;
@@ -734,15 +791,18 @@ export default function ProductEditorModalRoute() {
     }
   }, [altTextBulkFetcher.data]);
 
-  const handleApplyAltText = useCallback((imageId: string) => {
-    const altText = altTextDrafts[imageId];
-    if (!altText?.trim()) return;
-    const fd = new FormData();
-    fd.set("intent", "apply_alt_text");
-    fd.set("imageId", imageId);
-    fd.set("altText", altText);
-    applyAltTextFetcher.submit(fd, { method: "post" });
-  }, [altTextDrafts, applyAltTextFetcher]);
+  const handleApplyAltText = useCallback(
+    (imageId: string) => {
+      const altText = altTextDrafts[imageId];
+      if (!altText?.trim()) return;
+      const fd = new FormData();
+      fd.set("intent", "apply_alt_text");
+      fd.set("imageId", imageId);
+      fd.set("altText", altText);
+      applyAltTextFetcher.submit(fd, { method: "post" });
+    },
+    [altTextDrafts, applyAltTextFetcher],
+  );
 
   const handleApplyAllAltText = useCallback(() => {
     const items = product.images
@@ -765,14 +825,18 @@ export default function ProductEditorModalRoute() {
 
   // ── Meta effects ──────────────────────────────────────────────────────────
   useEffect(() => {
-    if (draftResult?.meta_title && !metaTitle) setMetaTitle(draftResult.meta_title);
-    if (draftResult?.meta_description && !metaDescription) setMetaDescription(draftResult.meta_description);
+    if (draftResult?.meta_title && !metaTitle)
+      setMetaTitle(draftResult.meta_title);
+    if (draftResult?.meta_description && !metaDescription)
+      setMetaDescription(draftResult.meta_description);
   }, [draftResult]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (metaFetcher.data?.ok && metaFetcher.data?.kind === "generate_meta") {
-      if (metaFetcher.data.meta_title) setMetaTitle(metaFetcher.data.meta_title);
-      if (metaFetcher.data.meta_description) setMetaDescription(metaFetcher.data.meta_description);
+      if (metaFetcher.data.meta_title)
+        setMetaTitle(metaFetcher.data.meta_title);
+      if (metaFetcher.data.meta_description)
+        setMetaDescription(metaFetcher.data.meta_description);
     }
   }, [metaFetcher.data]);
 
@@ -786,8 +850,10 @@ export default function ProductEditorModalRoute() {
 
     let totalCost = 0;
     if (wantsDescription) totalCost += CREDIT_COSTS.standardGeneration; // meta bundled in, free when combined
-    if (wantsMeta && !wantsDescription) totalCost += CREDIT_COSTS.metaGeneration;
-    if (wantsAltText) totalCost += CREDIT_COSTS.altTextGeneration * product.images.length;
+    if (wantsMeta && !wantsDescription)
+      totalCost += CREDIT_COSTS.metaGeneration;
+    if (wantsAltText)
+      totalCost += CREDIT_COSTS.altTextGeneration * product.images.length;
 
     if (!hasCredits(credits.creditsRemaining, totalCost)) {
       setLocalCreditError("Not enough credits");
@@ -808,7 +874,10 @@ export default function ProductEditorModalRoute() {
       fd.set("includeSocials", String(includeSocials));
       fd.set("includeMeta", String(wantsMeta));
       if (isCustomVibeSelected && activeCustomInstruction) {
-        fd.set("customInstruction", clampTextInput(activeCustomInstruction, 1000));
+        fd.set(
+          "customInstruction",
+          clampTextInput(activeCustomInstruction, 1000),
+        );
       }
       generateFetcher.submit(fd, { method: "post" });
     } else if (wantsMeta) {
@@ -822,9 +891,19 @@ export default function ProductEditorModalRoute() {
       handleGenerateAllAltText();
     }
   }, [
-    selectedSections, isGenerationBusy, credits.creditsRemaining, product.images.length,
-    vibe, format, keywords, includeSocials, isCustomVibeSelected, activeCustomInstruction,
-    generateFetcher, metaFetcher, handleGenerateAllAltText,
+    selectedSections,
+    isGenerationBusy,
+    credits.creditsRemaining,
+    product.images.length,
+    vibe,
+    format,
+    keywords,
+    includeSocials,
+    isCustomVibeSelected,
+    activeCustomInstruction,
+    generateFetcher,
+    metaFetcher,
+    handleGenerateAllAltText,
   ]);
 
   const handleClose = useCallback(() => {
@@ -837,8 +916,12 @@ export default function ProductEditorModalRoute() {
   // ── Combined cost + busy state for the single Generate button ────────────
   const totalGenerateCost = useMemo(() => {
     let cost = 0;
-    if (selectedSections.includes("description")) cost += CREDIT_COSTS.standardGeneration;
-    if (selectedSections.includes("meta") && !selectedSections.includes("description")) {
+    if (selectedSections.includes("description"))
+      cost += CREDIT_COSTS.standardGeneration;
+    if (
+      selectedSections.includes("meta") &&
+      !selectedSections.includes("description")
+    ) {
       cost += CREDIT_COSTS.metaGeneration;
     }
     if (selectedSections.includes("alttext")) {
@@ -848,13 +931,15 @@ export default function ProductEditorModalRoute() {
   }, [selectedSections, product.images.length]);
 
   const canGenerateSelected =
-    selectedSections.length > 0 && hasCredits(credits.creditsRemaining, totalGenerateCost);
+    selectedSections.length > 0 &&
+    hasCredits(credits.creditsRemaining, totalGenerateCost);
 
   const isAltTextBusy =
     altTextBulkFetcher.state !== "idle" ||
     (selectedSections.includes("alttext") && altTextFetcher.state !== "idle");
 
-  const isAnyGenerationBusy = isGenerationBusy || metaFetcher.state !== "idle" || isAltTextBusy;
+  const isAnyGenerationBusy =
+    isGenerationBusy || metaFetcher.state !== "idle" || isAltTextBusy;
 
   // ─────────────────────────────────────────────────────────────────────────
   // Render
@@ -901,7 +986,6 @@ export default function ProductEditorModalRoute() {
         <Modal.Section>
           <div ref={modalSectionRef}>
             <BlockStack gap="400">
-
               {/* ── Credits ── */}
               <CreditUsageCard
                 compact
@@ -913,70 +997,81 @@ export default function ProductEditorModalRoute() {
 
               {/* ── Section selector dropdown (replaces tab bar) ── */}
               <Card>
-  <BlockStack gap="300">
-    <Text as="h3" variant="headingSm">What do you want to generate?</Text>
+                <BlockStack gap="300">
+                  <Text as="h3" variant="headingSm">
+                    What do you want to generate?
+                  </Text>
 
-    <Popover
-      active={sectionPopoverActive}
-      onClose={() => setSectionPopoverActive(false)}
-      fullWidth
-      activator={
-        <Button
-          disclosure
-          fullWidth
-          textAlign="left"
-          onClick={() => setSectionPopoverActive((v) => !v)}
-        >
-          {selectedSections.length
-            ? selectedSections.map((s) => SECTION_LABELS[s]).join(", ")
-            : "Select sections"}
-        </Button>
-      }
-    >
-      <Box padding="300">
-        <BlockStack gap="200">
-          <Checkbox
-            label={SECTION_LABELS.description}
-            checked={selectedSections.includes("description")}
-            onChange={(checked) => toggleSection("description", checked)}
-          />
-          <Checkbox
-            label={SECTION_LABELS.meta}
-            checked={selectedSections.includes("meta")}
-            onChange={(checked) => toggleSection("meta", checked)}
-          />
-          <Checkbox
-            label={SECTION_LABELS.alttext}
-            checked={selectedSections.includes("alttext")}
-            onChange={(checked) => toggleSection("alttext", checked)}
-            disabled={product.images.length === 0}
-          />
-        </BlockStack>
-      </Box>
-    </Popover>
+                  <Popover
+                    active={sectionPopoverActive}
+                    onClose={() => setSectionPopoverActive(false)}
+                    fullWidth
+                    activator={
+                      <Button
+                        disclosure
+                        fullWidth
+                        textAlign="left"
+                        onClick={() => setSectionPopoverActive((v) => !v)}
+                      >
+                        {selectedSections.length
+                          ? selectedSections
+                              .map((s) => SECTION_LABELS[s])
+                              .join(", ")
+                          : "Select sections"}
+                      </Button>
+                    }
+                  >
+                    <Box padding="300">
+                      <BlockStack gap="200">
+                        <Checkbox
+                          label={SECTION_LABELS.description}
+                          checked={selectedSections.includes("description")}
+                          onChange={(checked) =>
+                            toggleSection("description", checked)
+                          }
+                        />
+                        <Checkbox
+                          label={SECTION_LABELS.meta}
+                          checked={selectedSections.includes("meta")}
+                          onChange={(checked) => toggleSection("meta", checked)}
+                        />
+                        <Checkbox
+                          label={SECTION_LABELS.alttext}
+                          checked={selectedSections.includes("alttext")}
+                          onChange={(checked) =>
+                            toggleSection("alttext", checked)
+                          }
+                          disabled={product.images.length === 0}
+                        />
+                      </BlockStack>
+                    </Box>
+                  </Popover>
 
-    <InlineStack align="space-between">
-      <Text as="p" variant="bodySm" tone="subdued">
-        Estimated credit cost
-      </Text>
-      <Text as="p" variant="bodySm" fontWeight="semibold">
-        {formatCredits(totalGenerateCost)} credit{totalGenerateCost === 1 ? "" : "s"}
-      </Text>
-    </InlineStack>
-    <InlineStack align="space-between">
-      <Text as="p" variant="bodySm" tone="subdued">
-        Remaining credits before action
-      </Text>
-      <Text as="p" variant="bodySm" fontWeight="semibold">
-        {formatCredits(credits.creditsRemaining)}
-      </Text>
-    </InlineStack>
-  </BlockStack>
-</Card>
+                  <InlineStack align="space-between">
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      Estimated credit cost
+                    </Text>
+                    <Text as="p" variant="bodySm" fontWeight="semibold">
+                      {formatCredits(totalGenerateCost)} credit
+                      {totalGenerateCost === 1 ? "" : "s"}
+                    </Text>
+                  </InlineStack>
+                  <InlineStack align="space-between">
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      Remaining credits before action
+                    </Text>
+                    <Text as="p" variant="bodySm" fontWeight="semibold">
+                      {formatCredits(credits.creditsRemaining)}
+                    </Text>
+                  </InlineStack>
+                </BlockStack>
+              </Card>
 
               {localCreditError && (
                 <Banner tone="critical" title="Not enough credits">
-                  <Text as="p" variant="bodySm">{localCreditError}</Text>
+                  <Text as="p" variant="bodySm">
+                    {localCreditError}
+                  </Text>
                 </Banner>
               )}
 
@@ -993,7 +1088,8 @@ export default function ProductEditorModalRoute() {
               {latestDraft?.isStale && (
                 <Banner tone="warning" title="Draft may be outdated">
                   <Text as="p" variant="bodySm">
-                    This draft was generated before the product was last updated.
+                    This draft was generated before the product was last
+                    updated.
                   </Text>
                 </Banner>
               )}
@@ -1001,10 +1097,16 @@ export default function ProductEditorModalRoute() {
               {generateError && (
                 <Banner
                   tone={isRateLimited ? "warning" : "critical"}
-                  title={isRateLimited ? "Generation unavailable" : "Generation failed"}
+                  title={
+                    isRateLimited
+                      ? "Generation unavailable"
+                      : "Generation failed"
+                  }
                 >
                   <BlockStack gap="100">
-                    <Text as="p" variant="bodySm">{generateError}</Text>
+                    <Text as="p" variant="bodySm">
+                      {generateError}
+                    </Text>
                   </BlockStack>
                 </Banner>
               )}
@@ -1033,9 +1135,11 @@ export default function ProductEditorModalRoute() {
                     <Text as="p" variant="bodySm">
                       The draft description is now live on this product.
                     </Text>
-                    {(draftResult?.meta_title || draftResult?.meta_description) && (
+                    {(draftResult?.meta_title ||
+                      draftResult?.meta_description) && (
                       <Text as="p" variant="bodySm">
-                        SEO title and meta description were also updated on Shopify.
+                        SEO title and meta description were also updated on
+                        Shopify.
                       </Text>
                     )}
                   </BlockStack>
@@ -1047,25 +1151,35 @@ export default function ProductEditorModalRoute() {
               ══════════════════════════════════════════════ */}
               {selectedSections.includes("description") && (
                 <BlockStack gap="400">
-
                   <Card>
                     <BlockStack gap="300">
-                      <Text as="h3" variant="headingSm">Description Settings</Text>
+                      <Text as="h3" variant="headingSm">
+                        Description Settings
+                      </Text>
 
                       {shopPlan === "free" && (
                         <Text as="p" variant="bodySm" tone="subdued">
-                          ✦ Upgrade to Basic or higher to unlock all writing styles and formats (Luxury, Technical, Playful, Hybrid).
+                          ✦ Upgrade to Basic or higher to unlock all writing
+                          styles and formats (Luxury, Technical, Playful,
+                          Hybrid).
                         </Text>
                       )}
 
                       {(shopPlan === "free" || shopPlan === "basic") && (
                         <Text as="p" variant="bodySm" tone="subdued">
-                          ✦ Upgrade to Advanced or Pro to create custom writing style templates.
+                          ✦ Upgrade to Advanced or Pro to create custom writing
+                          style templates.
                         </Text>
                       )}
 
                       <InlineGrid columns={2} gap="300">
-                        <div style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "flex-end",
+                            gap: 8,
+                          }}
+                        >
                           <div style={{ flex: 1 }}>
                             <Select
                               label="Writing style"
@@ -1085,8 +1199,13 @@ export default function ProductEditorModalRoute() {
                             >
                               <Button
                                 size="slim"
-                                onClick={() => canUseCustomTemplates && setShowTemplateBuilder(true)}
-                                disabled={isGenerating || !canUseCustomTemplates}
+                                onClick={() =>
+                                  canUseCustomTemplates &&
+                                  setShowTemplateBuilder(true)
+                                }
+                                disabled={
+                                  isGenerating || !canUseCustomTemplates
+                                }
                               >
                                 +
                               </Button>
@@ -1113,7 +1232,12 @@ export default function ProductEditorModalRoute() {
                           }}
                         >
                           <BlockStack gap="050">
-                            <Text as="p" variant="bodySm" fontWeight="semibold" tone="subdued">
+                            <Text
+                              as="p"
+                              variant="bodySm"
+                              fontWeight="semibold"
+                              tone="subdued"
+                            >
                               Custom style instructions:
                             </Text>
                             <Text as="p" variant="bodySm">
@@ -1130,7 +1254,9 @@ export default function ProductEditorModalRoute() {
                             <TextField
                               label="Keywords"
                               value={keywords}
-                              onChange={(v) => setKeywords(clampTextInput(v, 2000))}
+                              onChange={(v) =>
+                                setKeywords(clampTextInput(v, 2000))
+                              }
                               placeholder="e.g. organic cotton, eco-friendly t-shirt"
                               autoComplete="off"
                               disabled={isGenerating}
@@ -1238,9 +1364,16 @@ export default function ProductEditorModalRoute() {
                       <BlockStack gap="200">
                         {sectionsGenerated.includes("meta") && (
                           <>
-                            <InlineStack align="space-between" blockAlign="center">
-                              <Text as="h3" variant="headingSm">SEO Preview</Text>
-                              {applySuccess && <Badge tone="success">Synced to Shopify</Badge>}
+                            <InlineStack
+                              align="space-between"
+                              blockAlign="center"
+                            >
+                              <Text as="h3" variant="headingSm">
+                                SEO Preview
+                              </Text>
+                              {applySuccess && (
+                                <Badge tone="success">Synced to Shopify</Badge>
+                              )}
                             </InlineStack>
                             <div
                               style={{
@@ -1264,7 +1397,13 @@ export default function ProductEditorModalRoute() {
                               >
                                 {draftResult.meta_title ?? product.title}
                               </div>
-                              <div style={{ fontSize: 13, color: "#006621", marginBottom: 4 }}>
+                              <div
+                                style={{
+                                  fontSize: 13,
+                                  color: "#006621",
+                                  marginBottom: 4,
+                                }}
+                              >
                                 {product.vendor || "Shopify"} › products
                               </div>
                               <div
@@ -1283,29 +1422,33 @@ export default function ProductEditorModalRoute() {
                           </>
                         )}
 
-                        {Array.isArray(draftResult.keywords) && draftResult.keywords.length > 0 && (
-                          <InlineStack gap="200" wrap>
-                            {draftResult.keywords
-                              .filter((kw) => typeof kw === "string" && kw.trim())
-                              .slice(0, 30)
-                              .map((kw) => (
-                                <Badge key={kw} tone="info">
-                                  {kw}
-                                </Badge>
-                              ))}
-                          </InlineStack>
-                        )}
+                        {Array.isArray(draftResult.keywords) &&
+                          draftResult.keywords.length > 0 && (
+                            <InlineStack gap="200" wrap>
+                              {draftResult.keywords
+                                .filter(
+                                  (kw) => typeof kw === "string" && kw.trim(),
+                                )
+                                .slice(0, 30)
+                                .map((kw) => (
+                                  <Badge key={kw} tone="info">
+                                    {kw}
+                                  </Badge>
+                                ))}
+                            </InlineStack>
+                          )}
 
-                        {sectionsGenerated.includes("meta") && draftResult.social_caption && (
-                          <BlockStack gap="100">
-                            <Text as="p" variant="bodySm" tone="subdued">
-                              Instagram caption:
-                            </Text>
-                            <Text as="p" variant="bodySm">
-                              {draftResult.social_caption}
-                            </Text>
-                          </BlockStack>
-                        )}
+                        {sectionsGenerated.includes("meta") &&
+                          draftResult.social_caption && (
+                            <BlockStack gap="100">
+                              <Text as="p" variant="bodySm" tone="subdued">
+                                Instagram caption:
+                              </Text>
+                              <Text as="p" variant="bodySm">
+                                {draftResult.social_caption}
+                              </Text>
+                            </BlockStack>
+                          )}
                       </BlockStack>
                     </Card>
                   )}
@@ -1313,7 +1456,9 @@ export default function ProductEditorModalRoute() {
                   <Card>
                     <BlockStack gap="300">
                       <InlineStack align="space-between" blockAlign="center">
-                        <Text as="h3" variant="headingSm">Compare</Text>
+                        <Text as="h3" variant="headingSm">
+                          Compare
+                        </Text>
                         {!currentHtml && (
                           <Button
                             onClick={handleLoadComparison}
@@ -1357,7 +1502,6 @@ export default function ProductEditorModalRoute() {
                       </Button>
                     </InlineStack>
                   )}
-
                 </BlockStack>
               )}
 
@@ -1366,7 +1510,6 @@ export default function ProductEditorModalRoute() {
               ══════════════════════════════════════════════ */}
               {selectedSections.includes("meta") && (
                 <BlockStack gap="400">
-
                   {applyMetaFetcher.data?.ok === true && (
                     <Banner tone="success" title="Applied to Shopify">
                       <Text as="p" variant="bodySm">
@@ -1390,7 +1533,9 @@ export default function ProductEditorModalRoute() {
                   <Card>
                     <BlockStack gap="300">
                       <InlineStack align="space-between" blockAlign="center">
-                        <Text as="h3" variant="headingSm">Meta title</Text>
+                        <Text as="h3" variant="headingSm">
+                          Meta title
+                        </Text>
                         <Text
                           as="p"
                           variant="bodySm"
@@ -1421,11 +1566,17 @@ export default function ProductEditorModalRoute() {
                   <Card>
                     <BlockStack gap="300">
                       <InlineStack align="space-between" blockAlign="center">
-                        <Text as="h3" variant="headingSm">Meta description</Text>
+                        <Text as="h3" variant="headingSm">
+                          Meta description
+                        </Text>
                         <Text
                           as="p"
                           variant="bodySm"
-                          tone={metaDescription.length > 155 ? "critical" : "subdued"}
+                          tone={
+                            metaDescription.length > 155
+                              ? "critical"
+                              : "subdued"
+                          }
                         >
                           {metaDescription.length} / 155
                         </Text>
@@ -1437,7 +1588,9 @@ export default function ProductEditorModalRoute() {
                         label="Meta description"
                         labelHidden
                         value={metaDescription}
-                        onChange={(v) => setMetaDescription(clampTextInput(v, 320))}
+                        onChange={(v) =>
+                          setMetaDescription(clampTextInput(v, 320))
+                        }
                         placeholder="e.g. Shop our new arrival. Free shipping on orders over £50."
                         multiline={3}
                         autoComplete="off"
@@ -1451,13 +1604,16 @@ export default function ProductEditorModalRoute() {
                   </Card>
 
                   <Text as="p" variant="bodySm" tone="subdued">
-                    Use the Generate button above, or edit the fields above manually.
+                    Use the Generate button above, or edit the fields above
+                    manually.
                   </Text>
 
                   {(metaTitle || metaDescription) && (
                     <Card>
                       <BlockStack gap="200">
-                        <Text as="h3" variant="headingSm">Live preview</Text>
+                        <Text as="h3" variant="headingSm">
+                          Live preview
+                        </Text>
                         <div
                           style={{
                             padding: 16,
@@ -1480,7 +1636,13 @@ export default function ProductEditorModalRoute() {
                           >
                             {metaTitle || product.title}
                           </div>
-                          <div style={{ fontSize: 13, color: "#006621", marginBottom: 4 }}>
+                          <div
+                            style={{
+                              fontSize: 13,
+                              color: "#006621",
+                              marginBottom: 4,
+                            }}
+                          >
                             {product.vendor || "Shopify"} › products
                           </div>
                           <div
@@ -1517,7 +1679,6 @@ export default function ProductEditorModalRoute() {
                       Apply to Shopify
                     </Button>
                   </InlineStack>
-
                 </BlockStack>
               )}
 
@@ -1526,7 +1687,6 @@ export default function ProductEditorModalRoute() {
               ══════════════════════════════════════════════ */}
               {selectedSections.includes("alttext") && (
                 <BlockStack gap="400">
-
                   {product.images.length === 0 ? (
                     <Banner tone="info" title="No images">
                       <Text as="p" variant="bodySm">
@@ -1537,17 +1697,27 @@ export default function ProductEditorModalRoute() {
                     <Card>
                       <BlockStack gap="300">
                         <InlineStack align="space-between" blockAlign="center">
-                          <Text as="h3" variant="headingSm">Image Alt Text</Text>
+                          <Text as="h3" variant="headingSm">
+                            Image Alt Text
+                          </Text>
                           <Button
                             onClick={handleGenerateAllAltText}
                             loading={altTextBulkFetcher.state !== "idle"}
-                            disabled={!hasCredits(
-                              credits.creditsRemaining,
-                              CREDIT_COSTS.altTextGeneration * product.images.length,
-                            )}
+                            disabled={
+                              !hasCredits(
+                                credits.creditsRemaining,
+                                CREDIT_COSTS.altTextGeneration *
+                                  product.images.length,
+                              )
+                            }
                             size="slim"
                           >
-                            ✨ Generate all ({formatCredits(CREDIT_COSTS.altTextGeneration * product.images.length)} credits)
+                            ✨ Generate all (
+                            {formatCredits(
+                              CREDIT_COSTS.altTextGeneration *
+                                product.images.length,
+                            )}{" "}
+                            credits)
                           </Button>
                         </InlineStack>
 
@@ -1557,18 +1727,33 @@ export default function ProductEditorModalRoute() {
                           </Banner>
                         )}
                         {altTextBulkFetcher.data?.ok === false && (
-                          <Banner tone="critical" title="Bulk generation failed">
+                          <Banner
+                            tone="critical"
+                            title="Bulk generation failed"
+                          >
                             {String(altTextBulkFetcher.data.error ?? "")}
                           </Banner>
                         )}
                         {(applyAltTextFetcher.data?.ok === false ||
                           applyAltTextBulkFetcher.data?.ok === false) && (
-                          <Banner tone="critical" title="Failed to apply alt text">
+                          <Banner
+                            tone="critical"
+                            title="Failed to apply alt text"
+                          >
                             {String(
                               applyAltTextFetcher.data?.error ??
                                 applyAltTextBulkFetcher.data?.error ??
                                 "",
                             )}
+                          </Banner>
+                        )}
+                        {/* ADD THIS: success banner for single + bulk apply */}
+                        {(applyAltTextFetcher.data?.ok === true ||
+                          applyAltTextBulkFetcher.data?.ok === true) && (
+                          <Banner tone="success" title="Applied to Shopify">
+                            <Text as="p" variant="bodySm">
+                              Alt text is now live on this product.
+                            </Text>
                           </Banner>
                         )}
 
@@ -1579,11 +1764,17 @@ export default function ProductEditorModalRoute() {
                             altTextFetcher.formData?.get("imageId") === img.id;
                           const isApplyingThis =
                             applyAltTextFetcher.state !== "idle" &&
-                            applyAltTextFetcher.formData?.get("imageId") === img.id;
+                            applyAltTextFetcher.formData?.get("imageId") ===
+                              img.id;
                           const hasDraft = draft.trim().length > 0;
 
                           return (
-                            <InlineStack key={img.id} gap="300" blockAlign="start" wrap={false}>
+                            <InlineStack
+                              key={img.id}
+                              gap="300"
+                              blockAlign="start"
+                              wrap={false}
+                            >
                               <img
                                 src={img.url}
                                 alt=""
@@ -1599,7 +1790,11 @@ export default function ProductEditorModalRoute() {
                               <div style={{ flex: 1, minWidth: 0 }}>
                                 <BlockStack gap="150">
                                   {img.altText && (
-                                    <Text as="p" variant="bodySm" tone="subdued">
+                                    <Text
+                                      as="p"
+                                      variant="bodySm"
+                                      tone="subdued"
+                                    >
                                       Current: {img.altText}
                                     </Text>
                                   )}
@@ -1616,20 +1811,28 @@ export default function ProductEditorModalRoute() {
                                     placeholder="No draft yet — click Generate"
                                     autoComplete="off"
                                     helpText={`${draft.length}/125 characters${
-                                      draft.length > 125 ? " (longer than recommended)" : ""
+                                      draft.length > 125
+                                        ? " (longer than recommended)"
+                                        : ""
                                     }`}
                                   />
                                   <InlineStack gap="200">
                                     <Button
                                       size="slim"
                                       onClick={() =>
-                                        handleGenerateAltText(img.id, idx, product.images.length)
+                                        handleGenerateAltText(
+                                          img.id,
+                                          idx,
+                                          product.images.length,
+                                        )
                                       }
                                       loading={isGeneratingThis}
-                                      disabled={!hasCredits(
-                                        credits.creditsRemaining,
-                                        CREDIT_COSTS.altTextGeneration,
-                                      )}
+                                      disabled={
+                                        !hasCredits(
+                                          credits.creditsRemaining,
+                                          CREDIT_COSTS.altTextGeneration,
+                                        )
+                                      }
                                     >
                                       {hasDraft ? "Regenerate" : "Generate"}
                                     </Button>
@@ -1650,7 +1853,9 @@ export default function ProductEditorModalRoute() {
                           );
                         })}
 
-                        {Object.values(altTextDrafts).some((v) => v?.trim()) && (
+                        {Object.values(altTextDrafts).some((v) =>
+                          v?.trim(),
+                        ) && (
                           <InlineStack align="end">
                             <Button
                               variant="primary"
@@ -1665,7 +1870,6 @@ export default function ProductEditorModalRoute() {
                       </BlockStack>
                     </Card>
                   )}
-
                 </BlockStack>
               )}
 
@@ -1678,7 +1882,6 @@ export default function ProductEditorModalRoute() {
                   </Box>
                 </Card>
               )}
-
             </BlockStack>
           </div>
         </Modal.Section>
