@@ -61,9 +61,6 @@ export default defineConfig({
     }),
     tsconfigPaths(),
   ],
-  build: {
-    assetsInlineLimit: 0,
-  },
   // ── Fix: prevent Vite bundling Node built-ins for the client ──────────────
   ssr: {
     external: [

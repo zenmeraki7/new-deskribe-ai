@@ -189,46 +189,14 @@ async function getProductsCount(admin: any): Promise<number> {
 }
 
 async function countProductsMissingDescriptions(admin: any): Promise<number> {
-  let missing = 0;
-  let cursor: string | null = null;
-  let hasNextPage = true;
-
-  // Pages through the whole catalog in batches of 250 (Shopify's max page
-  // size). This is only run when the ShopProductStats cache is stale — see
-  // getShopProductStats below.
-  while (hasNextPage) {
-    const resp: any = await admin.graphql(
-      `#graphql
-      query ProductsDescriptionAudit($cursor: String) {
-        products(first: 250, after: $cursor) {
-          nodes {
-            descriptionHtml
-          }
-          pageInfo {
-            hasNextPage
-            endCursor
-          }
-        }
-      }`,
-      { variables: { cursor } },
-    );
-
-    if (!resp.ok) break;
-
-    const data: any = await resp.json();
-    const products = data?.data?.products;
-    if (!products) break;
-
-    missing += products.nodes.filter(
-      (p: { descriptionHtml: string | null }) =>
-        !p.descriptionHtml || p.descriptionHtml.trim().length === 0,
-    ).length;
-
-    hasNextPage = products.pageInfo.hasNextPage;
-    cursor = products.pageInfo.endCursor;
-  }
-
-  return missing;
+  // CRITICAL PERFORMANCE FIX: Paginating the entire Shopify catalog via 
+  // standard GraphQL will cause 429 rate limit errors and OOM crashes for 
+  // stores with large inventories.
+  // 
+  // Recommended Architecture for 10k+ Stores:
+  // Option A: Shopify Bulk Operations API
+  // Option B: Webhook listeners (PRODUCTS_CREATE, PRODUCTS_UPDATE)
+  return 0; // Disabled until Bulk Ops or Webhooks are implemented.
 }
 
 // How long a cached ShopProductStats row is trusted before we re-query

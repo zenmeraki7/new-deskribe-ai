@@ -236,21 +236,33 @@ export async function action({ request, params }: ActionFunctionArgs) {
       select: { id: true, result: true, productId: true },
     });
 
-    const results = await Promise.allSettled(
-      jobs.map(async (job) => {
-        const html = parseDraftHtml(job.result);
-        if (!html) return { id: job.id, ok: false, error: "No HTML" };
+    const results: PromiseSettledResult<any>[] = [];
+    const CHUNK_SIZE = 5;
+    
+    for (let i = 0; i < jobs.length; i += CHUNK_SIZE) {
+      const chunk = jobs.slice(i, i + CHUNK_SIZE);
+      const chunkResults = await Promise.allSettled(
+        chunk.map(async (job) => {
+          const html = parseDraftHtml(job.result);
+          if (!html) return { id: job.id, ok: false, error: "No HTML" };
 
-        const r = await applyDescriptionToShopify(admin.graphql, job.productId, html);
-        if (r.ok) {
-          await db.generationJob.update({
-            where: { id: job.id },
-            data: { generatedDescription: html },
-          });
-        }
-        return { id: job.id, ...r };
-      }),
-    );
+          const r = await applyDescriptionToShopify(admin.graphql, job.productId, html);
+          if (r.ok) {
+            await db.generationJob.update({
+              where: { id: job.id },
+              data: { generatedDescription: html },
+            });
+          }
+          return { id: job.id, ...r };
+        }),
+      );
+      
+      results.push(...chunkResults);
+      
+      if (i + CHUNK_SIZE < jobs.length) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    }
 
     const succeeded = results.filter(
       (r) => r.status === "fulfilled" && r.value.ok,

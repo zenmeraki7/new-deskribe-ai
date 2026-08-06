@@ -221,7 +221,7 @@ interface JobCardProps {
   applySucceeded: boolean;
 }
 
-function JobCard({
+const JobCard = React.memo(function JobCard({
   job,
   onPreview,
   onApplyOne,
@@ -344,7 +344,7 @@ function JobCard({
       </InlineStack>
     </div>
   );
-}
+});
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
@@ -386,6 +386,10 @@ export default function BulkReviewPage() {
 
   // Apply success set (for immediate UI update without revalidation delay)
   const [appliedJobIds, setAppliedJobIds] = useState<Set<string>>(new Set());
+
+  // Pagination state
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 50;
 
   // ── Auto-poll while jobs are still in flight ─────────────────────────────
   const timerRef = useRef<number | null>(null);
@@ -581,34 +585,58 @@ export default function BulkReviewPage() {
             <p>This bulk run has no associated jobs.</p>
           </EmptyState>
         ) : (
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
-              gap: 16,
-            }}
-          >
-            {jobs.map((job) => (
-              <JobCard
-                key={job.id}
-                job={
-                  // Merge optimistic applied state
-                  appliedJobIds.has(job.id)
-                    ? { ...job, appliedAt: new Date().toISOString() }
-                    : job
-                }
-                onPreview={handlePreview}
-                onApplyOne={handleApplyOne}
-                onRetryOne={handleRetryOne}
-                isApplying={actingJobId === job.id && applyFetcher.state !== "idle"}
-                isRetrying={retryingJobId === job.id && retryFetcher.state !== "idle"}
-                applySucceeded={
-                  appliedJobIds.has(job.id) ||
-                  (applyFetcher.data?.ok === true && actingJobId === job.id)
-                }
-              />
-            ))}
-          </div>
+          <BlockStack gap="400">
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
+                gap: 16,
+              }}
+            >
+              {jobs.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE).map((job) => (
+                <JobCard
+                  key={job.id}
+                  job={
+                    // Merge optimistic applied state
+                    appliedJobIds.has(job.id)
+                      ? { ...job, appliedAt: new Date().toISOString() }
+                      : job
+                  }
+                  onPreview={handlePreview}
+                  onApplyOne={handleApplyOne}
+                  onRetryOne={handleRetryOne}
+                  isApplying={actingJobId === job.id && applyFetcher.state !== "idle"}
+                  isRetrying={retryingJobId === job.id && retryFetcher.state !== "idle"}
+                  applySucceeded={
+                    appliedJobIds.has(job.id) ||
+                    (applyFetcher.data?.ok === true && actingJobId === job.id)
+                  }
+                />
+              ))}
+            </div>
+            
+            {jobs.length > PAGE_SIZE && (
+              <div style={{ display: "flex", justifyContent: "center", padding: "16px 0" }}>
+                <InlineStack gap="300" blockAlign="center">
+                  <Button
+                    disabled={page === 1}
+                    onClick={() => setPage(p => Math.max(1, p - 1))}
+                  >
+                    Previous
+                  </Button>
+                  <Text as="span" variant="bodyMd">
+                    Page {page} of {Math.ceil(jobs.length / PAGE_SIZE)}
+                  </Text>
+                  <Button
+                    disabled={page === Math.ceil(jobs.length / PAGE_SIZE)}
+                    onClick={() => setPage(p => p + 1)}
+                  >
+                    Next
+                  </Button>
+                </InlineStack>
+              </div>
+            )}
+          </BlockStack>
         )}
       </BlockStack>
 

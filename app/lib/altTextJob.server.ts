@@ -114,6 +114,7 @@ export async function markAltTextApplied(params: {
 
   const now = new Date().toISOString();
 
+  const updates = [];
   for (const job of jobs) {
     const entries = extractAltTexts(job.result);
     let changed = false;
@@ -125,7 +126,11 @@ export async function markAltTextApplied(params: {
       return e;
     });
     if (changed) {
-      await db.generationJob.update({ where: { id: job.id }, data: { result: { alt_texts: updated } } });
+      updates.push(db.generationJob.update({ where: { id: job.id }, data: { result: { alt_texts: updated } } }));
     }
+  }
+
+  if (updates.length > 0) {
+    await db.$transaction(updates);
   }
 }

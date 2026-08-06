@@ -86,7 +86,6 @@ model ShopCredit {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  @@index([shopId])
   @@index([resetDate])
 }
 
@@ -101,7 +100,6 @@ model CreditTransaction {
   createdAt DateTime @default(now())
 
   @@unique([shopId, requestId, kind])
-  @@index([shopId])
   @@index([requestId])
 }
 
@@ -115,7 +113,6 @@ model ShopUsage {
   updatedAt  DateTime @updatedAt
 
   @@unique([shopDomain, date])
-  @@index([shopDomain])
   @@index([date])
 }
 
@@ -169,7 +166,6 @@ model ShopWebhookState {
   updatedAt   DateTime
 
   @@unique([shop, topic])
-  @@index([shop])
 }
 
 model WebhookDelivery {
